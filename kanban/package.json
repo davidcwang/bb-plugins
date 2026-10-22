@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Kanban",
-    "description": "Kanban board where each card is a thread; agents move cards and your GitHub PRs and review requests sync in.",
+    "description": "Kanban board for tasks, threads, and GitHub items; start or link a thread per card and drive it through research, plan, implement, and review.",
     "branding": {
       "icon": "Kanban"
     },
