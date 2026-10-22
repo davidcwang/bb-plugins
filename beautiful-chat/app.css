@@ -1,0 +1,876 @@
+/* Beautiful Chat — BB's native chat restyled in the design language of
+   BeautifulUI (https://www.beautifului.dev, MIT). Geometry, type scale, elevation
+   and motion follow BeautifulUI; every color is derived from the active BB theme.
+
+   Each feature is switchable in the plugin settings. app.tsx mirrors them onto <html>:
+     data-bui-off     space-separated features turned off
+                      (prompt bubbles code actions rows shimmer caret approval selection)
+     data-bui-loader  drive | dots | orbit | coins | bb
+     data-bui-chips   surface | outline | plain
+   With no attributes (settings still loading) everything uses its default. */
+
+:root {
+  --bui-surface: color-mix(in oklch, var(--ink) 4%, var(--canvas));
+  --bui-field: color-mix(in oklch, var(--ink) 7%, var(--canvas));
+  --bui-inset: color-mix(in oklch, var(--ink) 3%, var(--canvas));
+  --bui-hover: color-mix(in oklch, var(--ink) 8%, transparent);
+  --bui-line: color-mix(in oklch, var(--ink) 11%, transparent);
+  --bui-line-strong: color-mix(in oklch, var(--ink) 18%, transparent);
+  --bui-ink: var(--foreground);
+  --bui-ink-2: var(--muted-foreground);
+  --bui-ink-3: var(--subtle-foreground);
+  --bui-radius-chip: 6px;
+  --bui-radius-control: 8px;
+  --bui-radius-card: 10px;
+  --bui-radius-window: 14px;
+  --bui-shadow-soft: 0 1px 2px color-mix(in oklch, black 18%, transparent), 0 2px 6px color-mix(in oklch, black 10%, transparent);
+  --bui-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+@keyframes bui-fade-in { from { opacity: 0; } }
+@keyframes bui-fade-up { from { opacity: 0; transform: translateY(8px); } }
+@keyframes bui-shimmer-text { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+
+/* ── Prompt bar (promptBar): raised field, 28px controls, filled send ─────────── */
+:root:not([data-bui-off~="prompt"]) [data-app-composer] form[data-promptbox] {
+  border-radius: var(--bui-radius-window);
+  border-color: var(--bui-line);
+  background-color: var(--bui-surface);
+  box-shadow: var(--bui-shadow-soft);
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+:root:not([data-bui-off~="prompt"]) [data-app-composer] form[data-promptbox]:focus-within {
+  border-color: var(--bui-line-strong);
+}
+:root:not([data-bui-off~="prompt"]) [data-promptbox] [data-promptbox-submit-action] {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: var(--bui-radius-control);
+  background-color: var(--bui-ink);
+  color: var(--background);
+  transition:
+    background-color 200ms var(--bui-ease-out),
+    color 200ms var(--bui-ease-out),
+    transform 160ms var(--bui-ease-out);
+}
+:root:not([data-bui-off~="prompt"]) [data-promptbox] [data-promptbox-submit-action]:disabled {
+  background-color: var(--bui-line-strong);
+  color: var(--bui-ink-2);
+}
+:root:not([data-bui-off~="prompt"]) [data-promptbox] [data-promptbox-submit-action]:not(:disabled):active {
+  transform: scale(0.96);
+}
+:root:not([data-bui-off~="prompt"]) [data-promptbox-action-row] button:not([data-promptbox-submit-action]) {
+  height: 28px;
+  border-radius: var(--bui-radius-control);
+  color: var(--bui-ink-2);
+  font-size: 12px;
+  font-weight: 500;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    transform 150ms var(--bui-ease-out);
+}
+:root:not([data-bui-off~="prompt"]) [data-promptbox-action-row] button:not([data-promptbox-submit-action]):not(:has(> span)) {
+  width: 28px;
+}
+:root:not([data-bui-off~="prompt"]) [data-promptbox-action-row] button:not([data-promptbox-submit-action]):active {
+  transform: scale(0.94);
+}
+@media (hover: hover) and (pointer: fine) {
+  :root:not([data-bui-off~="prompt"]) [data-promptbox-action-row] button:not([data-promptbox-submit-action]):hover {
+    background-color: var(--bui-hover);
+    color: var(--bui-ink);
+  }
+}
+:root:not([data-bui-off~="prompt"]) section[aria-label="Background commands"] {
+  border-color: transparent;
+  border-radius: var(--bui-radius-card);
+  background-color: var(--bui-surface);
+  box-shadow: 0 0 0 1px var(--bui-line);
+}
+:root:not([data-bui-off~="prompt"]) section[aria-label="Background commands"] [aria-label^="Background command"] {
+  background-color: transparent;
+  box-shadow: none;
+}
+
+/* Phone: BB collapses [data-follow-up-composer-footer] (max-height: 0, opacity: 0)
+   and hides full picker labels. Un-hiding opacity without restoring height used to
+   paint empty chips under the keyboard; targeting [data-promptbox-shell] > div
+   also unpacks the composer anchor. Grid only the footer (and the new-thread
+   sibling), keep full labels, and fuse it onto the prompt as one card. */
+@media (max-width: 640px) {
+  :root:not([data-bui-off~="prompt"]) [data-follow-up-composer-anchor] {
+    display: block;
+    height: auto;
+    min-height: 0;
+  }
+  :root:not([data-bui-off~="prompt"]) [data-follow-up-composer] {
+    display: flex;
+    flex-direction: column;
+  }
+  :root:not([data-bui-off~="prompt"]) [data-follow-up-composer] [data-promptbox-layout] {
+    height: auto !important;
+  }
+  :root:not([data-bui-off~="prompt"]) [data-follow-up-composer] form[data-promptbox] {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    box-shadow: none;
+  }
+  :root:not([data-bui-off~="prompt"]) [data-follow-up-composer-footer],
+  :root:not([data-bui-off~="prompt"]) [data-app-composer]:not(:has([data-follow-up-composer])) > div:has(> div [data-promptbox-project-control]) {
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    position: relative !important;
+    max-height: unset !important;
+    min-height: 0 !important;
+    margin-top: 0 !important;
+    padding: 8px;
+    overflow: visible !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    border: 1px solid var(--bui-line);
+    border-top-width: 0;
+    border-bottom-left-radius: var(--bui-radius-window);
+    border-bottom-right-radius: var(--bui-radius-window);
+    background-color: var(--bui-surface);
+    box-shadow: var(--bui-shadow-soft);
+  }
+  :root:not([data-bui-off~="prompt"]) [data-follow-up-composer-footer] > div,
+  :root:not([data-bui-off~="prompt"]) [data-app-composer]:not(:has([data-follow-up-composer])) > div:has(> div [data-promptbox-project-control]) > div {
+    display: contents;
+  }
+  :root:not([data-bui-off~="prompt"]) [data-follow-up-composer-footer] [data-promptbox-full-label],
+  :root:not([data-bui-off~="prompt"]) [data-app-composer]:not(:has([data-follow-up-composer])) > div:has(> div [data-promptbox-project-control]) [data-promptbox-full-label] {
+    display: block !important;
+  }
+  :root:not([data-bui-off~="prompt"]) [data-follow-up-composer-footer] [data-promptbox-compact-label],
+  :root:not([data-bui-off~="prompt"]) [data-app-composer]:not(:has([data-follow-up-composer])) > div:has(> div [data-promptbox-project-control]) [data-promptbox-compact-label] {
+    display: none !important;
+  }
+  :root:not([data-bui-off~="prompt"]) [data-follow-up-composer-footer] button,
+  :root:not([data-bui-off~="prompt"]) [data-app-composer]:not(:has([data-follow-up-composer])) > div:has(> div [data-promptbox-project-control]) button {
+    width: 100%;
+    min-width: 0;
+    height: 28px;
+    justify-content: flex-start;
+    padding-inline: 8px;
+    overflow: hidden;
+    border-radius: var(--bui-radius-control);
+    background-color: var(--bui-field);
+    color: var(--bui-ink-2);
+    font-size: 12px;
+    font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+/* ── User messages (userBubbles): soft filled bubbles, no border ─────────────── */
+:root:not([data-bui-off~="bubbles"]) [data-timeline-row-id*=":user-seed:"] .group\/message > div > .rounded-xl,
+:root:not([data-bui-off~="bubbles"]) [data-timeline-row-id*=":user:"] .group\/message > div > .rounded-xl {
+  border-color: transparent;
+  border-radius: 12px;
+  background-color: var(--bui-field);
+  padding: 6px 12px;
+}
+
+/* ── Code (codeChips): inline code as hairline chips, blocks as hairline cards ── */
+:root:not([data-bui-off~="code"]) [data-timeline-row-list] [data-markdown-preview] :not(pre) > code {
+  border-radius: 5px;
+  background-color: var(--bui-inset);
+  box-shadow: 0 0 0 1px var(--bui-line);
+  color: var(--bui-ink-2);
+  font-size: 11.5px;
+  padding: 1px 5px;
+}
+/* BB wraps fenced blocks in a card with a wrap/copy header. Keep that chrome:
+   one hairline card, a 32px toolbar (language + chips), then the code flush
+   underneath — not a second rounded pre nested inside the wrapper. */
+:root:not([data-bui-off~="code"]) [data-timeline-row-list] [data-markdown-preview] div:has(> pre.bb-code-highlight) {
+  --bui-code-header: 32px;
+  overflow: hidden;
+  border-color: transparent;
+  border-radius: var(--bui-radius-card);
+  background-color: var(--bui-inset);
+  box-shadow: 0 0 0 1px var(--bui-line);
+}
+:root:not([data-bui-off~="code"]) [data-timeline-row-list] [data-markdown-preview] div:has(> pre.bb-code-highlight) > div:first-child {
+  align-items: center;
+  height: var(--bui-code-header);
+  min-height: var(--bui-code-header);
+  padding: 0 6px 0 12px;
+  border-bottom: 1px solid var(--bui-line);
+  background-color: var(--bui-surface);
+}
+:root:not([data-bui-off~="code"]) [data-timeline-row-list] [data-markdown-preview] div:has(> pre.bb-code-highlight) > div:first-child > span {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--bui-ink-3);
+}
+:root:not([data-bui-off~="code"]) [data-timeline-row-list] [data-markdown-preview] div:has(> pre.bb-code-highlight) > div:first-child > span:empty::before {
+  content: "Code";
+}
+:root:not([data-bui-off~="code"]) [data-timeline-row-list] [data-markdown-preview] div:has(> pre.bb-code-highlight) > div:first-child button {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  border-radius: var(--bui-radius-chip);
+  color: var(--bui-ink-2);
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    transform 150ms var(--bui-ease-out);
+}
+:root:not([data-bui-off~="code"]) [data-timeline-row-list] [data-markdown-preview] div:has(> pre.bb-code-highlight) > div:first-child button:active {
+  transform: scale(0.94);
+}
+:root:not([data-bui-off~="code"]) [data-timeline-row-list] [data-markdown-preview] div:has(> pre.bb-code-highlight) > div:first-child button[aria-pressed="true"] {
+  background-color: var(--bui-hover);
+  color: var(--bui-ink);
+}
+@media (hover: hover) and (pointer: fine) {
+  :root:not([data-bui-off~="code"]) [data-timeline-row-list] [data-markdown-preview] div:has(> pre.bb-code-highlight) > div:first-child button:hover {
+    background-color: var(--bui-hover);
+    color: var(--bui-ink);
+  }
+}
+:root:not([data-bui-off~="code"]) [data-timeline-row-list] [data-markdown-preview] pre {
+  margin: 0;
+  padding: 10px 12px 12px;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* ── Message actions (messageActions): hover chips; spatial tooltips live in JS ─ */
+:root:not([data-bui-off~="actions"]) [data-message-column] button.size-5[aria-label] {
+  border-radius: var(--bui-radius-chip);
+}
+@media (hover: hover) and (pointer: fine) {
+  :root:not([data-bui-off~="actions"]) [data-message-column] button.size-5[aria-label]:hover {
+    background-color: var(--bui-hover);
+  }
+}
+
+/* ── Work rows (workRows): pill headers, guide line, smoother expand ─────────── */
+:root:not([data-bui-off~="rows"]) [data-timeline-row-list] .group\/timeline-row > button {
+  width: fit-content;
+  max-width: 100%;
+  border-radius: var(--bui-radius-control);
+  padding-block: 2px;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+:root:not([data-bui-off~="rows"]) [data-timeline-row-list] .group\/timeline-row > button .text-sm,
+:root:not([data-bui-off~="rows"]) [data-timeline-row-list] [data-timeline-row-id] > .rounded-md > .text-sm,
+:root:not([data-bui-off~="rows"]) [data-timeline-row-list] [data-timeline-row-id] > .rounded-md > .text-sm .text-sm {
+  font-size: 12.5px;
+}
+@media (hover: hover) and (pointer: fine) {
+  :root:not([data-bui-off~="rows"]) [data-timeline-row-list] .group\/timeline-row > button:hover {
+    background-color: var(--bui-hover);
+    transition-duration: 0ms;
+  }
+}
+:root:not([data-bui-off~="rows"]) [data-timeline-row-list] .group\/timeline-row > .grid > .overflow-hidden > div {
+  margin-left: 14px;
+  padding-left: 12px;
+  border-left: 1px solid var(--bui-line);
+}
+:root:not([data-bui-off~="rows"]) [data-timeline-row-list] .group\/timeline-row > .grid,
+:root:not([data-bui-off~="rows"]) [data-timeline-row-list] .group\/timeline-row > .grid > .overflow-hidden > div {
+  transition-duration: 300ms;
+  transition-timing-function: var(--bui-ease-out);
+}
+/* Keyboard focus: BB's 3px near-white outline reads as a selection box; show the
+   pill's hover fill with a firmer hairline instead, still clearly visible. */
+:root:not([data-bui-off~="rows"]) [data-timeline-row-list] .group\/timeline-row > button:focus-visible {
+  outline: none;
+  background-color: var(--bui-hover);
+  box-shadow: 0 0 0 1px var(--bui-line-strong);
+}
+/* Log details (Provisioned thread and other op rows): here the details panel is a
+   sibling of the row group. Instead of BB's bordered terminal box, the log reads as
+   child rows under the header, like an expanded work group: guide line, no card,
+   the work rows' sans type and 22px rhythm. */
+/* Only log panels (a bordered box holding a <pre>): work groups share this sibling
+   layout but already draw their own tree lines, and a second guide line doubles them. */
+:root:not([data-bui-off~="rows"]) [data-timeline-row-list] .group\/timeline-row + .grid > .overflow-hidden > div:has(> .rounded-lg.border pre) {
+  margin-left: 14px;
+  padding-left: 12px;
+  padding-right: 0;
+  border-left: 1px solid var(--bui-line);
+}
+:root:not([data-bui-off~="rows"]) [data-timeline-row-list] .group\/timeline-row + .grid > .overflow-hidden > div > .rounded-lg.border {
+  border-color: transparent;
+  border-radius: 0;
+  background-color: transparent;
+  box-shadow: none;
+}
+:root:not([data-bui-off~="rows"]) [data-timeline-row-list] .group\/timeline-row + .grid > .overflow-hidden > div > .rounded-lg.border pre {
+  padding: 0 0 2px;
+  /* BB dims op rows to 40%; keep the log lines from outshining their header. */
+  color: color-mix(in oklch, var(--bui-ink-3) 70%, transparent);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 22px;
+  opacity: 1;
+}
+:root:not([data-bui-off~="rows"]) [data-timeline-row-list] .group\/timeline-row > button .tabular-nums {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-size: 11.5px;
+  color: var(--bui-ink-3);
+}
+
+/* ── Tool call rows (toolChips): surface = fill + hairline, outline = hairline,
+      plain = BB's own row with no background or border ───────────────────────── */
+:root:not([data-bui-chips="plain"]) [data-timeline-row-id]:not([data-timeline-row-id*=":turn:"]):not([data-timeline-row-id*=":assistant:"]):not([data-timeline-row-id*=":user"]):not([data-timeline-row-id*="reasoning"]):not([data-timeline-row-id*=":error:"])
+  > .rounded-md > .group\/timeline-row > button {
+  margin-block: 2px;
+  padding-inline: 8px;
+  box-shadow: 0 0 0 1px var(--bui-line);
+}
+:root:not([data-bui-chips="plain"]):not([data-bui-chips="outline"]) [data-timeline-row-id]:not([data-timeline-row-id*=":turn:"]):not([data-timeline-row-id*=":assistant:"]):not([data-timeline-row-id*=":user"]):not([data-timeline-row-id*="reasoning"]):not([data-timeline-row-id*=":error:"])
+  > .rounded-md > .group\/timeline-row > button {
+  background-color: var(--bui-surface);
+}
+
+/* ── Loading (loader): BeautifulUI's pixel loaders replace the pending row icon ── */
+@property --bui-px-a { syntax: "<number>"; inherits: false; initial-value: 0.15; }
+@property --bui-px-b { syntax: "<number>"; inherits: false; initial-value: 0.15; }
+@property --bui-px-c { syntax: "<number>"; inherits: false; initial-value: 0.15; }
+@property --bui-px-d { syntax: "<number>"; inherits: false; initial-value: 0.15; }
+@property --bui-orb-0 { syntax: "<number>"; inherits: false; initial-value: 0.15; }
+@property --bui-orb-1 { syntax: "<number>"; inherits: false; initial-value: 0.15; }
+@property --bui-orb-2 { syntax: "<number>"; inherits: false; initial-value: 0.15; }
+@property --bui-orb-3 { syntax: "<number>"; inherits: false; initial-value: 0.15; }
+@property --bui-orb-4 { syntax: "<number>"; inherits: false; initial-value: 0.15; }
+@property --bui-orb-5 { syntax: "<number>"; inherits: false; initial-value: 0.15; }
+@property --bui-orb-6 { syntax: "<number>"; inherits: false; initial-value: 0.15; }
+@property --bui-orb-7 { syntax: "<number>"; inherits: false; initial-value: 0.15; }
+@keyframes bui-px-a { 0%, 62%, 100% { --bui-px-a: 0.15; } 18%, 42% { --bui-px-a: 1; } }
+@keyframes bui-px-b { 0%, 62%, 100% { --bui-px-b: 0.15; } 18%, 42% { --bui-px-b: 1; } }
+@keyframes bui-px-c { 0%, 62%, 100% { --bui-px-c: 0.15; } 18%, 42% { --bui-px-c: 1; } }
+@keyframes bui-px-d { 0%, 62%, 100% { --bui-px-d: 0.15; } 18%, 42% { --bui-px-d: 1; } }
+@keyframes bui-orb-0 { 0%, 62%, 100% { --bui-orb-0: 0.15; } 18%, 42% { --bui-orb-0: 1; } }
+@keyframes bui-orb-1 { 0%, 62%, 100% { --bui-orb-1: 0.15; } 18%, 42% { --bui-orb-1: 1; } }
+@keyframes bui-orb-2 { 0%, 62%, 100% { --bui-orb-2: 0.15; } 18%, 42% { --bui-orb-2: 1; } }
+@keyframes bui-orb-3 { 0%, 62%, 100% { --bui-orb-3: 0.15; } 18%, 42% { --bui-orb-3: 1; } }
+@keyframes bui-orb-4 { 0%, 62%, 100% { --bui-orb-4: 0.15; } 18%, 42% { --bui-orb-4: 1; } }
+@keyframes bui-orb-5 { 0%, 62%, 100% { --bui-orb-5: 0.15; } 18%, 42% { --bui-orb-5: 1; } }
+@keyframes bui-orb-6 { 0%, 62%, 100% { --bui-orb-6: 0.15; } 18%, 42% { --bui-orb-6: 1; } }
+@keyframes bui-orb-7 { 0%, 62%, 100% { --bui-orb-7: 0.15; } 18%, 42% { --bui-orb-7: 1; } }
+
+:root:not([data-bui-loader="bb"]) [data-timeline-row-list] .group\/timeline-row > button > span > span:has(> span > .animate-shine:first-child) > svg {
+  display: none;
+}
+:root:not([data-bui-loader="bb"]) [data-timeline-row-list] .group\/timeline-row > button > span > span:has(> span > .animate-shine:first-child)::before {
+  --bui-px-on: var(--bui-ink);
+  content: "";
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+}
+/* Drive (default): square pixels sweep diagonally. */
+:root:not([data-bui-loader]) [data-timeline-row-list] .group\/timeline-row > button > span > span:has(> span > .animate-shine:first-child)::before,
+:root[data-bui-loader="drive"] [data-timeline-row-list] .group\/timeline-row > button > span > span:has(> span > .animate-shine:first-child)::before,
+:root[data-bui-loader="coins"]:not([data-bui-coins-ready]) [data-timeline-row-list] .group\/timeline-row > button > span > span:has(> span > .animate-shine:first-child)::before {
+  background:
+    linear-gradient(color-mix(in oklch, var(--bui-px-on) calc(var(--bui-px-b) * 100%), transparent) 0 0) 0px 0px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in oklch, var(--bui-px-on) calc(var(--bui-px-c) * 100%), transparent) 0 0) 5px 0px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in oklch, var(--bui-px-on) calc(var(--bui-px-d) * 100%), transparent) 0 0) 10px 0px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in oklch, var(--bui-px-on) calc(var(--bui-px-a) * 100%), transparent) 0 0) 0px 5px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in oklch, var(--bui-px-on) calc(var(--bui-px-b) * 100%), transparent) 0 0) 5px 5px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in oklch, var(--bui-px-on) calc(var(--bui-px-c) * 100%), transparent) 0 0) 10px 5px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in oklch, var(--bui-px-on) calc(var(--bui-px-b) * 100%), transparent) 0 0) 0px 10px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in oklch, var(--bui-px-on) calc(var(--bui-px-c) * 100%), transparent) 0 0) 5px 10px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in oklch, var(--bui-px-on) calc(var(--bui-px-d) * 100%), transparent) 0 0) 10px 10px / 4px 4px no-repeat;
+  animation:
+    bui-px-a 650ms ease-in-out 0ms infinite,
+    bui-px-b 650ms ease-in-out 90ms infinite,
+    bui-px-c 650ms ease-in-out 180ms infinite,
+    bui-px-d 650ms ease-in-out 270ms infinite;
+}
+/* Dots: the same sweep with round pixels. */
+:root[data-bui-loader="dots"] [data-timeline-row-list] .group\/timeline-row > button > span > span:has(> span > .animate-shine:first-child)::before {
+  background:
+    radial-gradient(closest-side, color-mix(in oklch, var(--bui-px-on) calc(var(--bui-px-b) * 100%), transparent) 90%, transparent) 0px 0px / 4px 4px no-repeat,
+    radial-gradient(closest-side, color-mix(in oklch, var(--bui-px-on) calc(var(--bui-px-c) * 100%), transparent) 90%, transparent) 5px 0px / 4px 4px no-repeat,
+    radial-gradient(closest-side, color-mix(in oklch, var(--bui-px-on) calc(var(--bui-px-d) * 100%), transparent) 90%, transparent) 10px 0px / 4px 4px no-repeat,
+    radial-gradient(closest-side, color-mix(in oklch, var(--bui-px-on) calc(var(--bui-px-a) * 100%), transparent) 90%, transparent) 0px 5px / 4px 4px no-repeat,
+    radial-gradient(closest-side, color-mix(in oklch, var(--bui-px-on) calc(var(--bui-px-b) * 100%), transparent) 90%, transparent) 5px 5px / 4px 4px no-repeat,
+    radial-gradient(closest-side, color-mix(in oklch, var(--bui-px-on) calc(var(--bui-px-c) * 100%), transparent) 90%, transparent) 10px 5px / 4px 4px no-repeat,
+    radial-gradient(closest-side, color-mix(in oklch, var(--bui-px-on) calc(var(--bui-px-b) * 100%), transparent) 90%, transparent) 0px 10px / 4px 4px no-repeat,
+    radial-gradient(closest-side, color-mix(in oklch, var(--bui-px-on) calc(var(--bui-px-c) * 100%), transparent) 90%, transparent) 5px 10px / 4px 4px no-repeat,
+    radial-gradient(closest-side, color-mix(in oklch, var(--bui-px-on) calc(var(--bui-px-d) * 100%), transparent) 90%, transparent) 10px 10px / 4px 4px no-repeat;
+  animation:
+    bui-px-a 650ms ease-in-out 0ms infinite,
+    bui-px-b 650ms ease-in-out 90ms infinite,
+    bui-px-c 650ms ease-in-out 180ms infinite,
+    bui-px-d 650ms ease-in-out 270ms infinite;
+}
+/* Orbit: one lit pixel walks the edge; the centre stays dim. */
+:root[data-bui-loader="orbit"] [data-timeline-row-list] .group\/timeline-row > button > span > span:has(> span > .animate-shine:first-child)::before {
+  background:
+    linear-gradient(color-mix(in oklch, var(--bui-px-on) calc(var(--bui-orb-0) * 100%), transparent) 0 0) 0px 0px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in oklch, var(--bui-px-on) calc(var(--bui-orb-1) * 100%), transparent) 0 0) 5px 0px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in oklch, var(--bui-px-on) calc(var(--bui-orb-2) * 100%), transparent) 0 0) 10px 0px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in oklch, var(--bui-px-on) calc(var(--bui-orb-7) * 100%), transparent) 0 0) 0px 5px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in oklch, var(--bui-px-on) 7%, transparent) 0 0) 5px 5px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in oklch, var(--bui-px-on) calc(var(--bui-orb-3) * 100%), transparent) 0 0) 10px 5px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in oklch, var(--bui-px-on) calc(var(--bui-orb-6) * 100%), transparent) 0 0) 0px 10px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in oklch, var(--bui-px-on) calc(var(--bui-orb-5) * 100%), transparent) 0 0) 5px 10px / 4px 4px no-repeat,
+    linear-gradient(color-mix(in oklch, var(--bui-px-on) calc(var(--bui-orb-4) * 100%), transparent) 0 0) 10px 10px / 4px 4px no-repeat;
+  animation:
+    bui-orb-0 950ms ease-in-out 0ms infinite,
+    bui-orb-1 950ms ease-in-out 110ms infinite,
+    bui-orb-2 950ms ease-in-out 220ms infinite,
+    bui-orb-3 950ms ease-in-out 330ms infinite,
+    bui-orb-4 950ms ease-in-out 440ms infinite,
+    bui-orb-5 950ms ease-in-out 550ms infinite,
+    bui-orb-6 950ms ease-in-out 660ms infinite,
+    bui-orb-7 950ms ease-in-out 770ms infinite;
+}
+
+/* Coins: Originkit's ring of tumbling coins, painted by coins-worklet.ts. One loop
+   (10.472s) turns the ring once and tumbles each coin twice. */
+@property --bui-coin-t { syntax: "<number>"; inherits: false; initial-value: 0; }
+@property --bui-coin-color { syntax: "<color>"; inherits: false; initial-value: #fff; }
+@keyframes bui-coin-t { to { --bui-coin-t: 1; } }
+:root[data-bui-loader="coins"][data-bui-coins-ready] [data-timeline-row-list] .group\/timeline-row > button > span > span:has(> span > .animate-shine:first-child)::before {
+  --bui-coin-color: var(--bui-ink);
+  background: paint(bui-coins);
+  animation: bui-coin-t 10.472s linear infinite;
+}
+
+/* ── Shimmer (shimmer): brighter, faster band on pending labels ─────────────── */
+/* BB used to shine `.animate-shine` with a text-clipped gradient. It now uses an
+   APNG mask over the whole box plus `-webkit-text-fill-color`. A background
+   gradient on that mask paints a gray pill instead of a band through the
+   glyphs, so drop the mask and clip BeautifulUI's band to the text. */
+@media (prefers-reduced-motion: no-preference) {
+  :root:not([data-bui-off~="shimmer"]) #thread-detail-timeline-panel .animate-shine {
+    -webkit-mask-image: none;
+    mask-image: none;
+    will-change: auto;
+    background-image: linear-gradient(90deg, var(--bui-ink-3) 35%, var(--bui-ink) 50%, var(--bui-ink-3) 65%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    animation: bui-shimmer-text 1.4s linear infinite;
+  }
+}
+
+/* ── Streaming caret (streamingCaret): trails the reply while the run is live ── */
+:root:not([data-bui-off~="caret"]) #thread-detail-timeline-panel:has([data-promptbox-submit-action]:is([aria-label="Stop run"], [aria-label^="Steer current run"]))
+  [data-timeline-row-list="top-level"] > [data-timeline-row-id*=":assistant:"]:last-child [data-markdown-preview]
+  > :is(p, h1, h2, h3, h4, h5, h6):last-child::after,
+:root:not([data-bui-off~="caret"]) #thread-detail-timeline-panel:has([data-promptbox-submit-action]:is([aria-label="Stop run"], [aria-label^="Steer current run"]))
+  [data-timeline-row-list="top-level"] > [data-timeline-row-id*=":assistant:"]:last-child [data-markdown-preview]
+  > :is(ul, ol):last-child > li:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 12px;
+  margin-left: 3px;
+  border-radius: 1px;
+  background-color: var(--bui-ink);
+  transform: translateY(1px);
+  /* No fade-in: the caret is recreated on every streamed chunk, so a fade would blink. */
+}
+
+/* ── Approval cards (approvalCard): permission requests and agent questions ──── */
+:root:not([data-bui-off~="approval"]) section[data-testid="approval-banner"],
+:root:not([data-bui-off~="approval"]) section[data-testid="user-question-banner"] {
+  border-color: transparent;
+  border-radius: var(--bui-radius-card);
+  background-color: var(--bui-surface);
+  box-shadow: 0 0 0 1px var(--bui-line), var(--bui-shadow-soft);
+  animation: bui-fade-up 380ms var(--bui-ease-out) both;
+}
+:root:not([data-bui-off~="approval"]) section[data-testid$="-banner"] > div:first-child {
+  border-color: var(--bui-line);
+}
+:root:not([data-bui-off~="approval"]) section[data-testid$="-banner"] h3 {
+  font-size: 14px;
+  color: var(--bui-ink);
+}
+:root:not([data-bui-off~="approval"]) section[data-testid$="-banner"] button.inline-flex.whitespace-nowrap {
+  height: 27px;
+  padding-inline: 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  transition:
+    background-color 150ms ease,
+    opacity 150ms ease,
+    transform 150ms var(--bui-ease-out);
+}
+:root:not([data-bui-off~="approval"]) section[data-testid$="-banner"] button.inline-flex.whitespace-nowrap:not(:disabled):active {
+  transform: scale(0.96);
+}
+:root:not([data-bui-off~="approval"]) section[data-testid="user-question-banner"] fieldset button.w-full.items-start {
+  border-radius: var(--bui-radius-control);
+  padding-block: 5px;
+  color: var(--bui-ink-2);
+  transition: background-color 100ms ease, color 200ms ease;
+}
+:root:not([data-bui-off~="approval"]) section[data-testid="user-question-banner"] fieldset button.w-full.items-start.bg-surface-selected {
+  background-color: var(--bui-hover);
+  color: var(--bui-ink);
+}
+:root:not([data-bui-off~="approval"]) section[data-testid="user-question-banner"] fieldset button.w-full.items-start > span.size-4 {
+  border-color: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--bui-line-strong);
+  transition: background-color 200ms ease, box-shadow 200ms ease;
+}
+:root:not([data-bui-off~="approval"]) section[data-testid="user-question-banner"] fieldset button.w-full.items-start > span.size-4.bg-primary {
+  box-shadow: none;
+}
+:root:not([data-bui-off~="approval"]) section[data-testid="user-question-banner"] fieldset textarea {
+  border-color: transparent;
+  border-radius: var(--bui-radius-control);
+  background-color: var(--bui-field);
+}
+
+/* ── Selection pill (selectionPill): Add to chat / Reply in side chat ───────── */
+:root:not([data-bui-off~="selection"]) [data-radix-popper-content-wrapper] > [role="dialog"]:has(> div > button > svg[data-icon="MessageSquarePlus"]) {
+  --tw-enter-scale: 0.96;
+  gap: 2px;
+  padding: 4px;
+  border-color: transparent;
+  border-radius: 999px;
+  box-shadow:
+    0 0 0 1px var(--bui-line),
+    0 8px 24px -6px color-mix(in oklch, black 35%, transparent),
+    0 2px 6px color-mix(in oklch, black 12%, transparent);
+  transform-origin: var(--radix-popover-content-transform-origin);
+  animation-duration: 180ms;
+  animation-timing-function: var(--bui-ease-out);
+}
+:root:not([data-bui-off~="selection"]) [data-radix-popper-content-wrapper] > [role="dialog"]:has(> div > button > svg[data-icon="MessageSquarePlus"]) button {
+  height: 28px;
+  gap: 4px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  transition:
+    background-color 150ms ease,
+    transform 150ms var(--bui-ease-out);
+}
+:root:not([data-bui-off~="selection"]) [data-radix-popper-content-wrapper] > [role="dialog"]:has(> div > button > svg[data-icon="MessageSquarePlus"]) button:hover {
+  background-color: var(--bui-hover);
+}
+:root:not([data-bui-off~="selection"]) [data-radix-popper-content-wrapper] > [role="dialog"]:has(> div > button > svg[data-icon="MessageSquarePlus"]) button:active {
+  transform: scale(0.96);
+}
+:root:not([data-bui-off~="selection"]) [data-radix-popper-content-wrapper] > [role="dialog"]:has(> div > button > svg[data-icon="MessageSquarePlus"]) span[aria-hidden="true"] {
+  background-color: var(--bui-line-strong);
+}
+
+/* ── Composer banners (mergedBanners): one card instead of a stack ──────────── */
+/* BB gives each banner above the composer (background commands, git, parent and
+   child threads) its own bordered card, 8px apart. The banners keep their own
+   boxes here and join into one card: gaps close, shared edges collapse onto each
+   other, and only the outer corners round. The chrome stays on the banners rather
+   than the stack, so anything else in there (a plugin strip) keeps its own space
+   instead of becoming an empty row, and nothing is clipped. */
+:root:not([data-bui-off~="banners"]) [data-app-composer] > div.grid:has(> section[aria-label]) {
+  gap: 0;
+}
+:root:not([data-bui-off~="banners"]) [data-app-composer] > div.grid > section[aria-label] {
+  border: 1px solid var(--bui-line);
+  border-radius: 0;
+  background-color: var(--bui-surface);
+  box-shadow: none;
+}
+:root:not([data-bui-off~="banners"]) [data-app-composer] > div.grid > section[aria-label]:not(:first-of-type) {
+  margin-top: -1px;
+}
+:root:not([data-bui-off~="banners"]) [data-app-composer] > div.grid > section[aria-label]:first-of-type {
+  border-top-left-radius: var(--bui-radius-card);
+  border-top-right-radius: var(--bui-radius-card);
+}
+:root:not([data-bui-off~="banners"]) [data-app-composer] > div.grid > section[aria-label]:last-of-type {
+  border-bottom-left-radius: var(--bui-radius-card);
+  border-bottom-right-radius: var(--bui-radius-card);
+}
+/* Anything that is not a banner keeps the stack's original spacing. */
+:root:not([data-bui-off~="banners"]) [data-app-composer] > div.grid:has(> section[aria-label]) > :not(section[aria-label]):not([data-bb-plugin-root]) {
+  margin-block: 8px;
+}
+
+/* ── Minimize while running (minimizeWhileRunning) ───────────────────────────── */
+/* While a response is generating, the prompt box drops to BB's own one-line compact
+   layout, freeing room for the reply. These are BB's compact-composer rules with
+   the trigger swapped for the send button: "Stop run" means a run is live and the
+   box is empty. Typing a follow-up flips it to "Steer current run", so the box
+   grows back as soon as you type, focused or not; voice input keeps the full box. */
+:root:not([data-bui-off~="minimize"]) [data-follow-up-composer]:has([data-promptbox-submit-action][aria-label="Stop run"]) [data-promptbox]:not([data-promptbox-voice-active]) {
+  overflow: hidden;
+}
+:root:not([data-bui-off~="minimize"]) [data-follow-up-composer]:has([data-promptbox-submit-action][aria-label="Stop run"]) [data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-action-row] {
+  inset-block: 0;
+  gap: 0;
+  padding: 0;
+  position: absolute;
+  right: .5rem;
+}
+:root:not([data-bui-off~="minimize"]) [data-follow-up-composer]:has([data-promptbox-submit-action][aria-label="Stop run"]) [data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-main] {
+  height: 3rem;
+}
+:root:not([data-bui-off~="minimize"]) [data-follow-up-composer]:has([data-promptbox-submit-action][aria-label="Stop run"]) [data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-expanded-only] {
+  display: none!important;
+}
+:root:not([data-bui-off~="minimize"]) [data-follow-up-composer]:has([data-promptbox-submit-action][aria-label="Stop run"]) [data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-editor-scroll] {
+  padding-top: 0;
+  padding-bottom: 0;
+  padding-right: 3.5rem;
+  overflow: hidden;
+  height: 3rem!important;
+  min-height: 3rem!important;
+  max-height: 3rem!important;
+}
+:root:not([data-bui-off~="minimize"]) [data-follow-up-composer]:has([data-promptbox-submit-action][aria-label="Stop run"]) [data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-editor-content] {
+  align-items: center;
+  height: 100%;
+  display: flex;
+}
+:root:not([data-bui-off~="minimize"]) [data-follow-up-composer]:has([data-promptbox-submit-action][aria-label="Stop run"]) [data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-editor-content] .ProseMirror[contenteditable] {
+  text-overflow: ellipsis;
+  width: 100%;
+  max-height: 1.7em;
+  overflow: hidden;
+  white-space: nowrap!important;
+  min-height: 0!important;
+}
+:root:not([data-bui-off~="minimize"]) [data-follow-up-composer]:has([data-promptbox-submit-action][aria-label="Stop run"]) [data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-editor-content] .ProseMirror[contenteditable]>*,
+:root:not([data-bui-off~="minimize"]) [data-follow-up-composer]:has([data-promptbox-submit-action][aria-label="Stop run"]) [data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-editor-content] .ProseMirror[contenteditable] :where(blockquote,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+li,
+ol,
+p,
+ul) {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  white-space: inherit;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: inline;
+}
+:root:not([data-bui-off~="minimize"]) [data-follow-up-composer]:has([data-promptbox-submit-action][aria-label="Stop run"]) [data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-editor-content] .ProseMirror[contenteditable]>*+:before,
+:root:not([data-bui-off~="minimize"]) [data-follow-up-composer]:has([data-promptbox-submit-action][aria-label="Stop run"]) [data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-editor-content] .ProseMirror[contenteditable] :where(blockquote,
+li)>*+:before,
+:root:not([data-bui-off~="minimize"]) [data-follow-up-composer]:has([data-promptbox-submit-action][aria-label="Stop run"]) [data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-editor-content] .ProseMirror[contenteditable] :where(ol,
+ul)>li+li:before {
+  content: " ";
+}
+:root:not([data-bui-off~="minimize"]) [data-follow-up-composer]:has([data-promptbox-submit-action][aria-label="Stop run"]) [data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-editor-content] .ProseMirror[contenteditable] br {
+  content: " ";
+  display: inline;
+}
+:root:not([data-bui-off~="minimize"]) [data-follow-up-composer]:has([data-promptbox-submit-action][aria-label="Stop run"]) [data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-editor-content] .ProseMirror[contenteditable] br:after {
+  content: " ";
+}
+:root:not([data-bui-off~="minimize"]) [data-follow-up-composer]:has([data-promptbox-submit-action][aria-label="Stop run"]) [data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-editor-content] .prompt-mention-pill>span:last-child {
+  min-width: 0;
+}
+:root:not([data-bui-off~="minimize"]) [data-follow-up-composer]:has([data-promptbox-submit-action][aria-label="Stop run"]) [data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-editor-content] .ProseMirror p.is-editor-empty:first-child:before {
+  content: var(--promptbox-container-compact-placeholder);
+}
+
+/* ── Tree lines (treeLines): an expanded work group reads as a tree ────────────── */
+/* An expanded group ("Explored 10 files, 1 list") lists its tool calls in
+   [data-timeline-row-list="bundle"]. The list is indented under the header's icon. A 1px trunk runs
+   the full height of every row but the last; each row adds only the rounded curve
+   into its icon (centred 12px down), so strokes never stack. Colours are opaque
+   (ink mixed into the background) for the same reason: where lines meet, nothing
+   darkens. The running row is the current node: its curve and the trunk leading
+   down to it from the header are lit. */
+:root:not([data-bui-off~="tree"]) [data-timeline-row-list="bundle"] {
+  --bui-tree-dim: color-mix(in oklch, var(--ink) 22%, var(--background));
+  --bui-tree-lit: color-mix(in oklch, var(--ink) 72%, var(--background));
+  position: relative;
+  margin-left: 7px;
+  padding-left: 16px;
+}
+:root:not([data-bui-off~="tree"]) [data-timeline-row-list="bundle"] > [data-timeline-row-id] {
+  position: relative;
+}
+/* Trunk. */
+:root:not([data-bui-off~="tree"]) [data-timeline-row-list="bundle"] > [data-timeline-row-id]:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -16px;
+  width: 1px;
+  background: var(--bui-tree-dim);
+  pointer-events: none;
+}
+/* The first row's trunk reaches up to meet the header. */
+:root:not([data-bui-off~="tree"]) [data-timeline-row-list="bundle"] > [data-timeline-row-id]:first-child:not(:last-child)::after {
+  top: -4px;
+}
+/* Elbow: just the curve; the trunk supplies the straight part. */
+:root:not([data-bui-off~="tree"]) [data-timeline-row-list="bundle"] > [data-timeline-row-id]::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: -16px;
+  width: 10px;
+  height: 6px;
+  border-bottom: 1px solid var(--bui-tree-dim);
+  border-left: 1px solid var(--bui-tree-dim);
+  border-bottom-left-radius: 6px;
+  pointer-events: none;
+}
+/* The last row has no trunk, so its elbow carries the straight part itself. */
+:root:not([data-bui-off~="tree"]) [data-timeline-row-list="bundle"] > [data-timeline-row-id]:last-child::before {
+  top: 0;
+  height: 12px;
+}
+:root:not([data-bui-off~="tree"]) [data-timeline-row-list="bundle"] > [data-timeline-row-id]:first-child:last-child::before {
+  top: -4px;
+  height: 16px;
+}
+/* Current node: the running row's curve, and the path above it, light up. */
+:root:not([data-bui-off~="tree"]) [data-timeline-row-list="bundle"] > [data-timeline-row-id]:has(.animate-shine)::before {
+  border-color: var(--bui-tree-lit);
+}
+:root:not([data-bui-off~="tree"]) [data-timeline-row-list="bundle"] > [data-timeline-row-id]:has(~ [data-timeline-row-id] .animate-shine)::after {
+  background: var(--bui-tree-lit);
+}
+:root:not([data-bui-off~="tree"]) [data-timeline-row-list="bundle"] > [data-timeline-row-id]:has(.animate-shine):not(:last-child)::after {
+  background: linear-gradient(var(--bui-tree-lit) 0 12px, var(--bui-tree-dim) 12px);
+}
+/* Compact work rows' straight guide line would double up with the tree. */
+:root:not([data-bui-off~="tree"]) [data-timeline-row-list] .group\/timeline-row > .grid > .overflow-hidden > div:has(> [data-timeline-row-list="bundle"]) {
+  margin-left: 0;
+  padding-left: 8px;
+  border-left: 0;
+}
+
+/* ── Unread marker (unreadMarker): NEW trails the first unread row's label ───── */
+/* BB stacks a separator above the row: a 10px wide-tracked accent label and a rule
+   across the width. Where the row below has a label of its own, the separator is
+   clipped away (it stays in the a11y tree as role="separator") and the row prints
+   NEW after its label, at the label's own size. Message rows keep BB's separator.
+   NEW sits outside the row's button so a long, truncating label can't clip it; the
+   button's own trailing chevron supplies the gap. */
+:root:not([data-bui-off~="unread"]) [data-timeline-window-key^="divider:"]:has(+ [data-timeline-row-id] .group\/timeline-row) {
+  height: 0;
+  margin-bottom: -8px;
+  overflow: hidden;
+}
+:root:not([data-bui-off~="unread"]) [data-timeline-window-key^="divider:"]:has(+ [data-timeline-row-id] .group\/timeline-row) + [data-timeline-row-id] .group\/timeline-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+:root:not([data-bui-off~="unread"]) [data-timeline-window-key^="divider:"]:has(+ [data-timeline-row-id] .group\/timeline-row) + [data-timeline-row-id] .group\/timeline-row > button {
+  order: 0;
+}
+:root:not([data-bui-off~="unread"]) [data-timeline-window-key^="divider:"]:has(+ [data-timeline-row-id] .group\/timeline-row) + [data-timeline-row-id] .group\/timeline-row::after {
+  order: 1;
+  content: "NEW";
+  color: var(--success);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: normal;
+  line-height: 20px;
+}
+/* Compact work rows off: BB's own 14px label size. */
+:root[data-bui-off~="rows"]:not([data-bui-off~="unread"]) [data-timeline-window-key^="divider:"]:has(+ [data-timeline-row-id] .group\/timeline-row) + [data-timeline-row-id] .group\/timeline-row::after {
+  font-size: 14px;
+}
+/* Expanded details keep their own line under the label. */
+:root:not([data-bui-off~="unread"]) [data-timeline-window-key^="divider:"]:has(+ [data-timeline-row-id] .group\/timeline-row) + [data-timeline-row-id] .group\/timeline-row > .grid {
+  order: 2;
+  flex-basis: 100%;
+}
+
+/* Spatial tooltips (spatial-tooltip.ts, mounted only while messageActions is on):
+   in rows of 3+ tooltip buttons the native bubble is hidden visually (its sr-only
+   text stays) and one shared bubble glides between siblings. */
+[data-bui-spatial-native] {
+  opacity: 0 !important;
+}
+.bui-spatial-tip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 60;
+  box-sizing: border-box;
+  width: var(--w, auto);
+  max-width: 320px;
+  overflow: hidden;
+  border-radius: var(--bui-radius-chip);
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+  padding: 6px 12px;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate3d(var(--x, 0), var(--y, 0), 0) scale(0.96);
+  transition:
+    opacity 120ms ease,
+    transform 180ms var(--bui-ease-out),
+    width 180ms var(--bui-ease-out);
+}
+.bui-spatial-tip[data-open] {
+  opacity: 1;
+  transform: translate3d(var(--x, 0), var(--y, 0), 0);
+}
+.bui-spatial-tip[data-snap] {
+  transition: none;
+}
+.bui-spatial-tip-measure {
+  width: max-content;
+  visibility: hidden;
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-promptbox] [data-promptbox-submit-action]:not(:disabled):active,
+  [data-promptbox-action-row] button:not([data-promptbox-submit-action]):active,
+  [data-radix-popper-content-wrapper] > [role="dialog"]:has(> div > button > svg[data-icon="MessageSquarePlus"]) button:active,
+  section[data-testid$="-banner"] button.inline-flex.whitespace-nowrap:not(:disabled):active,
+  [data-timeline-row-list] [data-markdown-preview] div:has(> pre.bb-code-highlight) > div:first-child button:active {
+    transform: none;
+  }
+  [data-timeline-row-list] .group\/timeline-row > button > span > span:has(> span > .animate-shine:first-child)::before {
+    animation: none !important;
+  }
+  section[data-testid="approval-banner"],
+  section[data-testid="user-question-banner"] {
+    animation-name: bui-fade-in;
+  }
+  .bui-spatial-tip,
+  .bui-spatial-tip[data-open] {
+    transform: translate3d(var(--x, 0), var(--y, 0), 0);
+    transition: opacity 120ms ease;
+  }
+}

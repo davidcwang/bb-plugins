@@ -1,0 +1,52 @@
+{
+  "name": "bb-plugin-beautiful-chat",
+  "version": "0.1.2",
+  "type": "module",
+  "engines": {
+    "bb": ">=0.43",
+    "bbPluginSdk": ">=0.4.87"
+  },
+  "bb": {
+    "name": "Beautiful Chat",
+    "description": "Restyles BB's chat \u2014 composer, messages, work rows, loading states \u2014 in BeautifulUI's design language, using your active theme's colors.",
+    "branding": {
+      "icon": "./assets/icon.svg"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.4.87",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "better-sqlite3": "^12.0.0",
+    "hono": "^4.11.9",
+    "typescript": "^5.7.0",
+    "zod": "^4.3.6"
+  },
+  "description": "Restyles BB's chat \u2014 composer, messages, work rows, loading states \u2014 in BeautifulUI's design language, using your active theme's colors.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && bb plugin build ."
+  },
+  "license": "MIT",
+  "author": "Diip3sh <pilladipesh.pd@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/diip3sh/bb-plugin-beautiful-chat.git"
+  },
+  "homepage": "https://github.com/diip3sh/bb-plugin-beautiful-chat#readme",
+  "bugs": {
+    "url": "https://github.com/diip3sh/bb-plugin-beautiful-chat/issues"
+  },
+  "keywords": [
+    "bb-plugin",
+    "theme",
+    "ui",
+    "chat",
+    "animation"
+  ]
+}

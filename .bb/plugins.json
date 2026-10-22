@@ -1,0 +1,19 @@
+{
+  "$schema": "https://getbb.app/schemas/plugins.schema.json",
+  "schemaVersion": 1,
+  "name": "dwang-bb-plugins",
+  "plugins": [
+    {
+      "name": "kanban",
+      "source": "./kanban"
+    },
+    {
+      "name": "aura",
+      "source": "./aura"
+    },
+    {
+      "name": "beautiful-chat",
+      "source": "./beautiful-chat"
+    }
+  ]
+}

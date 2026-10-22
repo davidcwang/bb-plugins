@@ -1,0 +1,5 @@
+node_modules/
+dist/
+# Vendored third-party plugins ship their built artifacts; bb installs from dist/.
+!beautiful-chat/dist/
+!aura/dist/
