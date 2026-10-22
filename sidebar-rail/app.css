@@ -1,0 +1,109 @@
+/* Sidebar Rail — when BB's sidebar is collapsed (⌘\), keep a narrow icon rail
+   instead of hiding it. BB still thinks the sidebar is collapsed; these rules
+   only pull the off-canvas panel back on screen at rail width and hide
+   everything but the icons. app.tsx sets html[data-sidebar-rail]. */
+
+@media (min-width: 768px) {
+  html[data-sidebar-rail] {
+    --sidebar-rail-width: 48px;
+  }
+
+  /* Snap between full and rail instead of BB's 200 ms width/left slide. */
+  html[data-sidebar-rail] [data-side="left"] > [data-sidebar="gap"],
+  html[data-sidebar-rail] [data-side="left"] > [data-sidebar="panel"],
+  html[data-sidebar-rail] [data-side="left"] ~ [data-sidebar="inset"] [data-testid="app-page-header-content-row"] {
+    transition: none !important;
+  }
+
+  /* Reserve the rail's width in the layout and show the panel at that width. */
+  html[data-sidebar-rail] [data-side="left"][data-state="collapsed"] > [data-sidebar="gap"] {
+    width: var(--sidebar-rail-width) !important;
+  }
+  html[data-sidebar-rail] [data-side="left"][data-state="collapsed"] > [data-sidebar="panel"] {
+    left: 0 !important;
+    width: var(--sidebar-rail-width) !important;
+    visibility: visible !important;
+  }
+
+  /* Keep the chrome row's height (the traffic lights sit there) but not its
+     back/forward buttons. The resize handle stays: app.tsx expands the rail
+     when its edge is dragged outward. */
+  html[data-sidebar-rail] [data-state="collapsed"] [data-testid="app-sidebar-top-reserve-row"] > * {
+    display: none !important;
+  }
+
+  /* Navigation rows become square icon buttons. */
+  html[data-sidebar-rail] [data-state="collapsed"] [data-sidebar-navigation-item] > button,
+  html[data-sidebar-rail] [data-state="collapsed"] [data-testid="sidebar-navigation-more-trigger"] {
+    width: 32px !important;
+    padding: 0 !important;
+    justify-content: center !important;
+  }
+  html[data-sidebar-rail] [data-state="collapsed"] [data-sidebar-navigation-item] > button > span,
+  html[data-sidebar-rail] [data-state="collapsed"] [data-sidebar-navigation-item] > [data-sidebar-hover-actions-mobile],
+  html[data-sidebar-rail] [data-state="collapsed"] [data-testid="sidebar-navigation-more-trigger"] > span {
+    display: none !important;
+  }
+
+  /* Threads become monogram badges (app.tsx tags each row's inset span with
+     data-rail-initials and data-rail-hue). Section labels and row actions go. */
+  html[data-sidebar-rail] [data-state="collapsed"] [data-sidebar="content"] {
+    overflow-x: hidden;
+    scrollbar-width: none;
+  }
+  html[data-sidebar-rail] [data-state="collapsed"] [data-sidebar="content"] [data-sidebar="group-label"] {
+    display: none !important;
+  }
+  html[data-sidebar-rail] [data-state="collapsed"] .bb-sidebar-hover-actions-row:has(> [data-rail-initials]) {
+    width: 32px;
+    padding: 0 !important;
+    justify-content: center;
+  }
+  html[data-sidebar-rail] [data-state="collapsed"] .bb-sidebar-hover-actions-row:has(> [data-rail-initials]) > :not([data-rail-initials]),
+  html[data-sidebar-rail] [data-state="collapsed"] [data-rail-initials] > :not([data-sidebar-thread-shortcut-target]) {
+    display: none !important;
+  }
+  html[data-sidebar-rail] [data-state="collapsed"] [data-rail-initials] {
+    flex: none;
+    justify-content: center;
+  }
+  html[data-sidebar-rail] [data-state="collapsed"] [data-rail-initials][data-rail-current]::before {
+    box-shadow: 0 0 0 2px var(--sidebar), 0 0 0 3.5px var(--sidebar-foreground);
+  }
+
+  /* Footer icons stack vertically; the update badge keeps only its icon. */
+  html[data-sidebar-rail] [data-state="collapsed"] [data-sidebar="footer"] ul {
+    flex-direction: column;
+  }
+  html[data-sidebar-rail] [data-state="collapsed"] [data-sidebar="footer"] > ul > li {
+    flex: none;
+  }
+  html[data-sidebar-rail] [data-state="collapsed"] [data-testid="sidebar-updates-badge-bb"] {
+    gap: 0;
+    padding: 0 6px;
+    font-size: 0;
+  }
+
+  /* Collapsed, BB pads the first pane header past the traffic lights and the
+     sidebar toggle. The rail already covers part of that distance. */
+  html[data-sidebar-rail] [data-side="left"][data-state="collapsed"] ~ [data-sidebar="inset"] [data-testid="app-page-header-content-row"].pl-\[104px\] {
+    padding-left: calc(104px - var(--sidebar-rail-width)) !important;
+  }
+}
+
+/* The thread badge, identical in the expanded sidebar (in front of each title)
+   and the rail, so colours and letters map one-to-one between the two. */
+html[data-sidebar-rail] [data-rail-initials]::before {
+  content: attr(data-rail-initials);
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: white;
+  background: hsl(attr(data-rail-hue type(<number>), 210) 45% 42%);
+}
