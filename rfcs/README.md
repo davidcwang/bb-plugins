@@ -57,6 +57,30 @@ and watch the preview in one place. Each row also lists its live threads and
 offers "Start/Another thread". The directory listing shows instantly; the
 filename search merges in a moment later, and results are cached for 30 s.
 
+**Items and Walkthrough** views, backed by a sidecar file `<rfc>.rfcs.json`
+beside the RFC (so git carries it):
+
+- **Notes** anchored to sections, each with a status (open, decided, blocked,
+  superseded), an optional resolution, and its own hidden discussion thread.
+  Add one from the selection toolbar, from a section's "+ note", from the
+  Items list, or let the agent record decisions with `rfc_note_add`.
+- **Explainer cards**: select text in the preview and pick Explain, Code,
+  Data, Flow, or Ask. A hidden thread reads the RFC (and the workspace) and
+  publishes a card under that section: markdown, an optional diagram, and
+  code references rendered with bb's source viewer and file links. Cards stay
+  collapsed until opened; each has a follow-up conversation.
+- **Glossary**: terms and IDs (S12, A2, OIDC) with one-line definitions.
+  Each section lists the terms it mentions; hover or click for the
+  definition, or expand them all. "Build from document" asks the agent to
+  define everything the RFC uses.
+- **Claims register**: the facts the design depends on, with source, status
+  (verified, assumed, stale, superseded), verification date and vendor
+  version. "Audit claims" asks the agent to extract and re-verify them.
+  Sections show a count of unverified claims.
+- **Walkthrough**: ordered teaching steps (problem, answer, moving parts,
+  main flow, hard decisions, unverified bits) with diagrams and code refs,
+  navigable with ← → or j/k. "Generate walkthrough" takes an audience.
+
 A **file opener** for `.md` / `.markdown` also ships: when a markdown file
 opened in the panel contains a mermaid or D2 fence, this plugin renders it;
 otherwise bb's built-in preview is used unchanged.

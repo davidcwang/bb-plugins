@@ -10,7 +10,10 @@ import { Markdown, ThreadChat, definePluginApp, useBbNavigate, useRealtime, useR
 import mermaid from "mermaid";
 import { toast } from "sonner";
 import type { Candidate, DocRead, DocRef, Finding, LibraryItem, ReviewState, rpcContract } from "./server";
-import { CHANGED, PRIORITIES, markdownBlocks, parseFrontmatter, splitDocument, type ChangedPayload, type DocSegment, type Priority } from "./shared";
+import { CHANGED, PRIORITIES, markdownBlocks, parseFrontmatter, splitSections, type ChangedPayload, type DocSection, type Priority } from "./shared";
+import type { Anchor, CardMode } from "./sidecar";
+import { CardView, ItemsView, SectionChrome, SelectionToolbar, WalkthroughView, itemsForSection, useSelectionActions, useSidecar, type DiagramRenderer, type ItemsTab } from "./app-sidecar";
+import type { Sidecar } from "./sidecar";
 import { Button } from "@/components/ui/button";
 import { ICON_NAMES, Icon, iconComponent } from "./icons";
 import { Input } from "@/components/ui/input";
@@ -468,30 +471,98 @@ function Frontmatter({ meta }: { meta: Record<string, string> }) {
   );
 }
 
-export function RfcPreview({ rpc, content, className }: { rpc: Rpc; content: string; className?: string }) {
+export interface PreviewAnnotations {
+  threadId: string;
+  sidecar: Sidecar | null;
+  environmentId: string | null;
+  termsExpanded: boolean;
+  onAddNote: (anchor: Anchor, text: string | null) => void;
+  onExplain: (anchor: Anchor, mode: CardMode, prompt: string) => void;
+  onOpenItems: (tab: ItemsTab, section: string | null) => void;
+}
+
+/** Diagram renderer handed to sidecar cards and walkthrough steps. */
+function DiagramAny({ lang, source, startLine }: { lang: "mermaid" | "d2"; source: string; startLine: number }) {
+  const rpc = useRpc<typeof rpcContract>();
   const dark = useIsDark();
-  const { meta, body, offset } = useMemo(() => {
-    const fm = parseFrontmatter(content);
-    if (fm === null) return { meta: null, body: content, offset: 0 };
-    const consumed = content.length - fm.body.length;
-    return { meta: fm.meta, body: fm.body, offset: content.slice(0, consumed).split("\n").length - 1 };
-  }, [content]);
-  const segments = useMemo(() => splitDocument(body), [body]);
+  return lang === "mermaid" ? <MermaidBlock source={source} startLine={startLine} dark={dark} /> : <D2Block rpc={rpc} source={source} startLine={startLine} dark={dark} />;
+}
+const DiagramForCards: DiagramRenderer = DiagramAny;
+
+export function docSections(content: string): { meta: Record<string, string> | null; sections: DocSection[] } {
+  const fm = parseFrontmatter(content);
+  if (fm === null) return { meta: null, sections: splitSections(content, 0) };
+  const offset = content.slice(0, content.length - fm.body.length).split("\n").length - 1;
+  return { meta: fm.meta, sections: splitSections(fm.body, offset) };
+}
+
+export function RfcPreview({ rpc, content, className, annotate }: { rpc: Rpc; content: string; className?: string; annotate?: PreviewAnnotations }) {
+  const dark = useIsDark();
+  const { meta, sections } = useMemo(() => docSections(content), [content]);
+  const articleRef = useRef<HTMLElement>(null);
+  const { selection, clear } = useSelectionActions(articleRef, annotate === undefined ? "" : content);
+  const sidecar = annotate?.sidecar ?? null;
   return (
-    <article className={cn("rfc-preview px-4 py-3", className)}>
+    <article ref={articleRef} className={cn("rfc-preview relative px-4 py-3", className)}>
       {meta !== null ? <Frontmatter meta={meta} /> : null}
-      {segments.map((segment: DocSegment, index) => {
-        const key = `${segment.kind}:${segment.startLine}:${hashString(segment.text)}`;
-        if (segment.kind === "markdown")
-          return (
-            <div key={key} data-src-line={segment.startLine + offset} data-md="">
-              <Markdown content={segment.text} />
-            </div>
-          );
-        if (segment.lang === "mermaid") return <MermaidBlock key={key} source={segment.text} startLine={segment.startLine + offset} dark={dark} />;
-        return <D2Block key={key} rpc={rpc} source={segment.text} startLine={segment.startLine + offset} dark={dark} />;
+      {sections.map((section, index) => {
+        const next = sections[index + 1]?.startLine ?? null;
+        const notes = sidecar === null ? [] : itemsForSection(sidecar.notes, section, next);
+        const claims = sidecar === null ? [] : itemsForSection(sidecar.claims, section, next);
+        const cards = sidecar === null ? [] : itemsForSection(sidecar.cards, section, next);
+        const key = `s:${section.startLine}:${hashString(section.text)}`;
+        return (
+          <section key={key} data-section={section.heading?.title ?? ""} data-section-line={section.startLine} className="rfc-section">
+            {annotate !== undefined && (section.heading !== null || notes.length + claims.length + cards.length > 0) ? (
+              <SectionChrome
+                section={section}
+                notes={notes}
+                claims={claims}
+                cards={cards}
+                glossary={sidecar?.glossary ?? []}
+                termsExpanded={annotate.termsExpanded}
+                onAddNote={(anchor) => annotate.onAddNote(anchor, null)}
+                onExplain={annotate.onExplain}
+                onOpenItems={annotate.onOpenItems}
+              />
+            ) : null}
+            {section.segments.map((segment) => {
+              const segKey = `${segment.kind}:${segment.startLine}:${hashString(segment.text)}`;
+              if (segment.kind === "markdown")
+                return (
+                  <div key={segKey} data-src-line={segment.startLine} data-md="">
+                    <Markdown content={segment.text} />
+                  </div>
+                );
+              if (segment.lang === "mermaid") return <MermaidBlock key={segKey} source={segment.text} startLine={segment.startLine} dark={dark} />;
+              return <D2Block key={segKey} rpc={rpc} source={segment.text} startLine={segment.startLine} dark={dark} />;
+            })}
+            {annotate !== undefined && cards.length > 0 ? (
+              <div className="rfc-cards mb-2">
+                {cards.map((card) => (
+                  <CardView key={card.id} rpc={rpc} threadId={annotate.threadId} card={card} environmentId={annotate.environmentId} Diagram={DiagramForCards} defaultOpen={card.status === "pending"} />
+                ))}
+              </div>
+            ) : null}
+          </section>
+        );
       })}
-      {segments.length === 0 ? <p className="text-sm text-muted-foreground">Empty document.</p> : null}
+      {sections.length === 0 ? <p className="text-sm text-muted-foreground">Empty document.</p> : null}
+      {annotate !== undefined && selection !== null ? (
+        <SelectionToolbar
+          selection={selection}
+          onNote={(anchor, text) => {
+            annotate.onAddNote(anchor, text);
+            clear();
+            window.getSelection()?.removeAllRanges();
+          }}
+          onExplain={(anchor, mode, prompt) => {
+            annotate.onExplain(anchor, mode, prompt);
+            clear();
+            window.getSelection()?.removeAllRanges();
+          }}
+        />
+      ) : null}
     </article>
   );
 }
@@ -555,15 +626,12 @@ function previewAnchors(container: HTMLElement, content: string): Array<{ line: 
   const base = container.getBoundingClientRect().top - container.scrollTop;
   const topOf = (el: Element) => el.getBoundingClientRect().top - base;
   const anchors: Array<{ line: number; top: number }> = [{ line: 1, top: 0 }];
-  const fm = parseFrontmatter(content);
-  const body = fm?.body ?? content;
-  const offset = fm === null ? 0 : content.slice(0, content.length - body.length).split("\n").length - 1;
-  const mdSegments = splitDocument(body).filter((seg) => seg.kind === "markdown");
+  const mdSegments = docSections(content).sections.flatMap((sec) => sec.segments).filter((seg) => seg.kind === "markdown");
   const wrappers = Array.from(container.querySelectorAll("[data-md]"));
   wrappers.forEach((wrapper, w) => {
     const seg = mdSegments[w];
     if (seg === undefined) return;
-    const segLine = seg.startLine + offset;
+    const segLine = seg.startLine;
     anchors.push({ line: segLine, top: topOf(wrapper) });
     const elems = Array.from(wrapper.querySelectorAll("h1, h2, h3, h4, h5, h6, p, li, tr, pre, blockquote"));
     const keys = elems.map((el) => matchKey(el.textContent ?? ""));
@@ -1348,18 +1416,20 @@ function DocChooser({ rpc, threadId, context, onChanged }: { rpc: Rpc; threadId:
 
 // ---- panel ---------------------------------------------------------------
 
-type View = "preview" | "edit" | "split" | "review";
-const VIEWS: View[] = ["split", "edit", "preview", "review"];
+type View = "preview" | "edit" | "split" | "review" | "items" | "walkthrough";
+const VIEWS: View[] = ["split", "edit", "preview", "review", "items", "walkthrough"];
 const DEFAULT_VIEW: View = "split";
 const VIEW_TABS: Array<{ id: View; title: string; icon: string }> = [
   { id: "split", title: "Split", icon: "Columns2" },
   { id: "edit", title: "Edit", icon: "Pencil" },
   { id: "preview", title: "Preview", icon: "Eye" },
   { id: "review", title: "Review", icon: "ListChecks" },
+  { id: "items", title: "Items", icon: "ListTodo" },
+  { id: "walkthrough", title: "Walkthrough", icon: "Play" },
 ];
 const isView = (v: string | null): v is View => v !== null && (VIEWS as string[]).includes(v);
 
-function ViewTabs({ view, onChange, pending, compact = false }: { view: View; onChange: (v: View) => void; pending: number; compact?: boolean }) {
+function ViewTabs({ view, onChange, pending, badges = {}, compact = false }: { view: View; onChange: (v: View) => void; pending: number; badges?: Partial<Record<View, number>>; compact?: boolean }) {
   return (
     <>
       {VIEW_TABS.map((t) => (
@@ -1380,9 +1450,21 @@ function ViewTabs({ view, onChange, pending, compact = false }: { view: View; on
           <Icon name={t.icon} className={compact ? "size-3.5" : "size-4"} />
           {t.title}
           {t.id === "review" && pending > 0 ? <span className="rounded-full bg-primary/15 px-1.5 text-[10px] text-primary">{pending}</span> : null}
+          {t.id !== "review" && (badges[t.id] ?? 0) > 0 ? <span className="rounded-full bg-amber-500/15 px-1.5 text-[10px] text-amber-700 dark:text-amber-400">{badges[t.id]}</span> : null}
         </button>
       ))}
     </>
+  );
+}
+
+function PreviewToolbar({ termsExpanded, onToggleTerms, hasTerms }: { termsExpanded: boolean; onToggleTerms: () => void; hasTerms: boolean }) {
+  if (!hasTerms) return null;
+  return (
+    <div className="sticky top-0 z-10 flex justify-end px-3 pt-1">
+      <button type="button" onClick={onToggleTerms} className="rounded border border-border bg-background/90 px-1.5 py-0.5 text-[10px] text-muted-foreground backdrop-blur hover:text-foreground">
+        {termsExpanded ? "Collapse terms" : "Expand terms"}
+      </button>
+    </div>
   );
 }
 
@@ -1413,6 +1495,80 @@ function RfcPanel({
   const docPath = context?.doc?.path ?? null;
   const { doc, error: docError, reload: reloadDoc } = useDoc(rpc, threadId, docPath, view !== "review");
   const { review } = useReview(rpc, threadId);
+  const { sidecar } = useSidecar(rpc, threadId, true);
+  const openNotes = sidecar?.notes.filter((n) => n.status === "open" || n.status === "blocked").length ?? 0;
+  const [itemsTab, setItemsTab] = useState<ItemsTab>("notes");
+  const [itemsSection, setItemsSection] = useState<string | null>(null);
+  const [termsExpanded, setTermsExpandedState] = useState(() => recall("termsExpanded") === "on");
+  const setTermsExpanded = (v: boolean) => {
+    setTermsExpandedState(v);
+    remember("termsExpanded", v ? "on" : "off");
+  };
+  const pendingJump = useRef<Anchor | null>(null);
+  const jumpTo = (anchor: Anchor) => {
+    pendingJump.current = anchor;
+    if (view !== "preview" && view !== "split") setView("preview");
+    else performJump();
+  };
+  const performJump = () => {
+    const anchor = pendingJump.current;
+    if (anchor === null) return;
+    const root = document;
+    let target: Element | null = null;
+    if (anchor.section !== null) {
+      for (const el of Array.from(root.querySelectorAll<HTMLElement>("section[data-section]"))) {
+        if (el.dataset.section !== undefined && el.dataset.section !== "" && anchor.section.toLowerCase().startsWith(el.dataset.section.toLowerCase().slice(0, 20))) {
+          target = el;
+          break;
+        }
+      }
+    }
+    if (target === null && anchor.line !== null) {
+      let best: { el: Element; line: number } | null = null;
+      for (const el of Array.from(root.querySelectorAll<HTMLElement>("section[data-section-line]"))) {
+        const line = Number(el.dataset.sectionLine);
+        if (line <= anchor.line && (best === null || line > best.line)) best = { el, line };
+      }
+      target = best?.el ?? null;
+    }
+    if (target !== null) {
+      target.scrollIntoView({ block: "start", behavior: "smooth" });
+      target.classList.add("rfc-jump-flash");
+      window.setTimeout(() => target?.classList.remove("rfc-jump-flash"), 1600);
+      pendingJump.current = null;
+    }
+  };
+  useEffect(() => {
+    if (pendingJump.current === null) return;
+    const t = window.setTimeout(performJump, 120);
+    return () => window.clearTimeout(t);
+  });
+  const addNote = (anchor: Anchor, text: string | null) => {
+    const title = window.prompt(text === null ? `Note on ${anchor.section ?? "this document"}` : "Note title", text === null ? "" : text.slice(0, 80));
+    if (title === null || title.trim() === "") return;
+    void rpc
+      .call("note_add", { threadId, anchor, title: title.trim(), body: "", status: "open", discuss: false })
+      .then(() => toast.success("Note added. Find it under Items."), (cause: unknown) => toast.error(describe(cause)));
+  };
+  const explain = (anchor: Anchor, mode: CardMode, prompt: string) => {
+    void rpc
+      .call("card_open", { threadId, anchor, mode, prompt })
+      .then(() => toast.success("Writing an explainer card; it appears under the section."), (cause: unknown) => toast.error(describe(cause)));
+  };
+  const openItems = (tab: ItemsTab, section: string | null) => {
+    setItemsTab(tab);
+    setItemsSection(section);
+    setView("items");
+  };
+  const annotate: PreviewAnnotations = {
+    threadId,
+    sidecar,
+    environmentId: context?.environmentId ?? null,
+    termsExpanded,
+    onAddNote: addNote,
+    onExplain: explain,
+    onOpenItems: openItems,
+  };
   // In Split view the editor is the source of truth for position (it restores
   // its own scroll and the preview follows), so only Preview restores itself.
   const previewScroll = useScrollMemory<HTMLDivElement>(`preview:${threadId}`, doc !== undefined && doc !== null && view === "preview");
@@ -1452,7 +1608,7 @@ function RfcPanel({
     <div className="flex h-full min-h-0 flex-col">
       {embedded ? null : (
         <div className="flex items-center gap-1 border-b border-border px-2 pt-1">
-          <ViewTabs view={view} onChange={setView} pending={pending} />
+          <ViewTabs view={view} onChange={setView} pending={pending} badges={{ items: openNotes }} />
           {context?.doc ? (
             <button type="button" className="ml-auto flex items-center gap-1 px-2 text-xs text-muted-foreground hover:text-foreground" onClick={openExternally} title={context.doc.path}>
               <Icon name="ExternalLink" className="size-3.5" />
@@ -1475,6 +1631,10 @@ function RfcPanel({
           {view === "review" || embedded ? null : <DocChooser rpc={rpc} threadId={threadId} context={context} onChanged={reload} />}
           {view === "review" ? (
             <ReviewTab rpc={rpc} threadId={threadId} hasDoc={context.doc !== null} />
+          ) : view === "items" ? (
+            <ItemsView rpc={rpc} threadId={threadId} sidecar={sidecar} initialTab={itemsTab} sectionFilter={itemsSection} onJump={jumpTo} />
+          ) : view === "walkthrough" ? (
+            <WalkthroughView rpc={rpc} threadId={threadId} sidecar={sidecar} environmentId={context.environmentId} Diagram={DiagramForCards} onJump={jumpTo} />
           ) : context.doc === null ? (
             <div className="p-4 text-sm text-muted-foreground">
               <p>No RFC is open on this thread.</p>
@@ -1500,8 +1660,9 @@ function RfcPanel({
               </Button>
             </div>
           ) : view === "preview" ? (
-            <div ref={previewScroll.ref} onScroll={previewScroll.onScroll} className="min-h-0 flex-1 overflow-auto">
-              <RfcPreview rpc={rpc} content={doc.content} />
+            <div ref={previewScroll.ref} onScroll={previewScroll.onScroll} className="relative min-h-0 flex-1 overflow-auto">
+              <PreviewToolbar termsExpanded={termsExpanded} onToggleTerms={() => setTermsExpanded(!termsExpanded)} hasTerms={(sidecar?.glossary.length ?? 0) > 0} />
+              <RfcPreview rpc={rpc} content={doc.content} annotate={annotate} />
             </div>
           ) : view === "edit" ? (
             <RfcEditor key={context.doc.path} rpc={rpc} threadId={threadId} doc={doc} onSaved={reloadDoc} />
@@ -1510,8 +1671,9 @@ function RfcPanel({
               storageKey="editor"
               left={<RfcEditor key={context.doc.path} rpc={rpc} threadId={threadId} doc={doc} onSaved={reloadDoc} sync={sync} />}
               right={
-                <div ref={splitPreviewRef} onScroll={() => sync.follow("preview")} className="min-h-0 flex-1 overflow-auto">
-                  <RfcPreview rpc={rpc} content={doc.content} />
+                <div ref={splitPreviewRef} onScroll={() => sync.follow("preview")} className="relative min-h-0 flex-1 overflow-auto">
+                  <PreviewToolbar termsExpanded={termsExpanded} onToggleTerms={() => setTermsExpanded(!termsExpanded)} hasTerms={(sidecar?.glossary.length ?? 0) > 0} />
+                  <RfcPreview rpc={rpc} content={doc.content} annotate={annotate} />
                 </div>
               }
             />
@@ -1855,6 +2017,8 @@ function RfcWorkspace({ threadId, item, onBack }: { threadId: string; item: Libr
   const rpc = useRpc<typeof rpcContract>();
   const { review } = useReview(rpc, threadId);
   const pending = review?.findings.filter((f) => f.status === "pending" && f.round === review.round).length ?? 0;
+  const { sidecar: wsSidecar } = useSidecar(rpc, threadId, true);
+  const openNotes = wsSidecar?.notes.filter((n) => n.status === "open" || n.status === "blocked").length ?? 0;
   const [view, setViewState] = useState<View>(() => {
     const stored = recall(`view:${threadId}`);
     return isView(stored) ? stored : DEFAULT_VIEW;
@@ -1891,7 +2055,7 @@ function RfcWorkspace({ threadId, item, onBack }: { threadId: string; item: Libr
         </span>
         {item?.status ? <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[10px] uppercase", statusTone(item.status))}>{item.status}</span> : null}
         <div className="mx-1 flex shrink-0 items-center gap-0.5 border-l border-border pl-2">
-          <ViewTabs view={view} onChange={setView} pending={pending} compact />
+          <ViewTabs view={view} onChange={setView} pending={pending} badges={{ items: openNotes }} compact />
         </div>
         <div className="flex shrink-0 items-center border-l border-border pl-1">
           {item !== null ? (

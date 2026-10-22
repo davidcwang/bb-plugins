@@ -22,6 +22,29 @@ import {
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { CHANGED, PRIORITIES, SEVERITIES, outline, parseFrontmatter, type Priority, type Severity } from "./shared";
+import {
+  CARD_MODES,
+  CARD_MODE_LABEL,
+  CLAIM_STATUSES,
+  NOTE_STATUSES,
+  anchorSchema,
+  cardSchema,
+  claimSchema,
+  codeRefSchema,
+  diagramSchema,
+  emptySidecar,
+  noteSchema,
+  sidecarPathFor,
+  sidecarSchema,
+  termSchema,
+  walkthroughSchema,
+  walkthroughStepSchema,
+  type Card,
+  type CardMode,
+  type Claim,
+  type Note,
+  type Sidecar,
+} from "./sidecar";
 
 const REVIEW_TIMEOUT_MS = 20 * 60 * 1000;
 const MAX_FINDINGS = 60;
@@ -137,6 +160,89 @@ export const rpcContract = defineRpcContract({
     // Create a new RFC from the template in the project's RFC directory and start a thread on it.
     input: z.object({ title: z.string().trim().min(1).max(200), projectId: z.string().nullable() }),
     output: z.object({ threadId: z.string(), path: z.string() }),
+  },
+  sidecar_get: {
+    input: z.object({ threadId: z.string() }),
+    output: sidecarSchema.nullable(),
+  },
+  note_add: {
+    input: z.object({
+      threadId: z.string(),
+      anchor: anchorSchema,
+      title: z.string().min(1).max(200),
+      body: z.string().max(8000).default(""),
+      status: z.enum(NOTE_STATUSES).default("open"),
+      /** Open a discussion thread for it right away. */
+      discuss: z.boolean().default(false),
+    }),
+    output: noteSchema,
+  },
+  note_update: {
+    input: z.object({
+      threadId: z.string(),
+      id: z.string(),
+      title: z.string().min(1).max(200).optional(),
+      body: z.string().max(8000).optional(),
+      status: z.enum(NOTE_STATUSES).optional(),
+      resolution: z.string().max(8000).nullable().optional(),
+    }),
+    output: noteSchema,
+  },
+  note_remove: {
+    input: z.object({ threadId: z.string(), id: z.string() }),
+    output: z.object({ ok: z.literal(true) }),
+  },
+  note_discuss: {
+    input: z.object({ threadId: z.string(), id: z.string() }),
+    output: z.object({ discussThreadId: z.string() }),
+  },
+  card_open: {
+    input: z.object({
+      threadId: z.string(),
+      anchor: anchorSchema,
+      mode: z.enum(CARD_MODES),
+      /** Selected text, or the user's question for mode "question". */
+      prompt: z.string().min(1).max(2000),
+    }),
+    output: cardSchema,
+  },
+  card_remove: {
+    input: z.object({ threadId: z.string(), id: z.string() }),
+    output: z.object({ ok: z.literal(true) }),
+  },
+  term_set: {
+    input: z.object({ threadId: z.string(), term: termSchema }),
+    output: z.object({ count: z.number() }),
+  },
+  term_remove: {
+    input: z.object({ threadId: z.string(), term: z.string() }),
+    output: z.object({ count: z.number() }),
+  },
+  glossary_request: {
+    // Ask the RFC thread to build/refresh the glossary from the document.
+    input: z.object({ threadId: z.string() }),
+    output: z.object({ ok: z.literal(true) }),
+  },
+  claim_upsert: {
+    input: z.object({ threadId: z.string(), claim: claimSchema.partial({ id: true, updatedAt: true }) }),
+    output: claimSchema,
+  },
+  claim_remove: {
+    input: z.object({ threadId: z.string(), id: z.string() }),
+    output: z.object({ ok: z.literal(true) }),
+  },
+  claims_audit: {
+    // Ask the RFC thread to extract/refresh claims from the document and re-verify the stale ones.
+    input: z.object({ threadId: z.string(), focus: z.string().max(2000).default("") }),
+    output: z.object({ ok: z.literal(true) }),
+  },
+  walkthrough_request: {
+    input: z.object({ threadId: z.string(), audience: z.string().max(300).default("") }),
+    output: z.object({ ok: z.literal(true) }),
+  },
+  walkthrough_remove: {
+    input: z.object({ threadId: z.string(), id: z.string() }),
+    output: z.object({ ok: z.literal(true) }),
   },
   context_get: {
     input: z.object({ threadId: z.string() }),
@@ -989,8 +1095,237 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
+  // ---- sidecar (notes, cards, glossary, claims, walkthroughs) ----
+  async function readSidecarAt(path: string, hostId: string | null): Promise<{ data: Sidecar; sha: string | null }> {
+    const file = await readFileAt(path, hostId);
+    if (file === null) return { data: emptySidecar(), sha: null };
+    try {
+      const parsed = sidecarSchema.safeParse(JSON.parse(file.content));
+      return { data: parsed.success ? parsed.data : emptySidecar(), sha: file.sha256 };
+    } catch {
+      return { data: emptySidecar(), sha: file.sha256 };
+    }
+  }
+  async function sidecarFor(threadId: string) {
+    const doc = await readDoc(threadId);
+    if (doc === null) throw new Error("No RFC is open on this thread.");
+    return { doc, path: sidecarPathFor(doc.path) };
+  }
+  async function readSidecar(threadId: string): Promise<Sidecar | null> {
+    const doc = await readDoc(threadId);
+    if (doc === null) return null;
+    return (await readSidecarAt(sidecarPathFor(doc.path), doc.hostId)).data;
+  }
+  const sidecarQueues = new Map<string, Promise<unknown>>();
+  /** Read-modify-write under a per-file queue, with a compare-and-swap retry. */
+  function mutateSidecar<T>(threadId: string, fn: (data: Sidecar) => T | Promise<T>): Promise<T> {
+    const run = async () => {
+      const { doc, path } = await sidecarFor(threadId);
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const { data, sha } = await readSidecarAt(path, doc.hostId);
+        const result = await fn(data);
+        const written = await bb.sdk.files.write({
+          path,
+          content: `${JSON.stringify(data, null, 2)}\n`,
+          createParents: true,
+          expectedSha256: sha,
+          ...fileArgs(doc.hostId),
+        });
+        if (written.outcome === "written") {
+          bb.realtime.publish(CHANGED, { threadId, kind: "sidecar" });
+          return result;
+        }
+      }
+      throw new Error("The RFC sidecar kept changing underneath us; try again.");
+    };
+    const prev = sidecarQueues.get(threadId) ?? Promise.resolve();
+    const next = prev.then(run, run);
+    sidecarQueues.set(threadId, next.catch(() => undefined));
+    return next;
+  }
+  const anchorText = (a: { section: string | null; line: number | null; quote: string | null }) =>
+    [a.section === null ? null : `section "${a.section}"`, a.line === null ? null : `line ${a.line}`, a.quote === null ? null : `quote: "${a.quote}"`]
+      .filter((x): x is string => x !== null)
+      .join(", ");
+
+  async function openNoteThread(threadId: string, noteId: string): Promise<string> {
+    const data = await readSidecar(threadId);
+    const note = data?.notes.find((n) => n.id === noteId);
+    if (note === undefined) throw new Error("Note not found.");
+    if (note.threadId !== null) return note.threadId;
+    const { doc } = await sidecarFor(threadId);
+    const prompt = [
+      `You are discussing one design note on the RFC at ${JSON.stringify(doc.path)}. Read the RFC first, then the note. Help the user think it through: surface trade-offs, missing facts, and what would settle it. Stay on this note.`,
+      `Note: ${note.title}`,
+      anchorText(note.anchor) === "" ? null : `Where: ${anchorText(note.anchor)}`,
+      note.body.trim() === "" ? null : note.body,
+      `When the user reaches a decision, call rfc_note_update with status "decided" (or "superseded"/"blocked") and a one-paragraph resolution that records what was decided and why. Do not edit the RFC here unless the user explicitly asks.`,
+      "Start by restating the question in one or two sentences, then wait for the user.",
+    ]
+      .filter((p): p is string => p !== null)
+      .join("\n\n");
+    const id = await spawnHidden(threadId, `Note: ${note.title}`, prompt, { noteFor: threadId, noteId });
+    await mutateSidecar(threadId, (d) => {
+      const n = d.notes.find((x) => x.id === noteId);
+      if (n !== undefined) n.threadId = id;
+    });
+    return id;
+  }
+
+  const cardInstructions: Record<CardMode, string> = {
+    concept:
+      "Explain the concept the selection relies on, for a strong engineer who is new to this system. Define terms, say why it exists, how it works, and the one or two gotchas that matter here. Prefer a short mermaid or D2 diagram when a picture carries more than prose.",
+    code: "Find the code path behind the selection in the workspace (grep, read files). Report it as an ordered list of hops with file paths and line ranges in `files`, each with a short snippet and a one-line note on what that hop does. Point out where behaviour is decided (branches, config) and anything that contradicts the RFC text.",
+    data: "Describe the data model behind the selection: tables/structs/protos, their key fields, ownership, and relationships. Render it as a D2 diagram using sql_table shapes (or a mermaid erDiagram) and list the defining files in `files`.",
+    flow: "Describe the end-to-end flow behind the selection as a mermaid sequenceDiagram (participants = systems/services, messages = the actual calls/events), then a numbered narration with what can fail at each step and how it is detected.",
+    question: "Answer the user's question about the selection precisely, citing sections of the RFC or files in the workspace. If the answer is uncertain, say what would settle it.",
+  };
+
+  async function openCard(threadId: string, input: { anchor: Card["anchor"]; mode: CardMode; prompt: string }): Promise<Card> {
+    const { doc } = await sidecarFor(threadId);
+    const nowIso = now();
+    const card: Card = {
+      id: newId("card"),
+      anchor: input.anchor,
+      mode: input.mode,
+      prompt: input.prompt,
+      title: input.mode === "question" ? input.prompt.slice(0, 120) : `${CARD_MODE_LABEL[input.mode]}: ${input.prompt.slice(0, 80)}`,
+      body: "",
+      diagram: null,
+      files: [],
+      status: "pending",
+      threadId: null,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+    await mutateSidecar(threadId, (d) => {
+      d.cards.push(card);
+    });
+    const prompt = [
+      `You are producing one explainer card for the RFC at ${JSON.stringify(doc.path)}. Read the RFC (at least the section involved) before answering.`,
+      `Selection${anchorText(input.anchor) === "" ? "" : ` (${anchorText(input.anchor)})`}:\n"""${input.prompt}"""`,
+      cardInstructions[input.mode],
+      `Publish the result with rfc_publish_card using cardId ${JSON.stringify(card.id)}: a short title, a markdown body, an optional diagram ({lang, source}; check D2 with rfc_check_diagram first), and \`files\` for any code you cite (workspace-relative path, startLine, endLine, snippet, note). Keep the body under ~400 words; put detail in the diagram and file references. After publishing, reply with one line and stop. The user may continue the conversation here with follow-up questions; answer them in chat and republish the card only if asked.`,
+    ].join("\n\n");
+    const hidden = await spawnHidden(threadId, `Explain: ${card.title}`, prompt, { explainFor: threadId, cardId: card.id });
+    return mutateSidecar(threadId, (d) => {
+      const c = d.cards.find((x) => x.id === card.id);
+      if (c !== undefined) c.threadId = hidden;
+      return c ?? card;
+    });
+  }
+
+  async function askRfcThread(threadId: string, text: string) {
+    await bb.sdk.threads.send({ threadId, mode: "auto", input: [{ type: "text", text, mentions: [] }] });
+  }
+
   // ---- RPC ----
   bb.rpc.register(rpcContract, {
+    sidecar_get: ({ threadId }) => readSidecar(threadId),
+    note_add: async ({ threadId, anchor, title, body, status, discuss }) => {
+      const nowIso = now();
+      const note: Note = { id: newId("note"), anchor, title, body, status, resolution: null, threadId: null, createdAt: nowIso, updatedAt: nowIso, createdBy: "user" };
+      await mutateSidecar(threadId, (d) => {
+        d.notes.push(note);
+      });
+      if (discuss) note.threadId = await openNoteThread(threadId, note.id);
+      return note;
+    },
+    note_update: ({ threadId, id, ...patch }) =>
+      mutateSidecar(threadId, (d) => {
+        const n = d.notes.find((x) => x.id === id);
+        if (n === undefined) throw new Error("Note not found.");
+        if (patch.title !== undefined) n.title = patch.title;
+        if (patch.body !== undefined) n.body = patch.body;
+        if (patch.status !== undefined) n.status = patch.status;
+        if (patch.resolution !== undefined) n.resolution = patch.resolution;
+        n.updatedAt = now();
+        return n;
+      }),
+    note_remove: ({ threadId, id }) =>
+      mutateSidecar(threadId, (d) => {
+        d.notes = d.notes.filter((x) => x.id !== id);
+        return { ok: true as const };
+      }),
+    note_discuss: async ({ threadId, id }) => ({ discussThreadId: await openNoteThread(threadId, id) }),
+    card_open: ({ threadId, ...input }) => openCard(threadId, input),
+    card_remove: ({ threadId, id }) =>
+      mutateSidecar(threadId, (d) => {
+        d.cards = d.cards.filter((x) => x.id !== id);
+        return { ok: true as const };
+      }),
+    term_set: ({ threadId, term }) =>
+      mutateSidecar(threadId, (d) => {
+        const i = d.glossary.findIndex((t) => t.term.toLowerCase() === term.term.toLowerCase());
+        if (i === -1) d.glossary.push(term);
+        else d.glossary[i] = term;
+        d.glossary.sort((a, b) => a.term.localeCompare(b.term));
+        return { count: d.glossary.length };
+      }),
+    term_remove: ({ threadId, term }) =>
+      mutateSidecar(threadId, (d) => {
+        d.glossary = d.glossary.filter((t) => t.term.toLowerCase() !== term.toLowerCase());
+        return { count: d.glossary.length };
+      }),
+    glossary_request: async ({ threadId }) => {
+      const { doc } = await sidecarFor(threadId);
+      await askRfcThread(
+        threadId,
+        `Build or refresh the glossary for the RFC at ${JSON.stringify(doc.path)}. Read it end to end and collect every acronym, vendor term, internal shorthand, and requirement/assumption/question ID (patterns like S12, O8, A2, Q13, P20, D6, T1, V1) that a strong engineer new to this system would have to look up. For each, call rfc_define_term once with the term, a one-line definition that says what it stands for and what it refers to in this RFC, aliases if the text spells it differently, and \`see\` pointing at the section or reference that explains it. Skip terms already in the glossary unless their definition is wrong. Reply with one line when done.`,
+      );
+      return { ok: true as const };
+    },
+    claim_upsert: ({ threadId, claim }) =>
+      mutateSidecar(threadId, (d) => {
+        const nowIso = now();
+        const existing = claim.id === undefined ? undefined : d.claims.find((c) => c.id === claim.id);
+        if (existing !== undefined) {
+          Object.assign(existing, { ...claim, updatedAt: nowIso });
+          return existing;
+        }
+        const created: Claim = { ...claim, id: claim.id ?? newId("claim"), updatedAt: nowIso };
+        d.claims.push(created);
+        return created;
+      }),
+    claim_remove: ({ threadId, id }) =>
+      mutateSidecar(threadId, (d) => {
+        d.claims = d.claims.filter((x) => x.id !== id);
+        return { ok: true as const };
+      }),
+    claims_audit: async ({ threadId, focus }) => {
+      const { doc } = await sidecarFor(threadId);
+      await askRfcThread(
+        threadId,
+        [
+          `Audit the claims register for the RFC at ${JSON.stringify(doc.path)}.`,
+          "1. Read the RFC and extract every factual claim the design depends on that could be wrong or go stale: vendor behaviour, API shapes, limits, versions, what exists in our code, what was observed in a spike. Skip opinions and goals.",
+          "2. Compare against the existing register (rfc_claims_upsert replaces by id; new claims get no id). For each claim set: key (the ID used in the text if any, e.g. A2, P20), text, source (doc/PDF/Slack/file/spike step), status (verified only if you can point at evidence dated within the RFC's current vendor version; assumed if it rests on docs or memory; stale if the vendor version moved since it was verified; superseded if the RFC no longer relies on it), verifiedAt, against (e.g. chart 0.25.0), and the section anchor.",
+          "3. Where the workspace holds evidence (spike logs, source, the vendor repo), check it and upgrade assumed to verified or flag contradictions in `note`.",
+          focus.trim() === "" ? null : `Focus: ${focus.trim()}`,
+          "Call rfc_claims_upsert in batches of up to 25. Finish with a three-line summary: counts per status and the top three claims that most need verifying.",
+        ]
+          .filter((p): p is string => p !== null)
+          .join("\n"),
+      );
+      return { ok: true as const };
+    },
+    walkthrough_request: async ({ threadId, audience }) => {
+      const { doc } = await sidecarFor(threadId);
+      await askRfcThread(
+        threadId,
+        [
+          `Create a walkthrough of the RFC at ${JSON.stringify(doc.path)}${audience.trim() === "" ? "" : ` for this audience: ${audience.trim()}`}.`,
+          "Read the RFC. Then build 6 to 14 ordered steps that teach the design the way you would explain it at a whiteboard: start with the problem and the one-sentence answer, then the moving parts, then the main flow, then the hard decisions and why, then what is unverified or risky. Each step has a title, a body (under ~250 words, plain language, expand every acronym the first time), an anchor to the RFC section it draws on, an optional diagram ({lang, source}; D2 for architecture, mermaid for sequences; check D2 with rfc_check_diagram), and `files` for code it cites.",
+          "Publish once with rfc_publish_walkthrough (title, audience, steps). Reply with one line and stop.",
+        ].join("\n"),
+      );
+      return { ok: true as const };
+    },
+    walkthrough_remove: ({ threadId, id }) =>
+      mutateSidecar(threadId, (d) => {
+        d.walkthroughs = d.walkthroughs.filter((x) => x.id !== id);
+        return { ok: true as const };
+      }),
     library_list: (input) => listLibrary(input?.force ?? false),
     library_read: async ({ path, hostId }) => {
       if (!isAbsolute(path) || !/\.(md|markdown)$/i.test(path)) return null;
@@ -1220,8 +1555,258 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  /** Which RFC thread a hidden helper thread belongs to; itself otherwise. */
+  async function ownerThread(threadId: string): Promise<string> {
+    const meta = await bb.sdk.threads.getPluginMetadata({ threadId });
+    for (const k of ["explainFor", "noteFor", "discussFor", "reviewFor"] as const) {
+      if (typeof meta[k] === "string") return meta[k] as string;
+    }
+    return threadId;
+  }
+
+  bb.agents.registerTool({
+    name: "rfc_note_add",
+    description:
+      "Add a design note to the RFC panel's Items list, anchored to a section: an open question, a decision to record, a thing to keep in mind, or a blocker. Use it whenever the conversation settles or raises something the RFC author should track; the user triages notes beside the document.",
+    presentation: { label: { pending: "Adding RFC note", completed: "Added RFC note" } },
+    parameters: z.object({
+      section: z.string().max(300).nullable().default(null),
+      line: z.number().int().positive().nullable().default(null),
+      quote: z.string().max(600).nullable().default(null),
+      title: z.string().min(1).max(200),
+      body: z.string().max(8000).default(""),
+      status: z.enum(NOTE_STATUSES).default("open"),
+      resolution: z.string().max(8000).nullable().default(null),
+    }),
+    async execute({ section, line, quote, title, body, status, resolution }, { threadId }) {
+      try {
+        const owner = await ownerThread(threadId);
+        const nowIso = now();
+        const note: Note = { id: newId("note"), anchor: { section, line, quote }, title, body, status, resolution, threadId: null, createdAt: nowIso, updatedAt: nowIso, createdBy: "agent" };
+        await mutateSidecar(owner, (d) => {
+          d.notes.push(note);
+        });
+        return `Added note ${note.id} (${status}) to the RFC's Items.`;
+      } catch (cause) {
+        return toolError(describe(cause));
+      }
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "rfc_note_update",
+    description: "Update a design note: change its status (open, decided, blocked, superseded), record the resolution, or edit its text. Call this when the user decides something in a note's discussion.",
+    presentation: { label: { pending: "Updating RFC note", completed: "Updated RFC note" } },
+    parameters: z.object({
+      noteId: z.string().optional().describe("Omit inside a note discussion thread; the note is implied."),
+      title: z.string().min(1).max(200).optional(),
+      body: z.string().max(8000).optional(),
+      status: z.enum(NOTE_STATUSES).optional(),
+      resolution: z.string().max(8000).nullable().optional(),
+    }),
+    async execute({ noteId, ...patch }, { threadId }) {
+      try {
+        const meta = await bb.sdk.threads.getPluginMetadata({ threadId });
+        const owner = await ownerThread(threadId);
+        const id = noteId ?? (typeof meta.noteId === "string" ? meta.noteId : undefined);
+        if (id === undefined) return toolError("noteId is required outside a note discussion thread.");
+        const n = await mutateSidecar(owner, (d) => {
+          const note = d.notes.find((x) => x.id === id);
+          if (note === undefined) throw new Error("Note not found.");
+          if (patch.title !== undefined) note.title = patch.title;
+          if (patch.body !== undefined) note.body = patch.body;
+          if (patch.status !== undefined) note.status = patch.status;
+          if (patch.resolution !== undefined) note.resolution = patch.resolution;
+          note.updatedAt = now();
+          return note;
+        });
+        return `Note "${n.title}" is now ${n.status}.`;
+      } catch (cause) {
+        return toolError(describe(cause));
+      }
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "rfc_publish_card",
+    description:
+      "Publish an explainer card attached to an RFC section: a concept explanation, code path, data model, flow, or answer. Inside an explain thread the cardId is given in the prompt; from the main RFC thread omit cardId to create a new card.",
+    presentation: { label: { pending: "Publishing explainer card", completed: "Published explainer card" } },
+    parameters: z.object({
+      cardId: z.string().optional(),
+      mode: z.enum(CARD_MODES).default("concept"),
+      section: z.string().max(300).nullable().default(null),
+      line: z.number().int().positive().nullable().default(null),
+      quote: z.string().max(600).nullable().default(null),
+      title: z.string().min(1).max(200),
+      body: z.string().max(20_000),
+      diagram: diagramSchema.nullable().default(null),
+      files: z.array(codeRefSchema).max(20).default([]),
+    }),
+    async execute({ cardId, mode, section, line, quote, title, body, diagram, files }, { threadId }) {
+      try {
+        const meta = await bb.sdk.threads.getPluginMetadata({ threadId });
+        const owner = await ownerThread(threadId);
+        const id = cardId ?? (typeof meta.cardId === "string" ? meta.cardId : undefined);
+        if (diagram !== null && diagram.lang === "d2") {
+          const check = await renderD2(diagram.source, false);
+          if (!check.ok) return toolError(`The D2 diagram does not compile: ${check.error}. Fix it and publish again.`);
+        }
+        const nowIso = now();
+        const card = await mutateSidecar(owner, (d) => {
+          const existing = id === undefined ? undefined : d.cards.find((c) => c.id === id);
+          if (existing !== undefined) {
+            Object.assign(existing, { title, body, diagram, files, status: "ready", updatedAt: nowIso });
+            return existing;
+          }
+          const created: Card = {
+            id: id ?? newId("card"),
+            anchor: { section, line, quote },
+            mode,
+            prompt: quote ?? title,
+            title,
+            body,
+            diagram,
+            files,
+            status: "ready",
+            threadId: typeof meta.explainFor === "string" ? threadId : null,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          };
+          d.cards.push(created);
+          return created;
+        });
+        return `Published card "${card.title}"; it is attached to ${card.anchor.section === null ? "the document" : `section "${card.anchor.section}"`} in the RFC panel.`;
+      } catch (cause) {
+        return toolError(describe(cause));
+      }
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "rfc_define_term",
+    description:
+      "Add or update a glossary entry for the RFC: an acronym, vendor term, internal shorthand, or requirement/assumption ID (S12, A2, Q13, P20). The panel shows definitions beside each section that uses the term. Call it whenever you introduce such a term in the document.",
+    presentation: { label: { pending: "Defining term", completed: "Defined term" } },
+    parameters: termSchema,
+    async execute(term, { threadId }) {
+      try {
+        const owner = await ownerThread(threadId);
+        const count = await mutateSidecar(owner, (d) => {
+          const i = d.glossary.findIndex((t) => t.term.toLowerCase() === term.term.toLowerCase());
+          if (i === -1) d.glossary.push(term);
+          else d.glossary[i] = term;
+          d.glossary.sort((a, b) => a.term.localeCompare(b.term));
+          return d.glossary.length;
+        });
+        return `Glossary now has ${count} term(s).`;
+      } catch (cause) {
+        return toolError(describe(cause));
+      }
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "rfc_claims_upsert",
+    description:
+      "Add or update entries in the RFC's claims register: facts the design depends on, each with source, status (verified, assumed, stale, superseded), when and against which version it was verified. Pass an id to update an existing claim; omit it to add.",
+    presentation: { label: { pending: "Updating claims register", completed: "Updated claims register" } },
+    parameters: z.object({
+      claims: z
+        .array(
+          z.object({
+            id: z.string().optional(),
+            key: z.string().max(20).nullable().default(null),
+            text: z.string().min(1).max(2000),
+            source: z.string().max(500).nullable().default(null),
+            status: z.enum(CLAIM_STATUSES).default("assumed"),
+            verifiedAt: z.string().nullable().default(null),
+            against: z.string().max(120).nullable().default(null),
+            section: z.string().max(300).nullable().default(null),
+            line: z.number().int().positive().nullable().default(null),
+            note: z.string().max(2000).nullable().default(null),
+          }),
+        )
+        .min(1)
+        .max(25),
+    }),
+    async execute({ claims }, { threadId }) {
+      try {
+        const owner = await ownerThread(threadId);
+        const result = await mutateSidecar(owner, (d) => {
+          let added = 0;
+          let updated = 0;
+          const nowIso = now();
+          for (const c of claims) {
+            const existing = c.id === undefined ? undefined : d.claims.find((x) => x.id === c.id);
+            const anchor = { section: c.section, line: c.line, quote: null };
+            if (existing !== undefined) {
+              Object.assign(existing, { key: c.key, text: c.text, source: c.source, status: c.status, verifiedAt: c.verifiedAt, against: c.against, anchor, note: c.note, updatedAt: nowIso });
+              updated++;
+            } else {
+              d.claims.push({ id: c.id ?? newId("claim"), key: c.key, text: c.text, source: c.source, status: c.status, verifiedAt: c.verifiedAt, against: c.against, anchor, note: c.note, updatedAt: nowIso });
+              added++;
+            }
+          }
+          return { added, updated, total: d.claims.length };
+        });
+        return `Claims register: ${result.added} added, ${result.updated} updated, ${result.total} total.`;
+      } catch (cause) {
+        return toolError(describe(cause));
+      }
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "rfc_publish_walkthrough",
+    description:
+      "Publish an ordered walkthrough of the RFC for the panel's Walkthrough view: steps with a title, plain-language body, section anchor, optional diagram, and code references. Replaces a walkthrough with the same title.",
+    presentation: { label: { pending: "Publishing walkthrough", completed: "Published walkthrough" } },
+    parameters: z.object({
+      title: z.string().min(1).max(200),
+      audience: z.string().max(300).nullable().default(null),
+      steps: z.array(walkthroughStepSchema).min(1).max(40),
+    }),
+    async execute({ title, audience, steps }, { threadId }) {
+      try {
+        const owner = await ownerThread(threadId);
+        for (const [i, step] of steps.entries()) {
+          if (step.diagram !== null && step.diagram.lang === "d2") {
+            const check = await renderD2(step.diagram.source, false);
+            if (!check.ok) return toolError(`Step ${i + 1} ("${step.title}") has a D2 diagram that does not compile: ${check.error}`);
+          }
+        }
+        const w = { id: newId("wt"), title, audience, steps, createdAt: now() };
+        await mutateSidecar(owner, (d) => {
+          d.walkthroughs = d.walkthroughs.filter((x) => x.title.toLowerCase() !== title.toLowerCase());
+          d.walkthroughs.push(w);
+        });
+        return `Published walkthrough "${title}" with ${steps.length} step(s); open the Walkthrough view in the RFC panel.`;
+      } catch (cause) {
+        return toolError(describe(cause));
+      }
+    },
+  });
+  void walkthroughSchema;
+
   bb.agents.configure((context) => {
-    const { reviewFor, discussFor } = context.pluginMetadata;
+    const { reviewFor, discussFor, explainFor, noteFor } = context.pluginMetadata;
+    if (typeof explainFor === "string") {
+      return {
+        tools: ["rfc_publish_card", "rfc_check_diagram"],
+        skills: [],
+        instructions:
+          "You are producing and then discussing one explainer card for an RFC section. Publish with rfc_publish_card using the cardId from your prompt. Read the workspace freely; never edit files.",
+      };
+    }
+    if (typeof noteFor === "string") {
+      return {
+        tools: ["rfc_note_update", "rfc_check_diagram"],
+        skills: [],
+        instructions:
+          "You are a focused discussion about one design note on an RFC. Stay on it. When the user decides, record it with rfc_note_update (status + resolution). Do not edit the RFC unless the user explicitly asks here.",
+      };
+    }
     if (typeof reviewFor === "string") {
       return {
         tools: ["rfc_report_findings"],
@@ -1239,7 +1824,17 @@ export default async function plugin(bb: BbPluginApi) {
       };
     }
     return {
-      tools: ["rfc_set_document", "rfc_report_findings", "rfc_check_diagram"],
+      tools: [
+        "rfc_set_document",
+        "rfc_report_findings",
+        "rfc_check_diagram",
+        "rfc_note_add",
+        "rfc_note_update",
+        "rfc_publish_card",
+        "rfc_define_term",
+        "rfc_claims_upsert",
+        "rfc_publish_walkthrough",
+      ],
       skills: ["rfcs"],
     };
   });

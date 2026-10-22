@@ -23,10 +23,12 @@
   "include": [
     "server.ts",
     "shared.ts",
+    "sidecar.ts",
     "app.tsx",
     "icons.tsx",
     "components",
     "lib",
-    "hooks"
+    "hooks",
+    "app-sidecar.tsx"
   ]
 }

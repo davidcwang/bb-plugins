@@ -1,0 +1,4 @@
+
+.rfc-jump-flash { animation: rfc-jump-flash 1.6s ease-out; }
+@keyframes rfc-jump-flash { 0% { background-color: color-mix(in oklab, var(--primary) 18%, transparent); } 100% { background-color: transparent; } }
+.rfc-section-chrome { min-height: 0; }

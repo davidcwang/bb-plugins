@@ -15,7 +15,7 @@ export const CHANGED = "rfcs-changed";
 /** Realtime payload published by the server after any state change. */
 export interface ChangedPayload {
   threadId: string;
-  kind: "doc" | "review" | "library";
+  kind: "doc" | "review" | "library" | "sidecar";
 }
 
 export interface DocSegment {
@@ -247,4 +247,68 @@ export function markdownBlocks(text: string): MdBlock[] {
     out.push({ kind, line: start + 1 });
   }
   return out;
+}
+
+export interface DocSection {
+  /** null for content before the first heading. */
+  heading: { level: number; title: string; line: number } | null;
+  /** 1-based line where the section starts (the heading line). */
+  startLine: number;
+  /** Plain text of the section (for term matching). */
+  text: string;
+  segments: DocSegment[];
+}
+
+/** Split a markdown segment at headings (outside fences), keeping line numbers. */
+function splitAtHeadings(segment: DocSegment): DocSegment[] {
+  if (segment.kind !== "markdown") return [segment];
+  const lines = segment.text.split("\n");
+  const out: DocSegment[] = [];
+  let buf: string[] = [];
+  let bufStart = segment.startLine;
+  let fence: string | null = null;
+  const flush = () => {
+    if (buf.length === 0) return;
+    out.push({ kind: "markdown", lang: null, text: buf.join("\n"), startLine: bufStart });
+    buf = [];
+  };
+  lines.forEach((line, i) => {
+    const f = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+    if (f) {
+      if (fence === null) fence = f[1]!;
+      else if (f[1]!.startsWith(fence[0]!) && f[1]!.length >= fence.length) fence = null;
+    } else if (fence === null && /^\s{0,3}#{1,6}\s+\S/.test(line)) {
+      flush();
+      bufStart = segment.startLine + i;
+    }
+    if (buf.length === 0) bufStart = segment.startLine + i;
+    buf.push(line);
+  });
+  flush();
+  return out;
+}
+
+/** Group a document body into heading-delimited sections of renderable segments. */
+export function splitSections(body: string, lineOffset = 0): DocSection[] {
+  const segments = splitDocument(body).flatMap(splitAtHeadings);
+  const sections: DocSection[] = [];
+  for (const seg of segments) {
+    const startLine = seg.startLine + lineOffset;
+    const headingMatch = seg.kind === "markdown" ? seg.text.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/m) : null;
+    const startsWithHeading = headingMatch !== null && seg.text.trimStart().startsWith(headingMatch[0].trim());
+    const shifted: DocSegment = { ...seg, startLine };
+    if (startsWithHeading || sections.length === 0) {
+      sections.push({
+        heading: startsWithHeading ? { level: headingMatch![1]!.length, title: headingMatch![2]!, line: startLine } : null,
+        startLine,
+        text: seg.text,
+        segments: [shifted],
+      });
+    } else {
+      const cur = sections[sections.length - 1]!;
+      cur.segments.push(shifted);
+      cur.text += `\n${seg.text}`;
+    }
+  }
+  return sections;
 }

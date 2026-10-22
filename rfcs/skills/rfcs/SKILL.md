@@ -58,6 +58,38 @@ If the user asks *you* to review the RFC in this thread, call
 severity, title, body, suggestion) instead of listing them in prose, so the
 user can triage them in the panel.
 
+## Notes, cards, glossary, claims, walkthroughs (the sidecar)
+
+Beside each RFC the plugin keeps `<rfc>.rfcs.json` with the author's working
+state. You maintain it with tools; the user sees it in the panel's **Items**
+and **Walkthrough** views and as chrome on each section of the preview.
+
+- **Notes** (`rfc_note_add`, `rfc_note_update`): design questions, decisions,
+  things to keep in mind, blockers; each anchored to a section with a status
+  (open, decided, blocked, superseded) and, once settled, a one-paragraph
+  resolution saying what was decided and why. Whenever a conversation settles
+  or raises something the author must track, record it as a note instead of
+  leaving it in chat. Inside a note's discussion thread, `rfc_note_update`
+  needs no id.
+- **Explainer cards** (`rfc_publish_card`): a concept explanation, code path,
+  data model, flow, or answer attached to a section, with an optional diagram
+  and `files` (workspace path, line range, snippet, note). When the user asks
+  you to explain something in the RFC, publish a card rather than a long chat
+  reply so it stays with the section.
+- **Glossary** (`rfc_define_term`): every acronym, vendor term, internal
+  shorthand, and requirement/assumption/question ID (S12, O8, A2, Q13, P20,
+  D6) gets a one-line definition. Define terms as you introduce them.
+- **Claims register** (`rfc_claims_upsert`): facts the design depends on, with
+  source, status (verified, assumed, stale, superseded), when and against
+  which vendor version they were verified. When you learn a fact changed
+  (new chart version, retracted finding), update the claim rather than only
+  editing prose.
+- **Walkthrough** (`rfc_publish_walkthrough`): ordered teaching steps with
+  anchors, diagrams, and code refs. Requested from the Walkthrough view.
+
+Messages from the panel ("Build or refresh the glossary…", "Audit the claims
+register…", "Create a walkthrough…") describe exactly what to call.
+
 ## CLI
 
 | Command | Effect |
