@@ -8,12 +8,32 @@
       "source": "./kanban"
     },
     {
+      "name": "code-review",
+      "source": "./code-review"
+    },
+    {
       "name": "aura",
       "source": "./aura"
     },
     {
       "name": "beautiful-chat",
       "source": "./beautiful-chat"
+    },
+    {
+      "name": "vim",
+      "source": "./vim"
+    },
+    {
+      "name": "rfcs",
+      "source": "./rfcs"
+    },
+    {
+      "name": "sidebar-rail",
+      "source": "./sidebar-rail"
+    },
+    {
+      "name": "usage-meter",
+      "source": "./usage-meter"
     }
   ]
 }
