@@ -1,7 +1,7 @@
 // Plugin-owned icons (lucide artwork, ISC licence). Several names this plugin
 // uses are not in BB's built-in set and silently fall back to a bolt, so the
 // plugin registers its own under the `rfcs:` namespace.
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { experimental_Icon as HostIcon, type ExperimentalIconProps } from "@get-bb/plugin-sdk/app";
 
 const paths: Record<string, ReactNode> = {
@@ -200,20 +200,21 @@ const OWN = new Set(ICON_NAMES);
 
 export function iconComponent(name: string) {
   const body = paths[name];
-  return function RfcsIcon({ className }: { className?: string }) {
+  return function RfcsIcon({ className, style }: { className?: string; style?: CSSProperties }) {
     return (
       <svg
         xmlns="http://www.w3.org/2000/svg"
         viewBox="0 0 24 24"
+        width="1em"
+        height="1em"
         fill="none"
         stroke="currentColor"
         strokeWidth={2}
         strokeLinecap="round"
         strokeLinejoin="round"
-        width="100%"
-        height="100%"
-        style={{ display: "block" }}
-        className={className}
+        // Default to a text-sized glyph; a Tailwind size-* class wins over the attributes.
+        className={className ?? "size-4"}
+        style={{ display: "inline-block", flexShrink: 0, verticalAlign: "-0.125em", ...style }}
         aria-hidden
       >
         {body}
@@ -222,7 +223,21 @@ export function iconComponent(name: string) {
   };
 }
 
-/** Drop-in for the host Icon that prefers this plugin's artwork. */
+const components = new Map<string, ReturnType<typeof iconComponent>>();
+
+/**
+ * Drop-in for the host Icon. Names this plugin owns render as our own SVG,
+ * sized by className (default size-4); other names go to the host, which
+ * draws from its built-in set.
+ */
 export function Icon(props: ExperimentalIconProps) {
-  return <HostIcon {...props} name={OWN.has(props.name) ? `rfcs:${props.name}` : props.name} />;
+  if (OWN.has(props.name)) {
+    let C = components.get(props.name);
+    if (C === undefined) {
+      C = iconComponent(props.name);
+      components.set(props.name, C);
+    }
+    return <C className={props.className} style={props.style} />;
+  }
+  return <HostIcon {...props} />;
 }
