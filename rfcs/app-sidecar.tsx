@@ -212,7 +212,7 @@ export function CardView({
           </p>
           {card.status === "pending" ? <p className="text-xs text-muted-foreground">The explainer is reading the RFC and writing this card. It appears here when published.</p> : null}
           {card.body !== "" ? <Markdown content={card.body} /> : null}
-          {card.diagram !== null ? <Diagram lang={card.diagram.lang} source={card.diagram.source} startLine={card.anchor.line ?? 0} /> : null}
+          {card.diagram !== null ? <Diagram lang={card.diagram.lang} source={card.diagram.source} startLine={0} /> : null}
           {card.files.length > 0 ? (
             <div className="mt-2 flex flex-col gap-1.5">
               {card.files.map((f, i) => (
@@ -1085,7 +1085,7 @@ export function WalkthroughView({
               </div>
               <h2 className="mb-2 text-lg font-semibold">{s.title}</h2>
               <Markdown content={s.body} />
-              {s.diagram !== null ? <Diagram lang={s.diagram.lang} source={s.diagram.source} startLine={s.anchor.line ?? 0} /> : null}
+              {s.diagram !== null ? <Diagram lang={s.diagram.lang} source={s.diagram.source} startLine={0} /> : null}
               {s.files.length > 0 ? (
                 <div className="mt-3 flex flex-col gap-1.5">
                   {s.files.map((f, i) => (

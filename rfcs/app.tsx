@@ -221,14 +221,14 @@ function DiagramFrame({
     return () => window.removeEventListener("keydown", onKey);
   }, [full]);
   return (
-    <figure data-src-line={startLine} className="group my-3 rounded-lg border border-border bg-card">
+    <figure data-src-line={startLine > 0 ? startLine : undefined} className="group my-3 rounded-lg border border-border bg-card">
       {full && svg !== null
         ? createPortal(
             <div className="fixed inset-0 z-[1000] flex flex-col bg-background/95 backdrop-blur-sm" {...portalProps}>
               <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
                 <Icon name={lang === "d2" ? "Boxes" : "GitBranch"} className="size-3.5" />
                 <span className="font-mono">{lang}</span>
-                <span className="opacity-70">line {startLine}</span>
+                {startLine > 0 ? <span className="opacity-70">line {startLine}</span> : null}
                 <span className="ml-auto opacity-70">⌘/Ctrl + wheel to zoom · drag to pan · double-click to reset · Esc to close</span>
                 <button type="button" className="rounded px-2 py-0.5 hover:bg-muted hover:text-foreground" onClick={() => setFull(false)}>
                   Close
@@ -244,7 +244,7 @@ function DiagramFrame({
       <div className="flex items-center gap-2 border-b border-border px-2 py-1 text-[11px] text-muted-foreground">
         <Icon name={lang === "d2" ? "Boxes" : "GitBranch"} className="size-3.5" />
         <span className="font-mono">{lang}</span>
-        <span className="opacity-70">line {startLine}</span>
+        {startLine > 0 ? <span className="opacity-70">line {startLine}</span> : null}
         {pending ? <span className="italic">rendering…</span> : null}
         <span className="ml-auto flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
           <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted" onClick={() => setShowSource((v) => !v)}>
@@ -810,11 +810,24 @@ function previewAnchors(container: HTMLElement, content: string): Array<{ line: 
     }
   });
   for (const el of Array.from(container.querySelectorAll<HTMLElement>("figure[data-src-line]"))) {
+    // Diagrams inside explainer cards are not part of the document.
+    if (el.closest(".rfc-cards") !== null) continue;
     const line = Number(el.dataset.srcLine);
-    if (Number.isFinite(line)) anchors.push({ line, top: topOf(el) });
+    if (Number.isFinite(line) && line > 0) anchors.push({ line, top: topOf(el) });
   }
   const totalLines = content.split("\n").length;
   anchors.push({ line: totalLines + 1, top: container.scrollHeight });
+  anchors.sort((a, b) => a.line - b.line || a.top - b.top);
+  // Explainer cards occupy preview height but no source lines: pin their top
+  // and bottom to (almost) the same line so scrolling through a card holds
+  // the editor still instead of stretching a few lines over the card.
+  for (const el of Array.from(container.querySelectorAll<HTMLElement>(".rfc-cards"))) {
+    const top = topOf(el);
+    const bottom = top + el.getBoundingClientRect().height;
+    let prev = anchors[0]!;
+    for (const a of anchors) if (a.top <= top + 1 && a.line > prev.line) prev = a;
+    anchors.push({ line: prev.line + 0.5, top }, { line: prev.line + 0.5001, top: bottom });
+  }
   anchors.sort((a, b) => a.line - b.line || a.top - b.top);
   // Keep a strictly increasing chain so interpolation never runs backwards.
   const chain: Array<{ line: number; top: number }> = [];
