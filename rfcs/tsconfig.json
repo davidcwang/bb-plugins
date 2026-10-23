@@ -29,6 +29,7 @@
     "components",
     "lib",
     "hooks",
-    "app-sidecar.tsx"
+    "app-sidecar.tsx",
+    "memory.ts"
   ]
 }

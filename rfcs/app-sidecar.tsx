@@ -29,6 +29,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Icon } from "./icons";
+import { recall, remember } from "./memory";
 import { cn } from "@/lib/utils";
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
@@ -888,12 +889,33 @@ export function WalkthroughView({
   onJump: (anchor: Anchor) => void;
 }) {
   const list = sidecar?.walkthroughs ?? [];
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Remember which walkthrough and step were open, per RFC thread.
+  const memKey = `walkthrough:${threadId}`;
+  const saved = useMemo(() => {
+    try {
+      return JSON.parse(recall(memKey) ?? "null") as { id: string; step: number } | null;
+    } catch {
+      return null;
+    }
+  }, [memKey]);
+  const [selectedId, setSelectedId] = useState<string | null>(saved?.id ?? null);
   const current: Walkthrough | null = list.find((w) => w.id === selectedId) ?? list[list.length - 1] ?? null;
-  const [step, setStep] = useState(0);
+  const [step, setStepState] = useState(saved?.step ?? 0);
+  const setStep = (next: number | ((s: number) => number)) => setStepState((s) => (typeof next === "function" ? next(s) : next));
   const [audience, setAudience] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => setStep(0), [current?.id]);
+  const lastId = useRef<string | null>(current?.id ?? null);
+  useEffect(() => {
+    if (current === null) return;
+    if (lastId.current !== null && lastId.current !== current.id && current.id !== saved?.id) setStepState(0);
+    lastId.current = current.id;
+  }, [current, saved?.id]);
+  useEffect(() => {
+    if (current === null) return;
+    const clamped = Math.min(step, current.steps.length - 1);
+    if (clamped !== step) setStepState(clamped);
+    remember(memKey, JSON.stringify({ id: current.id, step: clamped }));
+  }, [current, step, memKey]);
   const stepRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     stepRef.current?.scrollTo({ top: 0 });

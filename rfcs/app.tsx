@@ -14,6 +14,7 @@ import { CHANGED, PRIORITIES, markdownBlocks, parseFrontmatter, splitSections, t
 import type { Anchor, CardMode } from "./sidecar";
 import { CardView, ItemsView, SectionChrome, SelectionToolbar, WalkthroughView, itemsForSection, useSelectionActions, useSidecar, type DiagramRenderer, type ItemsTab } from "./app-sidecar";
 import type { Sidecar } from "./sidecar";
+import { recall, remember } from "./memory";
 import { Button } from "@/components/ui/button";
 import { ICON_NAMES, Icon, iconComponent } from "./icons";
 import { Input } from "@/components/ui/input";
@@ -378,30 +379,6 @@ function D2Block({ rpc, source, startLine, dark }: { rpc: Rpc; source: string; s
 }
 
 // ---- view memory ---------------------------------------------------------
-
-/** Small UI memory: in-module for instant reads, mirrored to localStorage so it survives reloads. */
-const memo = new Map<string, string>();
-function recall(key: string): string | null {
-  const hit = memo.get(key);
-  if (hit !== undefined) return hit;
-  try {
-    const stored = window.localStorage.getItem(`rfcs:${key}`);
-    if (stored !== null) memo.set(key, stored);
-    return stored;
-  } catch {
-    return null;
-  }
-}
-function remember(key: string, value: string | null) {
-  if (value === null) memo.delete(key);
-  else memo.set(key, value);
-  try {
-    if (value === null) window.localStorage.removeItem(`rfcs:${key}`);
-    else window.localStorage.setItem(`rfcs:${key}`, value);
-  } catch {
-    // storage full or blocked: in-module memory still works
-  }
-}
 
 /**
  * Remember an element's scroll position under `key`. Restores once `ready`
