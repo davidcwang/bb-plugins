@@ -221,16 +221,91 @@ function DiagramFrame({
       {error !== null ? (
         <pre className="m-0 whitespace-pre-wrap border-b border-border px-3 py-2 text-xs text-destructive">{error}</pre>
       ) : null}
-      {svg !== null ? (
-        <div
-          className={cn("rfc-diagram overflow-auto px-3 py-3 [&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-w-full", lang === "d2" && "[&_svg]:max-h-[70vh]")}
-          dangerouslySetInnerHTML={{ __html: svg }}
-        />
-      ) : null}
+      {svg !== null ? <DiagramViewport svg={svg} tall={lang === "d2"} /> : null}
       {showSource ? (
         <pre className="m-0 overflow-auto border-t border-border bg-muted/40 px-3 py-2 font-mono text-xs leading-5">{source}</pre>
       ) : null}
     </figure>
+  );
+}
+
+/**
+ * Pan/zoom viewport for a rendered SVG. Zoom with ⌘/Ctrl + wheel (trackpad
+ * pinch arrives the same way) or the buttons; drag to pan; double-click or
+ * the reset button returns to fit.
+ */
+function DiagramViewport({ svg, tall }: { svg: string; tall: boolean }) {
+  const [t, setT] = useState({ scale: 1, x: 0, y: 0 });
+  const ref = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
+  const zoomed = t.scale !== 1 || t.x !== 0 || t.y !== 0;
+  const clamp = (v: number) => Math.min(8, Math.max(0.25, v));
+  const zoomAt = (factor: number, cx?: number, cy?: number) => {
+    setT((cur) => {
+      const next = clamp(cur.scale * factor);
+      const el = ref.current;
+      if (el === null || cx === undefined || cy === undefined) return { ...cur, scale: next };
+      const rect = el.getBoundingClientRect();
+      const px = cx - rect.left - rect.width / 2;
+      const py = cy - rect.top - rect.height / 2;
+      const k = next / cur.scale;
+      return { scale: next, x: px - (px - cur.x) * k, y: py - (py - cur.y) * k };
+    });
+  };
+  useEffect(() => {
+    const el = ref.current;
+    if (el === null) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey) && !zoomed) return; // leave page scrolling alone until zoomed in
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) zoomAt(Math.exp(-e.deltaY * 0.01), e.clientX, e.clientY);
+      else setT((cur) => ({ ...cur, x: cur.x - e.deltaX, y: cur.y - e.deltaY }));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [zoomed]);
+  const reset = () => setT({ scale: 1, x: 0, y: 0 });
+  return (
+    <div className="relative">
+      <div
+        ref={ref}
+        className={cn("rfc-diagram overflow-hidden px-3 py-3 select-none", tall ? "max-h-[70vh]" : "", drag.current !== null ? "cursor-grabbing" : "cursor-grab")}
+        onPointerDown={(e) => {
+          if (e.button !== 0) return;
+          drag.current = { x: e.clientX, y: e.clientY, ox: t.x, oy: t.y };
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }}
+        onPointerMove={(e) => {
+          const d = drag.current;
+          if (d === null) return;
+          setT((cur) => ({ ...cur, x: d.ox + (e.clientX - d.x), y: d.oy + (e.clientY - d.y) }));
+        }}
+        onPointerUp={() => {
+          drag.current = null;
+        }}
+        onPointerCancel={() => {
+          drag.current = null;
+        }}
+        onDoubleClick={reset}
+      >
+        <div
+          className="[&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-w-full"
+          style={{ transform: `translate(${t.x}px, ${t.y}px) scale(${t.scale})`, transformOrigin: "center center", transition: drag.current ? "none" : "transform 60ms linear" }}
+          dangerouslySetInnerHTML={{ __html: svg }}
+        />
+      </div>
+      <div className="absolute bottom-2 right-2 flex items-center gap-0.5 rounded border border-border bg-background/90 text-[11px] text-muted-foreground opacity-0 shadow-sm backdrop-blur transition-opacity group-hover:opacity-100">
+        <button type="button" className="px-1.5 py-0.5 hover:bg-muted hover:text-foreground" onClick={() => zoomAt(1 / 1.25)} title="Zoom out (⌘/Ctrl + wheel)">
+          −
+        </button>
+        <button type="button" className="min-w-10 px-1 py-0.5 tabular-nums hover:bg-muted hover:text-foreground" onClick={reset} title="Reset (double-click the diagram)">
+          {Math.round(t.scale * 100)}%
+        </button>
+        <button type="button" className="px-1.5 py-0.5 hover:bg-muted hover:text-foreground" onClick={() => zoomAt(1.25)} title="Zoom in (⌘/Ctrl + wheel)">
+          +
+        </button>
+      </div>
+    </div>
   );
 }
 
