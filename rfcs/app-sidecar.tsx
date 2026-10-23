@@ -78,24 +78,46 @@ export function itemsForSection<T extends { anchor: Anchor }>(items: T[], sectio
 
 // ---- code refs -----------------------------------------------------------
 
-/** A code excerpt with real line numbers; bb's source viewer wants whole files, so this is ours. */
-function Snippet({ text, startLine }: { text: string; startLine: number }) {
+const LANG_BY_EXT: Record<string, string> = {
+  go: "go", ts: "ts", tsx: "tsx", js: "js", jsx: "jsx", mjs: "js", cjs: "js", py: "python", rs: "rust", sh: "bash", bash: "bash", zsh: "bash", fish: "fish",
+  yaml: "yaml", yml: "yaml", json: "json", toml: "toml", proto: "protobuf", sql: "sql", md: "markdown", tf: "hcl", hcl: "hcl", css: "css", html: "html",
+  java: "java", kt: "kotlin", swift: "swift", c: "c", h: "c", cc: "cpp", cpp: "cpp", hpp: "cpp", rb: "ruby", php: "php", xml: "xml", ini: "ini", env: "bash",
+  dockerfile: "dockerfile", makefile: "makefile", d2: "text", mmd: "text",
+};
+export function languageFor(path: string): string {
+  const base = path.split("/").pop() ?? path;
+  const lower = base.toLowerCase();
+  if (lower === "dockerfile" || lower.startsWith("dockerfile.")) return "dockerfile";
+  if (lower === "makefile") return "makefile";
+  const ext = lower.includes(".") ? lower.slice(lower.lastIndexOf(".") + 1) : "";
+  return LANG_BY_EXT[ext] ?? "text";
+}
+
+/**
+ * A code excerpt rendered through bb's Markdown as a fenced block, so it gets
+ * the same syntax highlighting as chat. The header above carries the real
+ * line range; bb's source viewer itself wants whole files, so it is not used.
+ */
+function Snippet({ text, path, startLine }: { text: string; path: string; startLine: number }) {
   const lines = text.replace(/\n$/, "").split("\n");
   const [all, setAll] = useState(lines.length <= 24);
   const shown = all ? lines : lines.slice(0, 16);
-  const width = String(startLine + lines.length).length;
+  const lang = languageFor(path);
+  const fence = text.includes("```") ? "~~~~" : "```";
+  const md = `${fence}${lang}\n${shown.join("\n")}\n${fence}`;
+  const endLine = startLine + shown.length - 1;
   return (
     <div className="border-t border-border text-xs">
-      <pre className="m-0 max-h-96 overflow-auto bg-muted/30 py-2 font-mono leading-5">
-        {shown.map((l, i) => (
-          <div key={i} className="flex">
-            <span className="select-none pl-2 pr-3 text-right text-muted-foreground/60" style={{ minWidth: `${width + 2}ch` }}>
-              {startLine + i}
-            </span>
-            <span className="whitespace-pre pr-3">{l === "" ? " " : l}</span>
-          </div>
-        ))}
-      </pre>
+      <div className="flex items-center gap-2 px-2 pt-1 text-[10px] text-muted-foreground">
+        <span>
+          lines {startLine}–{endLine}
+          {all ? "" : ` of ${startLine + lines.length - 1}`}
+        </span>
+        <span className="ml-auto font-mono">{lang}</span>
+      </div>
+      <div className="rfc-snippet max-h-96 overflow-auto [&_pre]:my-1 [&_pre]:rounded-none [&_pre]:border-0">
+        <Markdown content={md} />
+      </div>
       {!all ? (
         <button type="button" className="w-full border-t border-border py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => setAll(true)}>
           Show all {lines.length} lines
@@ -130,7 +152,7 @@ function CodeRefView({ file, environmentId }: { file: CodeRef; environmentId: st
           </button>
         ) : null}
       </div>
-      {open && file.snippet !== null ? <Snippet text={file.snippet} startLine={file.startLine ?? 1} /> : null}
+      {open && file.snippet !== null ? <Snippet text={file.snippet} path={file.path} startLine={file.startLine ?? 1} /> : null}
     </div>
   );
 }
