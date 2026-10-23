@@ -21,5 +21,11 @@ in `~/repos/CLAUDE.md`. Commits here are cheap to revert, so:
   commit; fix mistakes with a new commit or `git revert`.
 - If there is no upstream remote, or a push fails, commit locally anyway and
   tell the user; don't create remotes or GitHub repos without asking.
+- This repo is public. Never commit employer-internal content: internal
+  repo URLs, hostnames, BB thread or host ids, or internal code. Plugin
+  directories listed in `.git/info/exclude` are local-only and must never be
+  added.
+- No AI attribution: no `Co-Authored-By: Claude` or "Generated with Claude
+  Code" lines in commit messages.
 - Never commit `node_modules/`, `dist/` of own plugins, `.env*`, or secrets.
   Vendored plugins keep their `dist/` (see `.gitignore`).
