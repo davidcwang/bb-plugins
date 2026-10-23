@@ -20,9 +20,12 @@ sidebar restores the normal layout.
   Settings → Keyboard.
 - To hide the sidebar completely again, disable the plugin:
   `bb plugin disable sidebar-rail`.
-- Drag: pulling the sidebar's resize edge left past x≈120 px collapses it to
-  the rail (BB's own drag stops at a minimum width); pulling the rail's edge
-  right past x≈160 px expands it.
+- Drag: BB's own resize stops at 240 px; below that the sidebar follows the
+  pointer down to the rail (48 px) and on release eases to the nearer end
+  (split at 144 px). Pulling the rail's edge out grows it the same way and
+  hands the drag back to BB past 240 px. A drag-collapse replays a drag on
+  BB's hidden handle so the saved width (`bb.sidebar.width`) stays what it
+  was. Logic: `drag.ts`.
 - Desktop widths only (≥ 768 px); the compact/mobile drawer is unchanged.
 - The rail is a CSS override of BB's app-shell DOM (`app.css`). If a BB update
   changes the sidebar markup, the rail can break; check selectors there first.

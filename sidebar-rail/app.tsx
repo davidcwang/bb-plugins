@@ -6,6 +6,7 @@
 // with the monogram and hue its rail badge shows.
 import "./app.css";
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
+import { mountDrag } from "./drag";
 
 const RAIL_ATTR = "data-sidebar-rail";
 const THREAD_ANCHOR = "[data-sidebar-thread-shortcut-target]";
@@ -16,12 +17,6 @@ const CURRENT_ATTR = "data-rail-current";
 const STOP_WORDS = new Set(
   "a all also an and any are be can could do does for from get have how i if in is it just let make me my not of on or our please should so some that the there these this those to us want we what when why will with would you".split(" "),
 );
-const RESIZE_HANDLE = '[data-testid="app-sidebar-resize-handle"]';
-const TRIGGER = '[data-sidebar="trigger"]';
-/** Dragging the sidebar edge left of this collapses it to the rail… */
-const COLLAPSE_AT_X = 120;
-/** …and dragging the rail's edge right of this expands it again. */
-const EXPAND_AT_X = 160;
 const RAIL_BUTTON = '[data-state="collapsed"] [data-sidebar-navigation-item] > button, [data-state="collapsed"] [data-testid="sidebar-navigation-more-trigger"]';
 
 /** Two letters from the first distinct words of a title that aren't filler. */
@@ -83,34 +78,7 @@ export default definePluginApp((app) => {
       };
       document.addEventListener("pointerover", onPointerOver, { signal });
 
-      // BB clamps the resize drag at a minimum width. Track the same drag and
-      // snap to the rail once the pointer passes COLLAPSE_AT_X; from the rail,
-      // drag its edge out past EXPAND_AT_X to expand. Collapsed, BB's handle
-      // does nothing, so that drag is ours alone.
-      let dragging = false;
-      const isCollapsed = () =>
-        document.querySelector('[data-side="left"][data-state="collapsed"]') !== null;
-      const toggle = () => document.querySelector<HTMLButtonElement>(TRIGGER)?.click();
-      const onMouseDown = (event: MouseEvent) => {
-        if (event.button !== 0 || !(event.target as Element | null)?.closest(RESIZE_HANDLE)) return;
-        dragging = true;
-        if (isCollapsed()) {
-          event.preventDefault();
-          event.stopPropagation();
-        }
-      };
-      const onMouseMove = (event: MouseEvent) => {
-        if (!dragging) return;
-        const collapsed = isCollapsed();
-        if (!collapsed && event.clientX < COLLAPSE_AT_X) toggle();
-        else if (collapsed && event.clientX > EXPAND_AT_X) toggle();
-      };
-      const onMouseUp = () => {
-        dragging = false;
-      };
-      document.addEventListener("mousedown", onMouseDown, { capture: true, signal });
-      document.addEventListener("mousemove", onMouseMove, { signal });
-      document.addEventListener("mouseup", onMouseUp, { signal });
+      const unmountDrag = mountDrag(signal);
 
       // The thread list is windowed and re-rendered on every change, so
       // re-tag after each mutation batch; rows already tagged are skipped.
@@ -135,9 +103,7 @@ export default definePluginApp((app) => {
           for (const attr of [FOR_ATTR, INITIALS_ATTR, HUE_ATTR, CURRENT_ATTR, "title"]) inset.removeAttribute(attr);
         }
         document.removeEventListener("pointerover", onPointerOver);
-        document.removeEventListener("mousedown", onMouseDown, { capture: true });
-        document.removeEventListener("mousemove", onMouseMove);
-        document.removeEventListener("mouseup", onMouseUp);
+        unmountDrag();
         for (const button of titled) button.removeAttribute("title");
         root.removeAttribute(RAIL_ATTR);
       };

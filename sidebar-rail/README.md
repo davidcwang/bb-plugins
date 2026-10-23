@@ -9,14 +9,18 @@ Collapse BB's left sidebar to an icon rail instead of hiding it.
   the open one), and the footer icons; hover anything for its name.
   Expanded: the same badge, same size, in front of each thread title, so you
   learn which colour is which thread.
-- Dragging the sidebar edge almost to the window edge snaps it to the rail;
-  dragging the rail's edge outward expands it again.
+- Dragging the sidebar edge keeps going below BB's 240 px minimum: the
+  sidebar follows the pointer down to the rail and, on release, eases to
+  whichever is closer (rail or 240 px). Dragging the rail's edge outward
+  grows it the same way and hands the drag back to BB past 240 px. A
+  drag-collapse keeps the width the sidebar reopens at.
 - Desktop widths only. Disable the plugin to get the fully hidden sidebar back.
 
 `app.css` overrides BB's sidebar markup (data attributes such as
 `data-sidebar`, `data-state`, `data-sidebar-navigation-item`); `app.tsx` is one
 content script that sets `html[data-sidebar-rail]`, adds hover titles, and
 tags thread rows with `data-rail-initials` / `data-rail-hue` /
-`data-rail-current` for the badges.
+`data-rail-current` for the badges. `drag.ts` handles drags below BB's
+minimum width.
 
     npx tsc -p tsconfig.json && bb plugin build && bb plugin reload sidebar-rail

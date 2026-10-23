@@ -15,6 +15,17 @@
     transition: none !important;
   }
 
+  /* A drag below BB's minimum width (drag.ts) shows its own width in either
+     state; while it settles, the width eases instead of snapping. */
+  html[data-sidebar-rail][data-sidebar-rail-drag] [data-side="left"][data-state] > [data-sidebar="gap"],
+  html[data-sidebar-rail][data-sidebar-rail-drag] [data-side="left"][data-state] > [data-sidebar="panel"] {
+    width: var(--sidebar-rail-drag) !important;
+  }
+  html[data-sidebar-rail][data-sidebar-rail-settle] [data-side="left"][data-state] > [data-sidebar="gap"],
+  html[data-sidebar-rail][data-sidebar-rail-settle] [data-side="left"][data-state] > [data-sidebar="panel"] {
+    transition: width 180ms cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+  }
+
   /* Reserve the rail's width in the layout and show the panel at that width. */
   html[data-sidebar-rail] [data-side="left"][data-state="collapsed"] > [data-sidebar="gap"] {
     width: var(--sidebar-rail-width) !important;
@@ -26,7 +37,7 @@
   }
 
   /* Keep the chrome row's height (the traffic lights sit there) but not its
-     back/forward buttons. The resize handle stays: app.tsx expands the rail
+     back/forward buttons. The resize handle stays: drag.ts expands the rail
      when its edge is dragged outward. */
   html[data-sidebar-rail] [data-state="collapsed"] [data-testid="app-sidebar-top-reserve-row"] > * {
     display: none !important;
