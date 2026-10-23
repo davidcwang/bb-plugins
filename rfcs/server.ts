@@ -132,7 +132,7 @@ const libraryItemSchema = z.object({
   modifiedAtMs: z.number().nullable(),
   sizeBytes: z.number(),
   found: z.enum(["rfc-dir", "search", "thread"]),
-  threads: z.array(z.object({ id: z.string(), title: z.string().nullable(), status: z.string() })),
+  threads: z.array(z.object({ id: z.string(), title: z.string().nullable(), status: z.string(), unread: z.boolean().default(false) })),
 });
 export type LibraryItem = z.infer<typeof libraryItemSchema>;
 
@@ -155,6 +155,15 @@ export const rpcContract = defineRpcContract({
       fresh: z.boolean().default(false),
     }),
     output: z.object({ threadId: z.string(), created: z.boolean() }),
+  },
+  threads_state: {
+    // Read/attention state for a few threads, for unread badges while the chat pane is hidden.
+    input: z.object({ threadIds: z.array(z.string()).max(50) }),
+    output: z.array(z.object({ id: z.string(), status: z.string(), unread: z.boolean(), needsInput: z.boolean() })),
+  },
+  thread_mark_read: {
+    input: z.object({ threadId: z.string() }),
+    output: z.object({ ok: z.literal(true) }),
   },
   library_create: {
     // Create a new RFC from the template in the project's RFC directory and start a thread on it.
@@ -1020,7 +1029,7 @@ export default async function plugin(bb: BbPluginApi) {
       const root = project?.sources.find((s) => s.type === "local_path" && within(s.path, doc.path))?.path ?? null;
       const item = await add(doc.path, doc.hostId, project, root, "thread");
       if ((thread as { archivedAt?: number | null }).archivedAt != null) continue;
-      if (item !== null) item.threads.push({ id: thread.id, title: thread.title ?? null, status: thread.status });
+      if (item !== null) item.threads.push({ id: thread.id, title: thread.title ?? null, status: thread.status, unread: isUnread(thread as { lastReadAt?: number | null; latestAttentionAt?: number | null }) });
     }
 
     lap("attached threads");
@@ -1219,8 +1228,35 @@ export default async function plugin(bb: BbPluginApi) {
     await bb.sdk.threads.send({ threadId, mode: "auto", input: [{ type: "text", text, mentions: [] }] });
   }
 
+  /** bb's unread rule: attention arrived after the last read. */
+  const isUnread = (t: { lastReadAt?: number | null; latestAttentionAt?: number | null }) =>
+    t.latestAttentionAt != null && (t.lastReadAt == null || t.latestAttentionAt > t.lastReadAt);
+
   // ---- RPC ----
   bb.rpc.register(rpcContract, {
+    threads_state: async ({ threadIds }) => {
+      const out: Array<{ id: string; status: string; unread: boolean; needsInput: boolean }> = [];
+      await Promise.all(
+        threadIds.map(async (id) => {
+          try {
+            const t = await bb.sdk.threads.get({ threadId: id });
+            const x = t as { lastReadAt?: number | null; latestAttentionAt?: number | null; hasPendingInteraction?: boolean };
+            out.push({ id, status: String(t.status), unread: isUnread(x), needsInput: x.hasPendingInteraction === true });
+          } catch {
+            // deleted
+          }
+        }),
+      );
+      return out;
+    },
+    thread_mark_read: async ({ threadId }) => {
+      try {
+        await bb.sdk.threads.markRead({ threadId });
+      } catch (cause) {
+        bb.log.warn(`markRead ${threadId}: ${describe(cause)}`);
+      }
+      return { ok: true as const };
+    },
     sidecar_get: ({ threadId }) => readSidecar(threadId),
     note_add: async ({ threadId, anchor, title, body, status, discuss }) => {
       const nowIso = now();
@@ -1855,6 +1891,16 @@ export default async function plugin(bb: BbPluginApi) {
     ids.delete(parentId);
     return [...ids];
   }
+  const publishThread = ({ thread }: { thread: { id: string } }) => {
+    bb.realtime.publish(CHANGED, { threadId: thread.id, kind: "thread" });
+    // Library rows carry unread flags; let them refresh too.
+    invalidateLibrary();
+  };
+  bb.events.on("thread.idle", publishThread);
+  bb.events.on("thread.active", publishThread);
+  bb.events.on("thread.failed", publishThread);
+  bb.events.on("interaction.pending", publishThread);
+
   bb.events.on("thread.archived", async ({ thread }) => {
     if ((await readDoc(thread.id)) === null) return; // not an RFC thread
     const children = await childThreads(thread.id);

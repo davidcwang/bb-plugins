@@ -15,7 +15,7 @@ export const CHANGED = "rfcs-changed";
 /** Realtime payload published by the server after any state change. */
 export interface ChangedPayload {
   threadId: string;
-  kind: "doc" | "review" | "library" | "sidecar";
+  kind: "doc" | "review" | "library" | "sidecar" | "thread";
 }
 
 export interface DocSegment {

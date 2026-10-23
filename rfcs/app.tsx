@@ -125,6 +125,30 @@ function useDoc(rpc: Rpc, threadId: string, docPath: string | null, active: bool
   return { doc, error, reload };
 }
 
+/** Unread / needs-input / working state for a few threads, refreshed on thread events. */
+function useThreadStates(rpc: Rpc, threadIds: string[]) {
+  const [states, setStates] = useState<Record<string, { status: string; unread: boolean; needsInput: boolean }>>({});
+  const key = threadIds.join(",");
+  const reload = useCallback(() => {
+    if (threadIds.length === 0) return;
+    rpc.call("threads_state", { threadIds }).then(
+      (rows) => setStates(Object.fromEntries(rows.map((r) => [r.id, { status: r.status, unread: r.unread, needsInput: r.needsInput }]))),
+      () => undefined,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rpc, key]);
+  useEffect(reload, [reload]);
+  useEffect(() => {
+    const t = window.setInterval(reload, 15_000);
+    return () => window.clearInterval(t);
+  }, [reload]);
+  useRealtime(CHANGED, (payload: unknown) => {
+    const p = payload as ChangedPayload;
+    if (p.kind === "thread" && threadIds.includes(p.threadId)) reload();
+  });
+  return states;
+}
+
 function useReview(rpc: Rpc, threadId: string) {
   const [review, setReview] = useState<ReviewState | null>(null);
   const reload = useCallback(() => {
@@ -436,6 +460,8 @@ function SplitPane({
   className,
   minLeftPx = 0,
   minRightPx = 0,
+  collapsed = false,
+  collapsedRail,
 }: {
   storageKey: string;
   initial?: number;
@@ -447,6 +473,9 @@ function SplitPane({
   /** Pixel floors for each pane; the ratio is clamped so neither collapses. */
   minLeftPx?: number;
   minRightPx?: number;
+  /** Hide the right pane (kept mounted, so its state survives) and show `collapsedRail` instead. */
+  collapsed?: boolean;
+  collapsedRail?: React.ReactNode;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState<number | null>(null);
@@ -496,21 +525,27 @@ function SplitPane({
   }
   return (
     <div ref={rootRef} className={cn("flex min-h-0 min-w-0 flex-1", className)}>
-      <div className="flex min-h-0 min-w-0 flex-col" style={{ width: `${effective * 100}%` }}>
+      <div className="flex min-h-0 min-w-0 flex-col transition-[width] duration-200 ease-out" style={{ width: collapsed ? "100%" : `${effective * 100}%` }}>
         {left}
       </div>
-      <div
-        role="separator"
-        aria-orientation="vertical"
-        title="Drag to resize; double-click to reset"
-        className="w-1.5 shrink-0 cursor-col-resize touch-none border-x border-border bg-muted/40 transition-colors hover:bg-primary/40 active:bg-primary/60"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onDoubleClick={onDoubleClick}
-      />
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">{right}</div>
+      {collapsed ? (
+        collapsedRail ?? null
+      ) : (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          title="Drag to resize; double-click to reset"
+          className="w-1.5 shrink-0 cursor-col-resize touch-none border-x border-border bg-muted/40 transition-colors hover:bg-primary/40 active:bg-primary/60"
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+          onDoubleClick={onDoubleClick}
+        />
+      )}
+      <div className={cn("flex min-h-0 min-w-0 flex-col", collapsed ? "w-0 overflow-hidden opacity-0" : "flex-1 opacity-100")} aria-hidden={collapsed} inert={collapsed ? true : undefined}>
+        {right}
+      </div>
     </div>
   );
 }
@@ -2037,6 +2072,14 @@ function LibraryList({
                         </span>
                         <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
                           <span className="min-w-0 flex-1 truncate font-mono">{item.relative}</span>
+                          {live.some((t) => t.unread) ? (
+                            <span className="flex items-center gap-1 rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary" title="A thread on this RFC has a reply you have not seen">
+                              <span className="size-1.5 rounded-full bg-primary" />
+                              {live.filter((t) => t.unread).length === 1 ? "new reply" : `${live.filter((t) => t.unread).length} new`}
+                            </span>
+                          ) : live.some((t) => t.status === "active" || t.status === "starting") ? (
+                            <Icon name="LoaderCircle" className="size-3 animate-spin" />
+                          ) : null}
                           {live.length > 0 ? (
                             <span className="flex items-center gap-0.5" title={`${live.length} thread(s)`}>
                               <Icon name="MessagesSquare" className="size-3" />
@@ -2058,6 +2101,7 @@ function LibraryList({
                             >
                               <Icon name="MessagesSquare" className="size-3" />
                               <span className="truncate">{t.title ?? "Thread"}</span>
+                              {t.unread ? <span className="size-1.5 shrink-0 rounded-full bg-primary" /> : null}
                             </button>
                           ))}
                           {item.projectId !== null ? (
@@ -2112,6 +2156,20 @@ function RfcWorkspace({ threadId, item, onBack }: { threadId: string; item: Libr
   };
   const chat = <ThreadChat threadId={threadId} variant="compact" layout="contained" permissionPolicy="editable" className="h-full" />;
   const panel = <RfcPanel threadId={threadId} params={null} embedded controlledView={view} />;
+  const threadIds = useMemo(() => [threadId], [threadId]);
+  const states = useThreadStates(rpc, threadIds);
+  const st = states[threadId];
+  const unread = st?.unread === true;
+  const needsInput = st?.needsInput === true;
+  const working = st?.status === "active" || st?.status === "starting";
+  // Looking at the open chat counts as reading it.
+  useEffect(() => {
+    if (!chatOpen || !unread || !document.hasFocus()) return;
+    const t = window.setTimeout(() => void rpc.call("thread_mark_read", { threadId }), 1200);
+    return () => window.clearTimeout(t);
+  }, [chatOpen, unread, rpc, threadId]);
+  const attention = !chatOpen && (unread || needsInput);
+  const attentionLabel = needsInput ? "needs your input" : unread ? "new reply" : working ? "working…" : null;
   return (
     <div className="flex h-full min-h-0 w-full flex-col">
       <div className="flex h-8 shrink-0 items-center gap-1.5 border-b border-border px-1.5">
@@ -2169,25 +2227,39 @@ function RfcWorkspace({ threadId, item, onBack }: { threadId: string; item: Libr
           >
             <Icon name={chatOpen ? "PanelRightClose" : "PanelRightOpen"} className="size-3.5" />
             Chat
+            {attention ? <span className={cn("size-2 rounded-full", needsInput ? "bg-destructive" : "bg-primary")} title={attentionLabel ?? undefined} /> : null}
+            {!chatOpen && !attention && working ? <Icon name="LoaderCircle" className="size-3 animate-spin" /> : null}
           </button>
         </div>
       </div>
-      {chatOpen ? (
-        <SplitPane storageKey="workspace-chat-right" initial={0.62} min={0.3} max={0.85} minLeftPx={360} minRightPx={400} left={panel} right={chat} />
-      ) : (
-        <div className="flex min-h-0 min-w-0 flex-1">
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col">{panel}</div>
+      <SplitPane
+        storageKey="workspace-chat-right"
+        initial={0.62}
+        min={0.3}
+        max={0.85}
+        minLeftPx={360}
+        minRightPx={400}
+        left={panel}
+        right={chat}
+        collapsed={!chatOpen}
+        collapsedRail={
           <button
             type="button"
             onClick={() => setChatOpen(true)}
-            className="flex w-7 shrink-0 flex-col items-center gap-2 border-l border-border pt-2 text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-            title="Show the conversation"
+            className={cn(
+              "relative flex w-7 shrink-0 flex-col items-center gap-2 border-l border-border pt-2 text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+              attention && "text-foreground",
+            )}
+            title={attentionLabel === null ? "Show the conversation" : `Show the conversation (${attentionLabel})`}
           >
-            <Icon name="MessagesSquare" className="size-4" />
-            <span className="text-[10px] [writing-mode:vertical-rl]">Chat</span>
+            <span className="relative">
+              <Icon name={working && !attention ? "LoaderCircle" : "MessagesSquare"} className={cn("size-4", working && !attention && "animate-spin")} />
+              {attention ? <span className={cn("absolute -right-1 -top-1 size-2.5 rounded-full ring-2 ring-background", needsInput ? "bg-destructive" : "bg-primary")} /> : null}
+            </span>
+            <span className="text-[10px] [writing-mode:vertical-rl]">{attentionLabel === null ? "Chat" : attentionLabel}</span>
           </button>
-        </div>
-      )}
+        }
+      />
     </div>
   );
 }
