@@ -902,7 +902,9 @@ function useScrollSync() {
       dst.scrollToLine(src.lineAtTop());
     });
   }, []);
-  return { editor, preview, follow };
+  // Stable identity: consumers put this in effect deps, and a fresh object per
+  // render would re-run the "align preview to editor" effect on every poll.
+  return useMemo(() => ({ editor, preview, follow }), [follow]);
 }
 type ScrollSync = ReturnType<typeof useScrollSync>;
 
