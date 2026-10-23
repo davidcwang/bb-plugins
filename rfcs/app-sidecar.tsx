@@ -392,7 +392,10 @@ export function useSelectionActions(containerRef: RefObject<HTMLElement | null>,
   useEffect(() => {
     const el = containerRef.current;
     if (el === null) return;
-    const onUp = () => {
+    const onUp = (event: MouseEvent) => {
+      // Clicks inside the toolbar (Ask/Note open a form) must not re-evaluate
+      // the selection, which the click itself has just collapsed.
+      if ((event.target as HTMLElement).closest("[data-selection-toolbar]") !== null) return;
       window.setTimeout(() => {
         const s = window.getSelection();
         if (s === null || s.isCollapsed || s.rangeCount === 0) {
@@ -471,7 +474,11 @@ export function SelectionToolbar({
       data-selection-toolbar=""
       className="absolute z-20 flex max-w-[28rem] flex-wrap items-center gap-0.5 rounded-md border border-border bg-popover p-1 text-xs shadow-md"
       style={{ left: selection.x, top: selection.y }}
-      onMouseDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => {
+        e.stopPropagation();
+        // Buttons must not steal focus (that collapses the selection); inputs may.
+        if ((e.target as HTMLElement).closest("button") !== null) e.preventDefault();
+      }}
     >
       <button
         type="button"
