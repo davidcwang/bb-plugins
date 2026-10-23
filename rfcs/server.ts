@@ -602,7 +602,7 @@ export default async function plugin(bb: BbPluginApi) {
         file.contentEncoding === "base64" ? Buffer.from(file.content, "base64").toString("utf8") : file.content;
       return { path, content, sha256: file.sha256, modifiedAtMs: file.modifiedAtMs ?? null };
     } catch (cause) {
-      if (/ENOENT|not found|no such file/i.test(describe(cause))) return null;
+      if (/ENOENT|not found|no such file|does not exist|\b404\b/i.test(describe(cause))) return null;
       throw cause;
     }
   }
@@ -1380,7 +1380,7 @@ export default async function plugin(bb: BbPluginApi) {
           .sort((a, b) => a.relative.localeCompare(b.relative));
         return { candidates, note: null };
       } catch (cause) {
-        if (/ENOENT|not found|no such/i.test(describe(cause))) {
+        if (/ENOENT|not found|no such|does not exist|\b404\b/i.test(describe(cause))) {
           return { candidates: [], note: `${rfcDir} does not exist yet; "New RFC" will create it.` };
         }
         throw cause;

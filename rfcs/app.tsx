@@ -476,7 +476,7 @@ export interface PreviewAnnotations {
   sidecar: Sidecar | null;
   environmentId: string | null;
   termsExpanded: boolean;
-  onAddNote: (anchor: Anchor, text: string | null) => void;
+  onAddNote: (anchor: Anchor, title: string) => void;
   onExplain: (anchor: Anchor, mode: CardMode, prompt: string) => void;
   onOpenItems: (tab: ItemsTab, section: string | null) => void;
 }
@@ -521,7 +521,7 @@ export function RfcPreview({ rpc, content, className, annotate }: { rpc: Rpc; co
                 cards={cards}
                 glossary={sidecar?.glossary ?? []}
                 termsExpanded={annotate.termsExpanded}
-                onAddNote={(anchor) => annotate.onAddNote(anchor, null)}
+                onAddNote={annotate.onAddNote}
                 onExplain={annotate.onExplain}
                 onOpenItems={annotate.onOpenItems}
               />
@@ -551,8 +551,8 @@ export function RfcPreview({ rpc, content, className, annotate }: { rpc: Rpc; co
       {annotate !== undefined && selection !== null ? (
         <SelectionToolbar
           selection={selection}
-          onNote={(anchor, text) => {
-            annotate.onAddNote(anchor, text);
+          onNote={(anchor, title) => {
+            annotate.onAddNote(anchor, title);
             clear();
             window.getSelection()?.removeAllRanges();
           }}
@@ -1543,9 +1543,7 @@ function RfcPanel({
     const t = window.setTimeout(performJump, 120);
     return () => window.clearTimeout(t);
   });
-  const addNote = (anchor: Anchor, text: string | null) => {
-    const title = window.prompt(text === null ? `Note on ${anchor.section ?? "this document"}` : "Note title", text === null ? "" : text.slice(0, 80));
-    if (title === null || title.trim() === "") return;
+  const addNote = (anchor: Anchor, title: string) => {
     void rpc
       .call("note_add", { threadId, anchor, title: title.trim(), body: "", status: "open", discuss: false })
       .then(() => toast.success("Note added. Find it under Items."), (cause: unknown) => toast.error(describe(cause)));

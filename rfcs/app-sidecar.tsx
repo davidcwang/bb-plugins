@@ -235,10 +235,12 @@ export function SectionChrome({
   cards: Card[];
   glossary: Term[];
   termsExpanded: boolean;
-  onAddNote: (anchor: Anchor) => void;
+  onAddNote: (anchor: Anchor, title: string) => void;
   onExplain: (anchor: Anchor, mode: CardMode, prompt: string) => void;
   onOpenItems: (tab: "notes" | "claims", section: string | null) => void;
 }) {
+  const [noting, setNoting] = useState(false);
+  const [noteTitle, setNoteTitle] = useState("");
   const terms = useMemo(() => termsIn(section.text, glossary), [section.text, glossary]);
   const openNotes = notes.filter((n) => n.status === "open" || n.status === "blocked");
   const weakClaims = claims.filter((c) => c.status === "assumed" || c.status === "stale");
@@ -260,7 +262,7 @@ export function SectionChrome({
       ) : null}
       {cards.length > 0 ? <span className="rounded bg-muted px-1.5 py-0.5">{cards.length} card{cards.length === 1 ? "" : "s"}</span> : null}
       <span className="ml-auto flex items-center gap-0.5">
-        <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground" onClick={() => onAddNote(anchor)} title={`Add a note on ${title}`}>
+        <button type="button" className={cn("rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground", noting && "bg-muted text-foreground")} onClick={() => setNoting((v) => !v)} title={`Add a note on ${title}`}>
           + note
         </button>
         <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground" onClick={() => onExplain(anchor, "concept", section.heading?.title ?? section.text.slice(0, 200))} title={`Explain ${title}`}>
@@ -270,6 +272,26 @@ export function SectionChrome({
           ask
         </button>
       </span>
+      {noting ? (
+        <form
+          className="flex w-full items-center gap-1"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (noteTitle.trim() === "") return;
+            onAddNote(anchor, noteTitle.trim());
+            setNoteTitle("");
+            setNoting(false);
+          }}
+        >
+          <Input value={noteTitle} onChange={(e) => setNoteTitle(e.target.value)} autoFocus placeholder={`Note on ${title}: question, decision, or thing to keep in mind`} className="h-7 flex-1 text-xs" aria-label="Note title" />
+          <Button size="sm" type="submit" className="h-7 text-xs" disabled={noteTitle.trim() === ""}>
+            Add
+          </Button>
+          <Button size="sm" type="button" variant="outline" className="h-7 text-xs" onClick={() => setNoting(false)}>
+            Cancel
+          </Button>
+        </form>
+      ) : null}
       {asking ? (
         <form
           className="flex w-full items-center gap-1"
@@ -376,11 +398,13 @@ export function SelectionToolbar({
   onExplain,
 }: {
   selection: SelectionState;
-  onNote: (anchor: Anchor, text: string) => void;
+  onNote: (anchor: Anchor, title: string) => void;
   onExplain: (anchor: Anchor, mode: CardMode, prompt: string) => void;
 }) {
   const [asking, setAsking] = useState(false);
   const [q, setQ] = useState("");
+  const [noting, setNoting] = useState(false);
+  const [noteTitle, setNoteTitle] = useState(selection.text.slice(0, 80));
   return (
     <div
       data-selection-toolbar=""
@@ -388,7 +412,14 @@ export function SelectionToolbar({
       style={{ left: selection.x, top: selection.y }}
       onMouseDown={(e) => e.stopPropagation()}
     >
-      <button type="button" className="rounded px-2 py-1 hover:bg-muted" onClick={() => onNote(selection.anchor, selection.text)}>
+      <button
+        type="button"
+        className={cn("rounded px-2 py-1 hover:bg-muted", noting && "bg-muted")}
+        onClick={() => {
+          setNoting((v) => !v);
+          setAsking(false);
+        }}
+      >
         <Icon name="StickyNote" className="mr-1 inline size-3.5 align-text-bottom" />
         Note
       </button>
@@ -399,10 +430,32 @@ export function SelectionToolbar({
           {m === "concept" ? "Explain" : m === "code" ? "Code" : m === "data" ? "Data" : "Flow"}
         </button>
       ))}
-      <button type="button" className={cn("rounded px-2 py-1 hover:bg-muted", asking && "bg-muted")} onClick={() => setAsking((v) => !v)}>
+      <button
+        type="button"
+        className={cn("rounded px-2 py-1 hover:bg-muted", asking && "bg-muted")}
+        onClick={() => {
+          setAsking((v) => !v);
+          setNoting(false);
+        }}
+      >
         <Icon name="MessageCircleQuestion" className="mr-1 inline size-3.5 align-text-bottom" />
         Ask
       </button>
+      {noting ? (
+        <form
+          className="flex w-full items-center gap-1 pt-1"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (noteTitle.trim() === "") return;
+            onNote(selection.anchor, noteTitle.trim());
+          }}
+        >
+          <Input value={noteTitle} onChange={(e) => setNoteTitle(e.target.value)} autoFocus placeholder="Note title" className="h-7 flex-1 text-xs" aria-label="Note title" />
+          <Button size="sm" type="submit" className="h-7 text-xs" disabled={noteTitle.trim() === ""}>
+            Add note
+          </Button>
+        </form>
+      ) : null}
       {asking ? (
         <form
           className="flex w-full items-center gap-1 pt-1"
