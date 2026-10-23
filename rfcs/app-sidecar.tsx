@@ -3,7 +3,7 @@
 // Walkthrough view. Data comes from the sidecar RPCs in server.ts.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentType, ReactNode, RefObject } from "react";
-import { Markdown, ThreadChat, experimental_FileLink as FileLink, experimental_SourceCode as SourceCode, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
+import { Markdown, ThreadChat, experimental_FileLink as FileLink, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { rpcContract } from "./server";
 import { CHANGED, type ChangedPayload, type DocSection } from "./shared";
@@ -78,6 +78,33 @@ export function itemsForSection<T extends { anchor: Anchor }>(items: T[], sectio
 
 // ---- code refs -----------------------------------------------------------
 
+/** A code excerpt with real line numbers; bb's source viewer wants whole files, so this is ours. */
+function Snippet({ text, startLine }: { text: string; startLine: number }) {
+  const lines = text.replace(/\n$/, "").split("\n");
+  const [all, setAll] = useState(lines.length <= 24);
+  const shown = all ? lines : lines.slice(0, 16);
+  const width = String(startLine + lines.length).length;
+  return (
+    <div className="border-t border-border text-xs">
+      <pre className="m-0 max-h-96 overflow-auto bg-muted/30 py-2 font-mono leading-5">
+        {shown.map((l, i) => (
+          <div key={i} className="flex">
+            <span className="select-none pl-2 pr-3 text-right text-muted-foreground/60" style={{ minWidth: `${width + 2}ch` }}>
+              {startLine + i}
+            </span>
+            <span className="whitespace-pre pr-3">{l === "" ? " " : l}</span>
+          </div>
+        ))}
+      </pre>
+      {!all ? (
+        <button type="button" className="w-full border-t border-border py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => setAll(true)}>
+          Show all {lines.length} lines
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function CodeRefView({ file, environmentId }: { file: CodeRef; environmentId: string | null }) {
   const [open, setOpen] = useState(file.snippet !== null && file.snippet.split("\n").length <= 12);
   const where = file.startLine === null ? "" : `:${file.startLine}${file.endLine === null || file.endLine === file.startLine ? "" : `-${file.endLine}`}`;
@@ -103,11 +130,7 @@ function CodeRefView({ file, environmentId }: { file: CodeRef; environmentId: st
           </button>
         ) : null}
       </div>
-      {open && file.snippet !== null ? (
-        <div className="max-h-72 overflow-auto border-t border-border text-xs">
-          <SourceCode content={file.snippet} path={file.path} overflow="scroll" />
-        </div>
-      ) : null}
+      {open && file.snippet !== null ? <Snippet text={file.snippet} startLine={file.startLine ?? 1} /> : null}
     </div>
   );
 }

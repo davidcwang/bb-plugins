@@ -5,6 +5,8 @@
 // saves), Split (both), and Review (findings with accept/skip/discuss). Also
 // registers a markdown file opener that renders diagram fences inline.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { usePortalScopeProps } from "@/lib/portal-scope";
 import type { ComponentType } from "react";
 import { Markdown, ThreadChat, definePluginApp, useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import mermaid from "mermaid";
@@ -205,11 +207,40 @@ function DiagramFrame({
   startLine: number;
 }) {
   const [showSource, setShowSource] = useState(error !== null);
+  const [full, setFull] = useState(false);
+  const portalProps = usePortalScopeProps();
   useEffect(() => {
     if (error !== null) setShowSource(true);
   }, [error]);
+  useEffect(() => {
+    if (!full) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFull(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [full]);
   return (
     <figure data-src-line={startLine} className="group my-3 rounded-lg border border-border bg-card">
+      {full && svg !== null
+        ? createPortal(
+            <div className="fixed inset-0 z-[1000] flex flex-col bg-background/95 backdrop-blur-sm" {...portalProps}>
+              <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
+                <Icon name={lang === "d2" ? "Boxes" : "GitBranch"} className="size-3.5" />
+                <span className="font-mono">{lang}</span>
+                <span className="opacity-70">line {startLine}</span>
+                <span className="ml-auto opacity-70">⌘/Ctrl + wheel to zoom · drag to pan · double-click to reset · Esc to close</span>
+                <button type="button" className="rounded px-2 py-0.5 hover:bg-muted hover:text-foreground" onClick={() => setFull(false)}>
+                  Close
+                </button>
+              </div>
+              <div className="group relative min-h-0 flex-1">
+                <DiagramViewport svg={svg} tall={false} fill />
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
       <div className="flex items-center gap-2 border-b border-border px-2 py-1 text-[11px] text-muted-foreground">
         <Icon name={lang === "d2" ? "Boxes" : "GitBranch"} className="size-3.5" />
         <span className="font-mono">{lang}</span>
@@ -230,16 +261,21 @@ function DiagramFrame({
             Copy
           </button>
           {svg !== null ? (
-            <button
-              type="button"
-              className="rounded px-1.5 py-0.5 hover:bg-muted"
-              onClick={() => {
-                void navigator.clipboard.writeText(svg);
-                toast.success("SVG copied.");
-              }}
-            >
-              Copy SVG
-            </button>
+            <>
+              <button
+                type="button"
+                className="rounded px-1.5 py-0.5 hover:bg-muted"
+                onClick={() => {
+                  void navigator.clipboard.writeText(svg);
+                  toast.success("SVG copied.");
+                }}
+              >
+                Copy SVG
+              </button>
+              <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted" onClick={() => setFull(true)} title="View full screen">
+                Fullscreen
+              </button>
+            </>
           ) : null}
         </span>
       </div>
@@ -259,7 +295,7 @@ function DiagramFrame({
  * pinch arrives the same way) or the buttons; drag to pan; double-click or
  * the reset button returns to fit.
  */
-function DiagramViewport({ svg, tall }: { svg: string; tall: boolean }) {
+function DiagramViewport({ svg, tall, fill = false }: { svg: string; tall: boolean; fill?: boolean }) {
   const [t, setT] = useState({ scale: 1, x: 0, y: 0 });
   const ref = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
@@ -291,10 +327,14 @@ function DiagramViewport({ svg, tall }: { svg: string; tall: boolean }) {
   }, [zoomed]);
   const reset = () => setT({ scale: 1, x: 0, y: 0 });
   return (
-    <div className="relative">
+    <div className={cn("relative", fill && "h-full")}>
       <div
         ref={ref}
-        className={cn("rfc-diagram overflow-hidden px-3 py-3 select-none", tall ? "max-h-[70vh]" : "", drag.current !== null ? "cursor-grabbing" : "cursor-grab")}
+        className={cn(
+          "rfc-diagram select-none overflow-hidden px-3 py-3",
+          fill ? "flex h-full items-center justify-center [&_svg]:max-h-[calc(100vh-5rem)]" : tall ? "max-h-[70vh]" : "",
+          drag.current !== null ? "cursor-grabbing" : "cursor-grab",
+        )}
         onPointerDown={(e) => {
           if (e.button !== 0) return;
           drag.current = { x: e.clientX, y: e.clientY, ox: t.x, oy: t.y };
