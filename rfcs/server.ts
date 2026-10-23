@@ -296,6 +296,11 @@ export const rpcContract = defineRpcContract({
     }),
     output: z.object({ content: z.string(), rootPath: z.string().nullable() }).nullable(),
   },
+  file_excerpt: {
+    // Lines of a workspace file for a code reference whose snippet the agent left out.
+    input: z.object({ environmentId: z.string(), path: z.string().max(1000), startLine: z.number().int().positive().nullable(), endLine: z.number().int().positive().nullable() }),
+    output: z.object({ text: z.string(), startLine: z.number(), endLine: z.number(), totalLines: z.number() }).nullable(),
+  },
   diagram_render: {
     input: z.object({
       lang: z.literal("d2"),
@@ -1444,6 +1449,23 @@ export default async function plugin(bb: BbPluginApi) {
         return { outcome: "written" as const, sha256: result.sha256 };
       }
       return { outcome: "conflict" as const, currentSha256: result.currentSha256 ?? null };
+    },
+    file_excerpt: async ({ environmentId, path, startLine, endLine }) => {
+      try {
+        const environment = await bb.sdk.environments.get({ environmentId });
+        if (environment.path === null) return null;
+        const abs = normalize(joinPath(environment.path, path));
+        if (!within(environment.path, abs)) return null;
+        const file = await readFileAt(abs, environment.hostId);
+        if (file === null) return null;
+        const lines = file.content.split("\n");
+        const from = Math.max(1, startLine ?? 1);
+        const to = Math.min(lines.length, endLine ?? Math.min(lines.length, from + 39));
+        if (from > lines.length) return { text: "", startLine: from, endLine: from, totalLines: lines.length };
+        return { text: lines.slice(from - 1, to).join("\n"), startLine: from, endLine: to, totalLines: lines.length };
+      } catch {
+        return null;
+      }
     },
     file_read: async ({ source, environmentId, hostId, path }) => {
       try {

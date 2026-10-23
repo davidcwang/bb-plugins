@@ -128,7 +128,20 @@ function Snippet({ text, path, startLine }: { text: string; path: string; startL
 }
 
 function CodeRefView({ file, environmentId }: { file: CodeRef; environmentId: string | null }) {
-  const [open, setOpen] = useState(file.snippet !== null && file.snippet.split("\n").length <= 12);
+  const rpc = useRpc<typeof rpcContract>();
+  const span = file.startLine === null ? null : (file.endLine ?? file.startLine) - file.startLine + 1;
+  const [open, setOpen] = useState((file.snippet !== null && file.snippet.split("\n").length <= 12) || (file.snippet === null && span !== null && span <= 12));
+  // When the agent left the snippet out, fetch the lines from the workspace.
+  const [fetched, setFetched] = useState<{ text: string; startLine: number } | null | "loading" | "missing">(null);
+  useEffect(() => {
+    if (!open || file.snippet !== null || environmentId === null || fetched !== null) return;
+    setFetched("loading");
+    rpc.call("file_excerpt", { environmentId, path: file.path, startLine: file.startLine, endLine: file.endLine }).then(
+      (r) => setFetched(r === null || r.text === "" ? "missing" : { text: r.text, startLine: r.startLine }),
+      () => setFetched("missing"),
+    );
+  }, [open, file.snippet, file.path, file.startLine, file.endLine, environmentId, fetched, rpc]);
+  const snippet = file.snippet !== null ? { text: file.snippet, startLine: file.startLine ?? 1 } : typeof fetched === "object" && fetched !== null ? fetched : null;
   const where = file.startLine === null ? "" : `:${file.startLine}${file.endLine === null || file.endLine === file.startLine ? "" : `-${file.endLine}`}`;
   const location = file.startLine === null ? null : ({ kind: "range", startLine: file.startLine, endLine: file.endLine ?? file.startLine } as const);
   return (
@@ -146,13 +159,15 @@ function CodeRefView({ file, environmentId }: { file: CodeRef; environmentId: st
           </span>
         )}
         {file.note !== null ? <span className="min-w-0 flex-1 truncate text-muted-foreground">{file.note}</span> : null}
-        {file.snippet !== null ? (
+        {file.snippet !== null || environmentId !== null ? (
           <button type="button" className="ml-auto text-muted-foreground hover:text-foreground" onClick={() => setOpen((v) => !v)}>
             {open ? "hide" : "show"}
           </button>
         ) : null}
       </div>
-      {open && file.snippet !== null ? <Snippet text={file.snippet} path={file.path} startLine={file.startLine ?? 1} /> : null}
+      {open && snippet !== null ? <Snippet text={snippet.text} path={file.path} startLine={snippet.startLine} /> : null}
+      {open && snippet === null && fetched === "loading" ? <div className="border-t border-border px-2 py-1 text-[11px] text-muted-foreground">Loading lines…</div> : null}
+      {open && snippet === null && fetched === "missing" ? <div className="border-t border-border px-2 py-1 text-[11px] text-muted-foreground">Could not read these lines from the workspace.</div> : null}
     </div>
   );
 }
