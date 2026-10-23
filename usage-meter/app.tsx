@@ -135,14 +135,14 @@ function UsageMeter() {
       lines.push(`${provider.label}: usage ${provider.status.replace(/_/g, " ")}`);
     } else {
       lines.push(`${provider.label}${provider.planLabel ? ` · ${provider.planLabel}` : ""}`);
-      // Badge shows the session window and the general weekly window; model
-      // specific windows are shown when they are the tighter limit.
+      // Badge shows the session window, the general weekly window, and the
+      // tightest model-specific window whenever the provider reports one.
       const session = provider.windows.find((w) => w.kind === "five-hour");
       const weekly = provider.windows.find((w) => w.kind === "weekly" && !w.model);
       const tightest = provider.windows
         .filter((w) => w.model)
         .sort((a, b) => b.usedPercent - a.usedPercent)[0];
-      const showTightest = tightest && (!weekly || tightest.usedPercent > weekly.usedPercent);
+      const showTightest = tightest !== undefined;
       // A model window that shares the weekly reset time doesn't repeat it.
       const sharedReset = showTightest && weekly && tightest!.resetsAt === weekly.resetsAt;
       for (const w of [session, weekly]) {

@@ -13,8 +13,8 @@ while the window is visible.
   usage yet).
 - **5h** — the provider's current session (five-hour) limit.
 - **wk** — the provider's general weekly limit.
-- A model name (for example **Fable**) appears when a model-specific weekly
-  limit is higher than the general weekly one.
+- A model name (for example **Fable**) shows the model-specific weekly limit
+  whenever the provider reports one (the most-used one if there are several).
 
 Each limit is followed by a countdown to its reset, such as `↻4h12m` or
 `↻2d3h`. A model window that resets at the same moment as the weekly limit
