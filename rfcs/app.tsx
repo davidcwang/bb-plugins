@@ -434,6 +434,8 @@ function SplitPane({
   left,
   right,
   className,
+  minLeftPx = 0,
+  minRightPx = 0,
 }: {
   storageKey: string;
   initial?: number;
@@ -442,8 +444,22 @@ function SplitPane({
   left: React.ReactNode;
   right: React.ReactNode;
   className?: string;
+  /** Pixel floors for each pane; the ratio is clamped so neither collapses. */
+  minLeftPx?: number;
+  minRightPx?: number;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState<number | null>(null);
+  useEffect(() => {
+    const el = rootRef.current;
+    if (el === null) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) setWidth(entry.contentRect.width);
+    });
+    ro.observe(el);
+    setWidth(el.getBoundingClientRect().width);
+    return () => ro.disconnect();
+  }, []);
   const [ratio, setRatio] = useState(() => {
     const saved = Number(recall(`split:${storageKey}`));
     return Number.isFinite(saved) && saved > min && saved < max ? saved : initial;
@@ -470,9 +486,17 @@ function SplitPane({
     setRatio(initial);
     remember(`split:${storageKey}`, null);
   };
+  // Apply pixel floors on top of the ratio so a narrow window never squeezes
+  // a pane (bb's chat composer needs ~380px to lay out).
+  let effective = ratio;
+  if (width !== null && width > 0) {
+    const lo = minLeftPx / width;
+    const hi = 1 - minRightPx / width;
+    if (lo <= hi) effective = Math.min(hi, Math.max(lo, ratio));
+  }
   return (
     <div ref={rootRef} className={cn("flex min-h-0 min-w-0 flex-1", className)}>
-      <div className="flex min-h-0 min-w-0 flex-col" style={{ width: `${ratio * 100}%` }}>
+      <div className="flex min-h-0 min-w-0 flex-col" style={{ width: `${effective * 100}%` }}>
         {left}
       </div>
       <div
@@ -2149,7 +2173,7 @@ function RfcWorkspace({ threadId, item, onBack }: { threadId: string; item: Libr
         </div>
       </div>
       {chatOpen ? (
-        <SplitPane storageKey="workspace-chat-right" initial={0.62} min={0.3} max={0.85} left={panel} right={chat} />
+        <SplitPane storageKey="workspace-chat-right" initial={0.62} min={0.3} max={0.85} minLeftPx={360} minRightPx={400} left={panel} right={chat} />
       ) : (
         <div className="flex min-h-0 min-w-0 flex-1">
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">{panel}</div>

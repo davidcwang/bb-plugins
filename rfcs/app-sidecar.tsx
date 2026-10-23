@@ -920,16 +920,23 @@ export function WalkthroughView({
   useEffect(() => {
     stepRef.current?.scrollTo({ top: 0 });
   }, [step, current?.id]);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (current === null) return;
-      if ((e.target as HTMLElement).tagName === "INPUT" || (e.target as HTMLElement).tagName === "TEXTAREA") return;
-      if (e.key === "ArrowRight" || e.key === "j") setStep((s) => Math.min(current.steps.length - 1, s + 1));
-      if (e.key === "ArrowLeft" || e.key === "k") setStep((s) => Math.max(0, s - 1));
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [current]);
+  // Keyboard navigation only while the walkthrough itself has focus, so
+  // typing in the chat beside it (a contenteditable, not a textarea) never
+  // flips steps.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (current === null) return;
+    const target = e.target as HTMLElement;
+    if (target.isContentEditable || target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT") return;
+    if (e.key === "ArrowRight" || e.key === "j") {
+      e.preventDefault();
+      setStep((s) => Math.min(current.steps.length - 1, s + 1));
+    }
+    if (e.key === "ArrowLeft" || e.key === "k") {
+      e.preventDefault();
+      setStep((s) => Math.max(0, s - 1));
+    }
+  };
 
   const generate = async () => {
     setBusy(true);
@@ -946,7 +953,7 @@ export function WalkthroughView({
 
   const s = current?.steps[step] ?? null;
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div ref={rootRef} tabIndex={0} onKeyDown={onKeyDown} onMouseDown={() => rootRef.current?.focus({ preventScroll: true })} className="flex h-full min-h-0 flex-col outline-none">
       <div className="flex flex-wrap items-center gap-1 border-b border-border px-2 py-1.5 text-xs">
         {list.length > 1 ? (
           <select value={current?.id ?? ""} onChange={(e) => setSelectedId(e.target.value)} className="h-7 rounded border border-border bg-background px-1 text-xs" aria-label="Walkthrough">
@@ -1026,7 +1033,7 @@ export function WalkthroughView({
                 <Button size="sm" className="h-7 text-xs" disabled={step >= current.steps.length - 1} onClick={() => setStep((x) => x + 1)}>
                   Next <Icon name="ChevronRight" className="size-3.5" />
                 </Button>
-                <span className="text-[11px] text-muted-foreground">← → or j/k</span>
+                <span className="text-[11px] text-muted-foreground">← → or j/k while this pane is focused</span>
               </div>
             </div>
           </div>
