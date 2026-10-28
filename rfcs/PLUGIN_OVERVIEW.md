@@ -2,14 +2,15 @@ An RFC writing workbench that opens beside any thread.
 
 ## What you get
 
-- An **RFC** tab in the thread panel with four views:
-  - **Preview** renders the RFC markdown live (re-read every 1.5 s) with
-    ```` ```mermaid ```` and ```` ```d2 ```` fences drawn as diagrams. D2
-    gives Lucidchart-style architecture diagrams; mermaid covers sequence,
-    flow, state, and ER diagrams.
-  - **Edit** is a plain editor for the same file with ⌘S saves that refuse
-    to clobber a change the agent made meanwhile.
-  - **Split** shows both side by side.
+- An **RFC** tab in the thread panel with these views:
+  - **Split** (default): a monospace editor with autosave beside the rendered
+    document, scroll-synced; ```` ```mermaid ```` and ```` ```d2 ```` fences
+    draw as diagrams. D2 gives Lucidchart-style architecture diagrams;
+    mermaid covers sequence, flow, state, and ER diagrams.
+  - **Document**: the rendered RFC alone; each section's **edit** action
+    opens its raw markdown in place.
+  - **Changes**: revision history with a line diff, defaulting to what the
+    last edit changed; restore any revision.
   - **Review** runs a review round in a hidden worker thread. Findings land
     here first; accept, skip, edit, prioritize, and **discuss** each one in
     its own thread before the accepted set goes to the agent.

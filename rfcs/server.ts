@@ -116,6 +116,27 @@ const docReadSchema = z.object({
 });
 export type DocRead = z.infer<typeof docReadSchema>;
 
+/** Who produced a revision of the RFC file. */
+const REVISION_AUTHORS = ["user", "agent", "external"] as const;
+const revisionSchema = z.object({
+  id: z.string(),
+  at: z.string(),
+  by: z.enum(REVISION_AUTHORS),
+  sha256: z.string(),
+  content: z.string(),
+  threadId: z.string().nullable().default(null),
+});
+type Revision = z.infer<typeof revisionSchema>;
+const revisionsSchema = z.object({ version: z.literal(1), items: z.array(revisionSchema) });
+const revisionSummarySchema = revisionSchema.omit({ content: true }).extend({ lines: z.number().int() });
+const MAX_REVISIONS = 40;
+/** Consecutive writes by the same author inside this window fold into one revision. */
+const REVISION_COALESCE_MS: Record<(typeof REVISION_AUTHORS)[number], number> = {
+  user: 10 * 60_000,
+  agent: 3 * 60_000,
+  external: 10 * 60_000,
+};
+
 const candidateSchema = z.object({ path: z.string(), relative: z.string() });
 export type Candidate = z.infer<typeof candidateSchema>;
 
@@ -285,6 +306,14 @@ export const rpcContract = defineRpcContract({
       z.object({ outcome: z.literal("written"), sha256: z.string() }),
       z.object({ outcome: z.literal("conflict"), currentSha256: z.string().nullable() }),
     ]),
+  },
+  revisions_list: {
+    input: z.object({ threadId: z.string() }),
+    output: z.object({ items: z.array(revisionSummarySchema) }),
+  },
+  revision_get: {
+    input: z.object({ threadId: z.string(), id: z.string() }),
+    output: revisionSchema.nullable(),
   },
   file_read: {
     // Used by the markdown file opener for files that are not the thread's RFC.
@@ -568,6 +597,61 @@ export default async function plugin(bb: BbPluginApi) {
     });
     queues.set(threadId, next.catch(() => undefined));
     return next;
+  }
+
+  // ---- revisions ----
+  // Snapshots of the RFC file, keyed by path so every thread on the same RFC
+  // shares one history. The agent edits the file with its own tools, so
+  // changes are noticed on read (the panel polls) and attributed by whether a
+  // thread on this RFC was running; the panel's own writes are tagged "user".
+  const revKey = (path: string) => `revs:${sha256(path)}`;
+  const revQueues = new Map<string, Promise<unknown>>();
+  const lastUserSha = new Map<string, string>();
+  const readRevisions = async (path: string): Promise<Revision[]> => {
+    const parsed = revisionsSchema.safeParse(await bb.storage.kv.get<unknown>(revKey(path)));
+    return parsed.success ? parsed.data.items : [];
+  };
+  function recordRevision(path: string, read: DocRead, by: Revision["by"], threadId: string | null): Promise<boolean> {
+    const prev = revQueues.get(path) ?? Promise.resolve();
+    const next = prev.then(async () => {
+      const items = await readRevisions(path);
+      const last = items[items.length - 1];
+      if (last !== undefined && last.sha256 === read.sha256) return false;
+      const at = now();
+      const fold = last !== undefined && last.by === by && items.length > 1 && Date.parse(at) - Date.parse(last.at) < REVISION_COALESCE_MS[by];
+      if (fold) {
+        items[items.length - 1] = { ...last, at, sha256: read.sha256, content: read.content, threadId: last.threadId ?? threadId };
+      } else {
+        items.push({ id: `${Date.now().toString(36)}-${read.sha256.slice(0, 8)}`, at, by, sha256: read.sha256, content: read.content, threadId });
+      }
+      while (items.length > MAX_REVISIONS) items.shift();
+      await bb.storage.kv.set(revKey(path), { version: 1, items });
+      return true;
+    });
+    revQueues.set(path, next.catch(() => undefined));
+    return next;
+  }
+  /** Called on every panel read: snapshot the file if it changed since the last known revision. */
+  async function trackRevision(threadId: string, doc: DocRef, read: DocRead) {
+    const items = await readRevisions(doc.path);
+    const last = items[items.length - 1];
+    if (last !== undefined && last.sha256 === read.sha256) return;
+    let by: Revision["by"];
+    if (items.length === 0) by = "external";
+    else if (lastUserSha.get(doc.path) === read.sha256) by = "user";
+    else by = (await rfcThreadActive(threadId)) ? "agent" : "external";
+    if (await recordRevision(doc.path, read, by, threadId)) bb.realtime.publish(CHANGED, { threadId, kind: "revisions" });
+  }
+  async function rfcThreadActive(threadId: string): Promise<boolean> {
+    const live = (status: unknown) => status === "active" || status === "starting";
+    try {
+      const thread = await bb.sdk.threads.get({ threadId });
+      if (live(thread.status)) return true;
+      const children = await bb.sdk.threads.list({ parentThreadId: threadId, includeHidden: true });
+      return children.some((t) => live(t.status));
+    } catch {
+      return false;
+    }
   }
 
   // ---- thread context ----
@@ -1432,7 +1516,9 @@ export default async function plugin(bb: BbPluginApi) {
     doc_read: async ({ threadId }) => {
       const doc = await readDoc(threadId);
       if (doc === null) return null;
-      return readFileAt(doc.path, doc.hostId);
+      const read = await readFileAt(doc.path, doc.hostId);
+      if (read !== null) void trackRevision(threadId, doc, read).catch(() => undefined);
+      return read;
     },
     doc_write: async ({ threadId, content, expectedSha256 }) => {
       const doc = await readDoc(threadId);
@@ -1445,10 +1531,27 @@ export default async function plugin(bb: BbPluginApi) {
         ...fileArgs(doc.hostId),
       });
       if (result.outcome === "written") {
+        lastUserSha.set(doc.path, result.sha256);
+        void recordRevision(doc.path, { path: doc.path, content, sha256: result.sha256, modifiedAtMs: null }, "user", threadId)
+          .then((changed) => {
+            if (changed) bb.realtime.publish(CHANGED, { threadId, kind: "revisions" });
+          })
+          .catch(() => undefined);
         bb.realtime.publish(CHANGED, { threadId, kind: "doc" });
         return { outcome: "written" as const, sha256: result.sha256 };
       }
       return { outcome: "conflict" as const, currentSha256: result.currentSha256 ?? null };
+    },
+    revisions_list: async ({ threadId }) => {
+      const doc = await readDoc(threadId);
+      if (doc === null) return { items: [] };
+      const items = await readRevisions(doc.path);
+      return { items: items.map(({ content, ...rest }) => ({ ...rest, lines: content.split("\n").length })) };
+    },
+    revision_get: async ({ threadId, id }) => {
+      const doc = await readDoc(threadId);
+      if (doc === null) return null;
+      return (await readRevisions(doc.path)).find((r) => r.id === id) ?? null;
     },
     file_excerpt: async ({ environmentId, path, startLine, endLine }) => {
       try {

@@ -289,6 +289,7 @@ export function SectionChrome({
   onAddNote,
   onExplain,
   onOpenItems,
+  onEdit,
 }: {
   section: DocSection;
   notes: Note[];
@@ -299,6 +300,8 @@ export function SectionChrome({
   onAddNote: (anchor: Anchor, title: string) => void;
   onExplain: (anchor: Anchor, mode: CardMode, prompt: string) => void;
   onOpenItems: (tab: "notes" | "claims", section: string | null) => void;
+  /** Edit this section's raw markdown in place. */
+  onEdit?: () => void;
 }) {
   const [noting, setNoting] = useState(false);
   const [noteTitle, setNoteTitle] = useState("");
@@ -323,6 +326,11 @@ export function SectionChrome({
       ) : null}
       {cards.length > 0 ? <span className="rounded bg-muted px-1.5 py-0.5">{cards.length} card{cards.length === 1 ? "" : "s"}</span> : null}
       <span className="ml-auto flex items-center gap-0.5">
+        {onEdit !== undefined ? (
+          <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground" onClick={onEdit} title={`Edit the markdown of ${title}`}>
+            edit
+          </button>
+        ) : null}
         <button type="button" className={cn("rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground", noting && "bg-muted text-foreground")} onClick={() => setNoting((v) => !v)} title={`Add a note on ${title}`}>
           + note
         </button>

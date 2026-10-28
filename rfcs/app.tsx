@@ -17,6 +17,7 @@ import type { Anchor, CardMode } from "./sidecar";
 import { CardView, ItemsView, SectionChrome, SelectionToolbar, WalkthroughView, itemsForSection, useSelectionActions, useSidecar, type DiagramRenderer, type ItemsTab } from "./app-sidecar";
 import type { Sidecar } from "./sidecar";
 import { recall, remember } from "./memory";
+import { ChangesView, unseenChanges, useRevisions } from "./app-changes";
 import { Button } from "@/components/ui/button";
 import { ICON_NAMES, Icon, iconComponent } from "./icons";
 import { Input } from "@/components/ui/input";
@@ -622,6 +623,84 @@ function Frontmatter({ meta }: { meta: Record<string, string> }) {
   );
 }
 
+/**
+ * In-place raw-markdown editor for one section of the rendered document.
+ * Saves when focus leaves or on ⌘/Ctrl+Enter; Esc cancels.
+ */
+function SectionEditor({ initial, startLine, onSave, onCancel }: { initial: string; startLine: number; onSave: (text: string) => Promise<void>; onCancel: () => void }) {
+  const [text, setText] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const latest = useRef({ text, busy, cancelled: false });
+  latest.current = { ...latest.current, text, busy };
+  const fit = () => {
+    const ta = ref.current;
+    if (ta === null) return;
+    ta.style.height = "0px";
+    ta.style.height = `${ta.scrollHeight + 2}px`;
+  };
+  useEffect(() => {
+    fit();
+    const ta = ref.current;
+    if (ta !== null) {
+      ta.focus();
+      ta.setSelectionRange(0, 0);
+    }
+  }, []);
+  useEffect(fit, [text]);
+  const commit = async () => {
+    const cur = latest.current;
+    if (cur.busy || cur.cancelled) return;
+    if (cur.text === initial) {
+      onCancel();
+      return;
+    }
+    setBusy(true);
+    try {
+      await onSave(cur.text);
+    } catch (cause) {
+      toast.error(describe(cause));
+      setBusy(false);
+    }
+  };
+  const cancel = () => {
+    latest.current.cancelled = true;
+    onCancel();
+  };
+  return (
+    <div className="rfc-section-editor my-2 rounded border border-primary/40 bg-muted/30">
+      <div className="flex items-center gap-2 border-b border-border/60 px-2 py-0.5 text-[10px] text-muted-foreground">
+        <span>Editing markdown from line {startLine}</span>
+        <span className="ml-auto">⌘↩ save · esc cancel · saves when you click away</span>
+        <button type="button" className="rounded px-1 hover:bg-muted hover:text-foreground" onMouseDown={(e) => e.preventDefault()} onClick={cancel}>
+          cancel
+        </button>
+        <button type="button" className="rounded px-1 text-foreground hover:bg-muted" onMouseDown={(e) => e.preventDefault()} onClick={() => void commit()} disabled={busy}>
+          {busy ? "saving…" : "save"}
+        </button>
+      </div>
+      <textarea
+        ref={ref}
+        value={text}
+        disabled={busy}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => void commit()}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            cancel();
+          } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            void commit();
+          }
+        }}
+        spellCheck={false}
+        className="block w-full resize-none overflow-hidden bg-transparent px-2 py-1.5 font-mono text-[13px] leading-6 outline-none"
+      />
+    </div>
+  );
+}
+
 export interface PreviewAnnotations {
   threadId: string;
   sidecar: Sidecar | null;
@@ -630,6 +709,8 @@ export interface PreviewAnnotations {
   onAddNote: (anchor: Anchor, title: string) => void;
   onExplain: (anchor: Anchor, mode: CardMode, prompt: string) => void;
   onOpenItems: (tab: ItemsTab, section: string | null) => void;
+  /** Replace source lines [startLine, endLine] (1-based, inclusive) with new markdown. */
+  onEditSection?: (startLine: number, endLine: number, text: string) => Promise<void>;
 }
 
 /** Diagram renderer handed to sidecar cards and walkthrough steps. */
@@ -653,18 +734,36 @@ export function RfcPreview({ rpc, content, className, annotate }: { rpc: Rpc; co
   const articleRef = useRef<HTMLElement>(null);
   const { selection, clear } = useSelectionActions(articleRef, annotate === undefined ? "" : content);
   const sidecar = annotate?.sidecar ?? null;
+  const [editing, setEditing] = useState<number | null>(null);
+  const lines = useMemo(() => content.split("\n"), [content]);
   return (
     <article ref={articleRef} className={cn("rfc-preview relative px-4 py-3", className)}>
       {meta !== null ? <Frontmatter meta={meta} /> : null}
       {sections.map((section, index) => {
         const next = sections[index + 1]?.startLine ?? null;
+        if (editing === section.startLine && annotate?.onEditSection !== undefined) {
+          const endLine = next === null ? lines.length : next - 1;
+          return (
+            <section key={`edit:${section.startLine}`} data-section={section.heading?.title ?? ""} data-section-line={section.startLine} className="rfc-section">
+              <SectionEditor
+                initial={lines.slice(section.startLine - 1, endLine).join("\n")}
+                startLine={section.startLine}
+                onCancel={() => setEditing(null)}
+                onSave={async (text) => {
+                  await annotate.onEditSection!(section.startLine, endLine, text);
+                  setEditing(null);
+                }}
+              />
+            </section>
+          );
+        }
         const notes = sidecar === null ? [] : itemsForSection(sidecar.notes, section, next);
         const claims = sidecar === null ? [] : itemsForSection(sidecar.claims, section, next);
         const cards = sidecar === null ? [] : itemsForSection(sidecar.cards, section, next);
         const key = `s:${section.startLine}:${hashString(section.text)}`;
         return (
           <section key={key} data-section={section.heading?.title ?? ""} data-section-line={section.startLine} className="rfc-section">
-            {annotate !== undefined && (section.heading !== null || notes.length + claims.length + cards.length > 0) ? (
+            {annotate !== undefined && (section.heading !== null || annotate.onEditSection !== undefined || notes.length + claims.length + cards.length > 0) ? (
               <SectionChrome
                 section={section}
                 notes={notes}
@@ -675,6 +774,7 @@ export function RfcPreview({ rpc, content, className, annotate }: { rpc: Rpc; co
                 onAddNote={annotate.onAddNote}
                 onExplain={annotate.onExplain}
                 onOpenItems={annotate.onOpenItems}
+                onEdit={annotate.onEditSection === undefined ? undefined : () => setEditing(section.startLine)}
               />
             ) : null}
             {section.segments.map((segment) => {
@@ -1582,13 +1682,13 @@ function DocChooser({ rpc, threadId, context, onChanged }: { rpc: Rpc; threadId:
 
 // ---- panel ---------------------------------------------------------------
 
-type View = "preview" | "edit" | "split" | "review" | "items" | "walkthrough";
-const VIEWS: View[] = ["split", "edit", "preview", "review", "items", "walkthrough"];
+type View = "preview" | "changes" | "split" | "review" | "items" | "walkthrough";
+const VIEWS: View[] = ["split", "preview", "changes", "review", "items", "walkthrough"];
 const DEFAULT_VIEW: View = "split";
 const VIEW_TABS: Array<{ id: View; title: string; icon: string }> = [
   { id: "split", title: "Split", icon: "Columns2" },
-  { id: "edit", title: "Edit", icon: "Pencil" },
-  { id: "preview", title: "Preview", icon: "Eye" },
+  { id: "preview", title: "Document", icon: "FileText" },
+  { id: "changes", title: "Changes", icon: "GitCompare" },
   { id: "review", title: "Review", icon: "ListChecks" },
   { id: "items", title: "Items", icon: "ListTodo" },
   { id: "walkthrough", title: "Walkthrough", icon: "Play" },
@@ -1663,6 +1763,7 @@ function RfcPanel({
   const { review } = useReview(rpc, threadId);
   const { sidecar } = useSidecar(rpc, threadId, true);
   const openNotes = sidecar?.notes.filter((n) => n.status === "open" || n.status === "blocked").length ?? 0;
+  const revisions = useRevisions(rpc, threadId, docPath !== null);
   const [itemsTab, setItemsTab] = useState<ItemsTab>("notes");
   const [itemsSection, setItemsSection] = useState<string | null>(null);
   const [termsExpanded, setTermsExpandedState] = useState(() => recall("termsExpanded") === "on");
@@ -1724,6 +1825,24 @@ function RfcPanel({
     setItemsSection(section);
     setView("items");
   };
+  const docRef = useRef<DocRead | null | undefined>(doc);
+  docRef.current = doc;
+  /** Replace a line range of the file with new markdown, guarded by the sha we rendered from. */
+  const editSection = async (startLine: number, endLine: number, text: string) => {
+    const cur = docRef.current;
+    if (cur === null || cur === undefined) throw new Error("The document is not loaded.");
+    const lines = cur.content.split("\n");
+    const next = [...lines.slice(0, startLine - 1), ...text.split("\n"), ...lines.slice(endLine)].join("\n");
+    const result = await rpc.call("doc_write", { threadId, content: next, expectedSha256: cur.sha256 });
+    if (result.outcome !== "written") throw new Error("The file changed on disk while you were editing; your section edit was not saved.");
+    reloadDoc();
+  };
+  const restoreRevision = async (content: string) => {
+    const result = await rpc.call("doc_write", { threadId, content, expectedSha256: null });
+    if (result.outcome !== "written") throw new Error("Could not write the file.");
+    reloadDoc();
+    toast.success("Restored.");
+  };
   const annotate: PreviewAnnotations = {
     threadId,
     sidecar,
@@ -1732,6 +1851,7 @@ function RfcPanel({
     onAddNote: addNote,
     onExplain: explain,
     onOpenItems: openItems,
+    onEditSection: editSection,
   };
   // In Split view the editor is the source of truth for position (it restores
   // its own scroll and the preview follows), so only Preview restores itself.
@@ -1772,7 +1892,7 @@ function RfcPanel({
     <div className="flex h-full min-h-0 flex-col">
       {embedded ? null : (
         <div className="flex items-center gap-1 border-b border-border px-2 pt-1">
-          <ViewTabs view={view} onChange={setView} pending={pending} badges={{ items: openNotes }} />
+          <ViewTabs view={view} onChange={setView} pending={pending} badges={{ items: openNotes, changes: unseenChanges(threadId, revisions) }} />
           {context?.doc ? (
             <button type="button" className="ml-auto flex items-center gap-1 px-2 text-xs text-muted-foreground hover:text-foreground" onClick={openExternally} title={context.doc.path}>
               <Icon name="ExternalLink" className="size-3.5" />
@@ -1799,6 +1919,8 @@ function RfcPanel({
             <ItemsView rpc={rpc} threadId={threadId} sidecar={sidecar} initialTab={itemsTab} sectionFilter={itemsSection} onJump={jumpTo} />
           ) : view === "walkthrough" ? (
             <WalkthroughView rpc={rpc} threadId={threadId} sidecar={sidecar} environmentId={context.environmentId} Diagram={DiagramForCards} onJump={jumpTo} />
+          ) : view === "changes" && context.doc !== null ? (
+            <ChangesView rpc={rpc} threadId={threadId} items={revisions} currentSha={doc?.sha256 ?? null} onRestore={restoreRevision} />
           ) : context.doc === null ? (
             <div className="p-4 text-sm text-muted-foreground">
               <p>No RFC is open on this thread.</p>
@@ -1828,8 +1950,6 @@ function RfcPanel({
               <PreviewToolbar termsExpanded={termsExpanded} onToggleTerms={() => setTermsExpanded(!termsExpanded)} hasTerms={(sidecar?.glossary.length ?? 0) > 0} />
               <RfcPreview rpc={rpc} content={doc.content} annotate={annotate} />
             </div>
-          ) : view === "edit" ? (
-            <RfcEditor key={context.doc.path} rpc={rpc} threadId={threadId} doc={doc} onSaved={reloadDoc} />
           ) : (
             <SplitPane
               storageKey="editor"
@@ -2192,6 +2312,7 @@ function RfcWorkspace({ threadId, item, onBack }: { threadId: string; item: Libr
   const pending = review?.findings.filter((f) => f.status === "pending" && f.round === review.round).length ?? 0;
   const { sidecar: wsSidecar } = useSidecar(rpc, threadId, true);
   const openNotes = wsSidecar?.notes.filter((n) => n.status === "open" || n.status === "blocked").length ?? 0;
+  const wsRevisions = useRevisions(rpc, threadId, true);
   const [view, setViewState] = useState<View>(() => {
     const stored = recall(`view:${threadId}`);
     return isView(stored) ? stored : DEFAULT_VIEW;
@@ -2242,7 +2363,7 @@ function RfcWorkspace({ threadId, item, onBack }: { threadId: string; item: Libr
         </span>
         {item?.status ? <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[10px] uppercase", statusTone(item.status))}>{item.status}</span> : null}
         <div className="mx-1 flex shrink-0 items-center gap-0.5 border-l border-border pl-2">
-          <ViewTabs view={view} onChange={setView} pending={pending} badges={{ items: openNotes }} compact />
+          <ViewTabs view={view} onChange={setView} pending={pending} badges={{ items: openNotes, changes: unseenChanges(threadId, wsRevisions) }} compact />
         </div>
         <div className="flex shrink-0 items-center border-l border-border pl-1">
           {item !== null ? (

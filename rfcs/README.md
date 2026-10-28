@@ -24,12 +24,24 @@ Each diagram has a hover toolbar: show source, copy source, copy SVG. A
 diagram that fails to compile shows the compiler error above its source
 instead of breaking the page.
 
-**Edit** is a monospace editor for the same file. ⌘S / Ctrl+S saves with a
-compare-and-swap guard: if the agent or another editor changed the file since
-you loaded it, the save is refused and you choose to reload or overwrite.
-When you have no unsaved changes, external edits flow in automatically.
+**Split** (the default) shows a monospace editor beside the rendered
+document, scroll-synced on the top line. The editor autosaves shortly after
+you stop typing and when focus leaves it, with a compare-and-swap guard: if
+the agent or another editor changed the file since you loaded it, the save is
+refused rather than clobbering their change. When you have no unsaved edits,
+external changes flow in automatically.
 
-**Split** shows Edit and Preview side by side.
+**Document** is the rendered RFC on its own. Every section has an **edit**
+action that swaps that section for its raw markdown in place; it saves when
+you click away or press ⌘↩, Esc cancels.
+
+**Changes** keeps a revision history of the file (snapshotted on every change,
+whether you, Claude, or an external editor made it; consecutive edits by the
+same author within a few minutes fold into one revision) and shows a line
+diff. It defaults to the latest revision against the one before, so after the
+agent edits you see exactly what moved. Click a revision to show it, shift-
+click another to compare from it, and restore any revision with two clicks.
+The tab carries a badge for agent changes you have not looked at yet.
 
 **Review** runs review rounds. **Run review** spawns a hidden worker thread
 in the same environment; it reads the RFC (and anything it references) and
@@ -135,7 +147,8 @@ bb rfcs check-d2 <file.d2>
   `bb.sdk.files`, D2 rendering with a small cache, review worker and
   discussion thread lifecycle, RPC, agent tools, CLI.
 - `shared.ts` — fence splitter, frontmatter parser, outline; no Node imports.
-- `app.tsx` — panel (Preview / Edit / Split / Review), diagram blocks, finding
+- `diff.ts`, `app-changes.tsx` — Myers line diff and the Changes view.
+- `app.tsx` — panel (Split / Document / Changes / Review / Items / Walkthrough), diagram blocks, finding
   cards with inline `ThreadChat`, markdown file opener.
 - `skills/rfcs/SKILL.md` — tells agents how the document, diagrams, and
   findings flow.

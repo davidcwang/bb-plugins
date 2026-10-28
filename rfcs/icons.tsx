@@ -108,6 +108,21 @@ const paths: Record<string, ReactNode> = {
     </>
   ),
   Play: <path d="M6 3l14 9-14 9z" />,
+  GitCompare: (
+    <>
+      <circle cx="18" cy="18" r="3" />
+      <circle cx="6" cy="6" r="3" />
+      <path d="M13 6h3a2 2 0 0 1 2 2v7" />
+      <path d="M11 18H8a2 2 0 0 1-2-2V9" />
+    </>
+  ),
+  History: (
+    <>
+      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+      <path d="M3 3v5h5" />
+      <path d="M12 7v5l4 2" />
+    </>
+  ),
   Columns2: (
     <>
       <rect width="18" height="18" x="3" y="3" rx="2" />
