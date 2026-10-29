@@ -34,6 +34,10 @@
     {
       "name": "usage-meter",
       "source": "./usage-meter"
+    },
+    {
+      "name": "github-notify",
+      "source": "./github-notify"
     }
   ]
 }

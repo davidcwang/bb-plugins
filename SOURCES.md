@@ -14,3 +14,4 @@ table, commit.
 | usage-meter | (own plugin, authored in this repo) | — | 0.1.0 | — |
 | code-review | (own plugin, authored in this repo) | — | 0.1.0 | — |
 | rfcs | (own plugin, authored in this repo) | — | 0.1.0 | — |
+| github-notify | (own plugin, authored in this repo) | — | 0.1.0 | — |

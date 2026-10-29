@@ -19,6 +19,7 @@ Nothing upgrades on its own.
 | beautiful-chat | Restyles BB's chat in BeautifulUI's design language (vendored, pinned) |
 | aura | Custom image backgrounds and dithered patterns for threads (vendored, pinned) |
 | rfcs | RFC workbench beside a thread: live markdown preview with mermaid + D2 diagrams, editor, triaged review rounds, a discussion thread per finding |
+| github-notify | Desktop notifications and toasts for comments, reviews, and assignments on your GitHub PRs, from your own notifications feed |
 | sidebar-rail | Collapsing the left sidebar (⌘\\) leaves an icon-only rail instead of hiding it |
 
 ## Conventions for new plugins
