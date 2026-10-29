@@ -1,10 +1,9 @@
 // bb-plugin-github-notify — backend.
 //
 // One background service polls GitHub's notifications API (the same feed as
-// github.com/notifications, already scoped to you: PRs you authored, were
-// assigned, were asked to review, commented on, or were mentioned in). Each
-// new or updated notification whose reason is enabled is published on the
-// realtime channel; app.tsx turns it into a desktop notification and a toast,
+// github.com/notifications). Each new or updated notification is classified
+// by what actually happened (see classify) and, if it concerns you
+// personally, published on the realtime channel; app.tsx turns it into a desktop notification and a toast,
 // and keeps the last MAX_RECENT on the GitHub Notify page.
 //
 // Polling honours GitHub's X-Poll-Interval and sends If-Modified-Since, so an
@@ -20,6 +19,7 @@ import {
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
+  CLASSIFIED,
   FEED_CHANNEL,
   NOTIFY_CHANNEL,
   REASONS,
@@ -38,8 +38,10 @@ const STATE_KEY = "state";
 const RECENT_KEY = "recent";
 const VIEWED_KEY = "viewedAt";
 const MAX_RECENT = 100;
-/** Comment lookups per poll; the rest notify without the commenter's name. */
-const MAX_LOOKUPS = 10;
+/** Notifications classified per poll; more than this in one poll are skipped. */
+const MAX_LOOKUPS = 25;
+/** How far a comment, review, or timeline event may be from a notification's updated_at. */
+const NEAR_MS = 2 * 60_000;
 const EXCERPT_CHARS = 200;
 const RETRY_MS = 5 * 60_000;
 
@@ -68,10 +70,41 @@ const notificationsResponse = z.array(
 );
 type Notification = z.infer<typeof notificationsResponse>[number];
 
+const userSchema = z.object({ login: z.string() }).nullable().optional();
+
 const commentResponse = z.object({
   html_url: z.string(),
   body: z.string().nullable().optional(),
-  user: z.object({ login: z.string() }).nullable(),
+  user: userSchema,
+  created_at: z.string(),
+  updated_at: z.string().optional(),
+});
+
+const reviewsResponse = z.array(
+  z.object({
+    html_url: z.string(),
+    body: z.string().nullable().optional(),
+    user: userSchema,
+    state: z.string(),
+    submitted_at: z.string().nullable().optional(),
+  }),
+);
+
+const issueEventsResponse = z.array(
+  z.object({
+    event: z.string(),
+    created_at: z.string(),
+    actor: userSchema,
+    assignee: userSchema,
+    requested_reviewer: userSchema,
+  }),
+);
+
+const subjectResponse = z.object({
+  html_url: z.string(),
+  body: z.string().nullable().optional(),
+  user: userSchema,
+  created_at: z.string(),
 });
 
 function runGh(args: string[]): Promise<string> {
@@ -119,23 +152,25 @@ function excerpt(body: string | null | undefined): string | null {
   return text.length > EXCERPT_CHARS ? `${text.slice(0, EXCERPT_CHARS - 1)}…` : text;
 }
 
-function headline(reason: string, actor: string | null, commented: boolean, kind: "pr" | "issue"): string {
-  const what = kind === "pr" ? "PR" : "issue";
-  switch (reason) {
-    case "assign":
-      return "Assigned to you";
-    case "review_requested":
-      return "Review requested";
-    case "mention":
-    case "team_mention":
-      return actor ? `${actor} mentioned you` : "You were mentioned";
-    case "state_change":
-      return "State changed";
-    case "ci_activity":
-      return "CI activity";
+function isBot(login: string): boolean {
+  return login.endsWith("[bot]");
+}
+
+function reviewHeadline(actor: string, state: string): string {
+  switch (state) {
+    case "APPROVED":
+      return `${actor} approved`;
+    case "CHANGES_REQUESTED":
+      return `${actor} requested changes`;
+    default:
+      return `${actor} reviewed`;
   }
-  if (commented && actor) return `${actor} commented`;
-  return reason === "author" ? `Activity on your ${what}` : "New activity";
+}
+
+/** The `rel="last"` URL of a GitHub Link header, if the list has more pages. */
+function lastPage(link: string | null): string | null {
+  const match = link?.match(/<([^>]+)>;\s*rel="last"/);
+  return match ? match[1] : null;
 }
 
 export default async function plugin(bb: BbPluginApi) {
@@ -156,7 +191,7 @@ export default async function plugin(bb: BbPluginApi) {
     reasons: {
       type: "string",
       label: "Reasons",
-      description: `Comma-separated GitHub notification reasons to alert on. Known: ${REASONS.join(", ")}.`,
+      description: `Comma-separated kinds of activity to alert on: author (others comment on or review your PRs), assign and review_requested (you personally, not your teams), mention (@you in the new comment, review, or description), comment (new comments on other threads you commented on). Others alert on any update: ${REASONS.filter((r) => !CLASSIFIED.has(r)).join(", ")}.`,
       experimental_schema: z
         .string()
         .refine(
@@ -168,7 +203,13 @@ export default async function plugin(bb: BbPluginApi) {
               .every((r) => (REASONS as readonly string[]).includes(r)),
           `Reasons must be a comma-separated list of: ${REASONS.join(", ")}`,
         ),
-      default: "author,assign,comment,mention,review_requested",
+      default: "author,assign,mention,review_requested",
+    },
+    ignoreBots: {
+      type: "boolean",
+      label: "Ignore bots",
+      description: "Skip comments and reviews from bot accounts such as github-actions[bot].",
+      default: true,
     },
     includeIssues: {
       type: "boolean",
@@ -180,6 +221,13 @@ export default async function plugin(bb: BbPluginApi) {
       type: "boolean",
       label: "Desktop notifications",
       description: "Show a system notification as well as the in-app toast.",
+      default: true,
+    },
+    openInBrowser: {
+      type: "boolean",
+      label: "Open in system browser",
+      description:
+        "Open notifications in your default browser, where you are signed in to GitHub. Off follows BB's browser preference.",
       default: true,
     },
   });
@@ -226,30 +274,52 @@ export default async function plugin(bb: BbPluginApi) {
     };
   }
 
-  async function toEvent(n: Notification, token: string, lookup: boolean, signal: AbortSignal): Promise<NotifyEvent> {
+  let login: { token: string; login: string } | null = null;
+  async function myLogin(token: string, signal: AbortSignal): Promise<string> {
+    if (login?.token === token) return login.login;
+    const me = z.object({ login: z.string() }).parse(await getJson(`${API}/user`, token, signal));
+    login = { token, login: me.login };
+    return me.login;
+  }
+
+  async function getJson(url: string, token: string, signal: AbortSignal): Promise<unknown> {
+    const response = await fetch(url, { signal, headers: headers(token) });
+    if (!response.ok) throw new Error(`GET ${new URL(url).pathname}: HTTP ${response.status}`);
+    return response.json();
+  }
+
+  /** The newest page of an oldest-first GitHub list. */
+  async function newestPage(url: string, token: string, signal: AbortSignal): Promise<unknown> {
+    const first = await fetch(`${url}?per_page=100`, { signal, headers: headers(token) });
+    if (!first.ok) throw new Error(`GET ${new URL(url).pathname}: HTTP ${first.status}`);
+    const last = lastPage(first.headers.get("link"));
+    return last === null ? first.json() : getJson(last, token, signal);
+  }
+
+  /**
+   * Works out what changed at the notification's updated_at and returns an
+   * event only if it concerns you personally. GitHub keeps a thread's first
+   * reason (review_requested, mention) for all later activity on it, and
+   * uses review_requested for team requests too, so the reason alone says
+   * too little.
+   */
+  async function classify(
+    n: Notification,
+    token: string,
+    wanted: Set<string>,
+    ignoreBots: boolean,
+    signal: AbortSignal,
+  ): Promise<NotifyEvent | null> {
     const kind = n.subject.type === "PullRequest" ? "pr" : "issue";
-    let actor: string | null = null;
-    let body: string | null = null;
-    let url = htmlUrl(n);
-    // latest_comment_url points at the subject itself when the latest event
-    // is not a comment (a push, an assignment); only comments name an actor.
-    const commentUrl = n.subject.latest_comment_url;
-    const commented = commentUrl !== null && commentUrl !== n.subject.url;
-    if (lookup && commented) {
-      try {
-        const response = await fetch(commentUrl, { signal, headers: headers(token) });
-        if (response.ok) {
-          const comment = commentResponse.parse(await response.json());
-          actor = comment.user?.login ?? null;
-          body = comment.body ?? null;
-          url = comment.html_url;
-        }
-      } catch (cause) {
-        if (signal.aborted) throw cause;
-        bb.log.debug(`comment lookup failed for ${n.id}: ${String(cause)}`);
-      }
-    }
-    return {
+    const me = await myLogin(token, signal);
+    const at = Date.parse(n.updated_at);
+    const near = (iso: string | null | undefined) =>
+      iso !== null && iso !== undefined && Math.abs(Date.parse(iso) - at) <= NEAR_MS;
+    const mentionsMe = (body: string | null | undefined) =>
+      new RegExp(`(^|[^\\w-])@${me}(?![\\w-])`, "i").test(body ?? "");
+    const other = (who: string | null | undefined): who is string =>
+      typeof who === "string" && who.toLowerCase() !== me.toLowerCase() && !(ignoreBots && isBot(who));
+    const event = (actor: string | null, headline: string, url: string, body?: string | null): NotifyEvent => ({
       id: n.id,
       repo: n.repository.full_name,
       number: subjectNumber(n),
@@ -257,17 +327,83 @@ export default async function plugin(bb: BbPluginApi) {
       title: n.subject.title,
       reason: n.reason,
       actor,
-      headline: headline(n.reason, actor, commented && actor !== null, kind),
+      headline,
       excerpt: excerpt(body),
       url,
       updatedAt: n.updated_at,
       receivedAt: new Date().toISOString(),
-    };
+    });
+
+    // Reasons this plugin does not classify alert on any update, as GitHub sends them.
+    if (!CLASSIFIED.has(n.reason)) {
+      return wanted.has(n.reason) ? event(null, n.reason.replace("_", " "), htmlUrl(n)) : null;
+    }
+    if (n.subject.url === null) return null;
+
+    // 1. A new comment (issue comment or PR review comment).
+    const commentUrl = n.subject.latest_comment_url;
+    if (commentUrl !== null && commentUrl !== n.subject.url) {
+      const comment = commentResponse.parse(await getJson(commentUrl, token, signal));
+      if (near(comment.created_at) || near(comment.updated_at)) {
+        const who = comment.user?.login;
+        if (!other(who)) return null;
+        if (wanted.has("mention") && mentionsMe(comment.body)) {
+          return event(who, `${who} mentioned you`, comment.html_url, comment.body);
+        }
+        if ((n.reason === "author" && wanted.has("author")) || (n.reason === "comment" && wanted.has("comment"))) {
+          return event(who, `${who} commented`, comment.html_url, comment.body);
+        }
+        return null;
+      }
+    }
+
+    // 2. A submitted review, including a bare approval with no comment.
+    if (kind === "pr") {
+      const reviews = reviewsResponse.parse(await newestPage(`${n.subject.url}/reviews`, token, signal));
+      const review = [...reviews].reverse().find((r) => near(r.submitted_at));
+      if (review !== undefined) {
+        const who = review.user?.login;
+        if (!other(who)) return null;
+        if (wanted.has("mention") && mentionsMe(review.body)) {
+          return event(who, `${who} mentioned you`, review.html_url, review.body);
+        }
+        if (n.reason === "author" && wanted.has("author")) {
+          return event(who, reviewHeadline(who, review.state), review.html_url, review.body);
+        }
+        return null;
+      }
+    }
+
+    // 3. You were personally requested or assigned (team requests have no
+    //    requested_reviewer and never match).
+    const issueUrl = n.subject.url.replace(/\/pulls\/(\d+)$/, "/issues/$1");
+    const events = issueEventsResponse.parse(await newestPage(`${issueUrl}/events`, token, signal));
+    for (const e of [...events].reverse()) {
+      if (!near(e.created_at)) continue;
+      const who = e.actor?.login ?? null;
+      const isMe = (u: { login: string } | null | undefined) => u?.login.toLowerCase() === me.toLowerCase();
+      if (e.event === "review_requested" && isMe(e.requested_reviewer) && wanted.has("review_requested")) {
+        return event(who, who ? `${who} requested your review` : "Review requested", htmlUrl(n));
+      }
+      if (e.event === "assigned" && isMe(e.assignee) && wanted.has("assign") && who?.toLowerCase() !== me.toLowerCase()) {
+        return event(who, who ? `${who} assigned you` : "Assigned to you", htmlUrl(n));
+      }
+    }
+
+    // 4. A mention in the description of a newly opened PR or issue.
+    if (n.reason === "mention" && wanted.has("mention")) {
+      const subject = subjectResponse.parse(await getJson(n.subject.url, token, signal));
+      const who = subject.user?.login;
+      if (near(subject.created_at) && other(who) && mentionsMe(subject.body)) {
+        return event(who, `${who} mentioned you`, subject.html_url, subject.body);
+      }
+    }
+    return null;
   }
 
   /** One poll. Returns the delay GitHub asks for before the next one, in ms. */
   async function poll(signal: AbortSignal): Promise<number> {
-    const { enabled, reasons, includeIssues } = await settings.get();
+    const { enabled, reasons, includeIssues, ignoreBots } = await settings.get();
     const state = await readState();
     if (!enabled) return 60_000;
     const token = await githubToken();
@@ -298,13 +434,21 @@ export default async function plugin(bb: BbPluginApi) {
     const baseline = state.lastModified === null;
     const wanted = new Set(reasons.split(",").map((r) => r.trim()));
     const types = new Set(includeIssues ? ["PullRequest", "Issue"] : ["PullRequest"]);
-    const fresh = items.filter(
-      (n) => state.seen[n.id] !== n.updated_at && wanted.has(n.reason) && types.has(n.subject.type),
-    );
+    // Every changed thread is classified, whatever its reason: a mention or
+    // a personal request can arrive on a thread GitHub files under another.
+    const fresh = items.filter((n) => state.seen[n.id] !== n.updated_at && types.has(n.subject.type));
     const events: NotifyEvent[] = [];
     if (!baseline) {
-      for (const [index, n] of fresh.entries()) {
-        events.push(await toEvent(n, token, index < MAX_LOOKUPS, signal));
+      if (fresh.length > MAX_LOOKUPS) bb.log.warn(`${fresh.length} updates in one poll; skipping the oldest ${fresh.length - MAX_LOOKUPS}`);
+      for (const n of fresh.slice(0, MAX_LOOKUPS)) {
+        try {
+          const found = await classify(n, token, wanted, ignoreBots, signal);
+          if (found !== null) events.push(found);
+          else bb.log.debug(`skipped ${n.repository.full_name} ${n.reason} ${n.updated_at}`);
+        } catch (cause) {
+          if (signal.aborted) throw cause;
+          bb.log.warn(`could not classify ${n.repository.full_name} notification ${n.id}: ${String(cause)}`);
+        }
       }
     }
     // Keep only ids still in the feed: a read notification leaves the feed
@@ -397,6 +541,49 @@ export default async function plugin(bb: BbPluginApi) {
                 `tracked:   ${status.tracked} unread notifications`,
                 "",
               ].join("\n"),
+            };
+          },
+        }),
+        check: cliCommand({
+          summary: "Dry run: classify your latest notifications (read or unread) without alerting",
+          options: {
+            limit: { type: "integer", min: 1, max: 50, default: 20, description: "How many notifications to check (max 50)" },
+            repo: { type: "string", description: "Only this repository (owner/name)" },
+            json: { type: "boolean", description: "Emit machine-readable JSON" },
+          },
+          async run(input, ctx) {
+            const { reasons, includeIssues, ignoreBots } = await settings.get();
+            const token = await githubToken();
+            if (token === null) return { exitCode: 1, stderr: "No GitHub token.\n" };
+            const limit = input.options.limit;
+            const signal = ctx.signal ?? new AbortController().signal;
+            const wanted = new Set(reasons.split(",").map((r) => r.trim()));
+            const types = new Set(includeIssues ? ["PullRequest", "Issue"] : ["PullRequest"]);
+            const repo = input.options.repo;
+            if (repo !== undefined && !/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+              return { exitCode: 2, stderr: "--repo must look like owner/name\n" };
+            }
+            const base = repo === undefined ? API : `${API}/repos/${repo}`;
+            const items = notificationsResponse
+              .parse(await getJson(`${base}/notifications?all=true&per_page=${limit}`, token, signal))
+              .filter((n) => types.has(n.subject.type));
+            const rows: Array<{ ref: string; reason: string; updatedAt: string; result: string }> = [];
+            for (const n of items) {
+              const number = subjectNumber(n);
+              const ref = number === null ? n.repository.full_name : `${n.repository.full_name}#${number}`;
+              let result: string;
+              try {
+                const found = await classify(n, token, wanted, ignoreBots, signal);
+                result = found === null ? "skip" : `ALERT  ${found.headline}`;
+              } catch (cause) {
+                result = `error  ${cause instanceof Error ? cause.message : String(cause)}`;
+              }
+              rows.push({ ref, reason: n.reason, updatedAt: n.updated_at, result });
+            }
+            if (input.options.json) return { exitCode: 0, stdout: `${JSON.stringify(rows)}\n` };
+            return {
+              exitCode: 0,
+              stdout: `${rows.map((r) => `${r.updatedAt}  ${r.reason.padEnd(16)}  ${r.ref.padEnd(40)}  ${r.result}`).join("\n")}\n`,
             };
           },
         }),

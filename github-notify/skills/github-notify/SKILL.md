@@ -7,8 +7,20 @@ description: GitHub Notify plugin — desktop notifications and toasts for comme
 
 Polls GitHub's notifications API (the feed behind github.com/notifications)
 with your own token, so it covers every repo you can read and needs no org
-approval or Slack app. It is already scoped to you: PRs you authored, were
-assigned, were asked to review, commented on, or were mentioned in.
+approval or Slack app.
+
+GitHub's notification reason alone is too coarse: team review requests use
+the same `review_requested` reason as personal ones, and a thread keeps its
+first reason for every later comment or push. So each update is checked
+against what actually happened at that moment (the new comment, review, or
+timeline event), and alerts only when:
+
+- someone else comments on or reviews (approves, requests changes) your PR;
+- you personally, not a team you are in, are requested as reviewer or
+  assigned by someone else;
+- the new comment, review, or a newly opened PR's description @mentions you.
+
+Your own actions and, by default, bot accounts never alert.
 
 Each new or updated notification shows an in-app toast with an **Open**
 button and, unless disabled, a system notification that opens the PR (or
@@ -24,6 +36,8 @@ nothing is marked read on GitHub). **Clear** empties the list.
 ## Commands
 
     bb github-notify status     # last poll, last error, enabled reasons
+    bb github-notify check [--repo owner/name] [--limit N]
+                                # dry run: would each recent notification alert?
     bb github-notify recent     # last 100 notifications sent
     bb github-notify test       # sample notification (also added to the page)
 
@@ -32,9 +46,15 @@ nothing is marked read on GitHub). **Clear** empties the list.
 - `githubToken` — optional secret. Empty uses `gh auth token`. Must be a
   classic token or gh's OAuth token with `notifications` or `repo` scope;
   fine-grained tokens cannot read notifications.
-- `reasons` — comma-separated GitHub reasons. Default
-  `author,assign,comment,mention,review_requested`. `author` covers any
-  activity on PRs you opened; `assign` fires when you are assigned.
+- `reasons` — comma-separated kinds to alert on. Default
+  `author,assign,mention,review_requested` (as above). `comment` adds new
+  comments on other threads you commented on. `team_mention`,
+  `state_change`, `ci_activity`, `subscribed`, `manual` alert on any update
+  GitHub files under them, unchecked.
+- `ignoreBots` — skip comments and reviews from `*[bot]` accounts (default on).
+- `openInBrowser` — open notifications in the system browser (default on).
+  BB's in-app browser is usually not signed in to GitHub, so private repos
+  show 404 there.
 - `includeIssues` — also alert on issues (default PRs only).
 - `desktop` — system notification in addition to the toast (default on).
 - `enabled` — pause polling.

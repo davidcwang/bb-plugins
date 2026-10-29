@@ -18,13 +18,30 @@ import { toast } from "sonner";
 import type { rpcContract } from "./server";
 import { FEED_CHANNEL, NOTIFY_CHANNEL, eventSchema, type Feed, type NotifyEvent } from "./shared";
 
+/**
+ * Opens a notification. BB's in-app browser is usually not signed in to
+ * GitHub, which shows private repos as 404, so by default a `_blank` window
+ * hands the URL to the system browser instead.
+ */
+function useOpen(): (url: string) => void {
+  const { values } = useSettings();
+  const navigate = useBbNavigate();
+  const external = values?.openInBrowser !== false;
+  return useCallback(
+    (url: string) => {
+      if (!external || window.open(url, "_blank", "noopener,noreferrer") === null) navigate.openUrl(url);
+    },
+    [external, navigate],
+  );
+}
+
 function reference(event: NotifyEvent): string {
   return event.number === null ? event.repo : `${event.repo}#${event.number}`;
 }
 
 function Notifier() {
   const { values } = useSettings();
-  const navigate = useBbNavigate();
+  const openUrl = useOpen();
   const desktop = values?.desktop !== false;
 
   useEffect(() => {
@@ -40,7 +57,7 @@ function Notifier() {
       const event = parsed.data;
       const title = `${event.headline} · ${reference(event)}`;
       const body = event.excerpt === null ? event.title : `${event.title}\n${event.excerpt}`;
-      const open = () => navigate.openUrl(event.url);
+      const open = () => openUrl(event.url);
       toast(title, {
         id: `github-notify:${event.id}:${event.updatedAt}`,
         description: body,
@@ -56,7 +73,7 @@ function Notifier() {
         };
       }
     },
-    [desktop, navigate],
+    [desktop, openUrl],
   );
 
   useRealtime(NOTIFY_CHANNEL, show);
@@ -118,12 +135,12 @@ function reasonIcon(reason: string): string {
 }
 
 function Row({ event, unread, now }: { event: NotifyEvent; unread: boolean; now: number }) {
-  const navigate = useBbNavigate();
+  const openUrl = useOpen();
   return (
     <li>
       <button
         type="button"
-        onClick={() => navigate.openUrl(event.url)}
+        onClick={() => openUrl(event.url)}
         className="flex w-full min-w-0 items-start gap-3 rounded-lg border border-border bg-card p-3 text-left text-sm hover:bg-accent"
       >
         <Icon name={reasonIcon(event.reason)} className="mt-0.5 size-4 shrink-0 text-muted-foreground" />

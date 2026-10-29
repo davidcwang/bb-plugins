@@ -20,6 +20,14 @@ export const REASONS = [
   "manual",
 ] as const;
 export type Reason = (typeof REASONS)[number];
+/** Reasons checked against the actual comment, review, or timeline event. */
+export const CLASSIFIED: ReadonlySet<string> = new Set([
+  "author",
+  "assign",
+  "comment",
+  "mention",
+  "review_requested",
+]);
 
 export const eventSchema = z.object({
   /** GitHub notification thread id. */
