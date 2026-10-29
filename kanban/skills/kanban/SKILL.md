@@ -5,9 +5,10 @@ description: Keep the user's Kanban board current with `bb kanban` or the `kanba
 
 # Kanban board
 
-Cards are tasks the user created, threads, and GitHub items (PRs the user
-authored, PRs requesting their review, issues or PRs that mention them,
-assigned issues). Columns: `backlog`, `in_progress`, `in_review` (the user's
+Cards are tasks the user created, threads, and GitHub pull requests (PRs the
+user authored, PRs requesting their review by name, PRs that mention them;
+never team review requests or issues, optionally limited to the GitHub
+organizations set in the board's settings). Columns: `backlog`, `in_progress`, `in_review` (the user's
 work awaiting someone else), `to_review` (things the user must review), `done`.
 
 A task card can own a thread. Threads started from a card carry the card id

@@ -11,12 +11,14 @@ import {
   useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
-import type { Card, Column, Phase, rpcContract } from "./server";
+import type { Card, Column, KanbanConfig, Phase, rpcContract } from "./server";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -25,7 +27,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 const COLUMNS: Array<{ id: Column; title: string; hint: string }> = [
-  { id: "backlog", title: "To do", hint: "Tasks and assigned issues" },
+  { id: "backlog", title: "To do", hint: "Tasks you create" },
   { id: "in_progress", title: "In progress", hint: "Threads working now" },
   { id: "in_review", title: "In review", hint: "Your work awaiting others" },
   { id: "to_review", title: "To review", hint: "Review requests and mentions" },
@@ -454,6 +456,151 @@ function CardDialog({
   );
 }
 
+const ORG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
+
+function parseOrgInput(raw: string): { orgs: string[]; invalid: string[] } {
+  const orgs: string[] = [];
+  const invalid: string[] = [];
+  for (const part of raw.split(/[\s,]+/)) {
+    if (part === "") continue;
+    if (!ORG_PATTERN.test(part)) invalid.push(part);
+    else if (!orgs.includes(part)) orgs.push(part);
+  }
+  return { orgs, invalid };
+}
+
+const TOKEN_SOURCE: Record<KanbanConfig["tokenSource"], string> = {
+  settings: "Using the GitHub token from the plugin's settings.",
+  gh: "Using your gh CLI login.",
+  none: "No GitHub login found. Run gh auth login, or add a token in the plugin's settings.",
+};
+
+function SettingsDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const rpc = useRpc<typeof rpcContract>();
+  const [config, setConfig] = useState<KanbanConfig | null>(null);
+  const [enabled, setEnabled] = useState(true);
+  const [orgText, setOrgText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    rpc.call("config_get", null).then(
+      (result) => {
+        setConfig(result);
+        setEnabled(result.syncPullRequests);
+        setOrgText(result.orgs.join(", "));
+      },
+      (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
+    );
+  }, [rpc]);
+
+  const { orgs, invalid } = parseOrgInput(orgText);
+
+  const save = async () => {
+    if (invalid.length > 0) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await rpc.call("config_set", { syncPullRequests: enabled, orgs });
+      onSaved();
+      onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={(open) => (open ? undefined : onClose())}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Icon name="Settings" className="size-4 text-muted-foreground" />
+            GitHub sync
+          </DialogTitle>
+          <DialogDescription>
+            Choose where the board pulls pull requests from.
+          </DialogDescription>
+        </DialogHeader>
+
+        {config === null && error === null ? (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        ) : (
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void save();
+            }}
+          >
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={enabled}
+                onCheckedChange={(checked) => setEnabled(checked === true)}
+                aria-label="Sync from GitHub"
+              />
+              Sync pull requests from GitHub
+            </label>
+
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="kanban-orgs" className="text-sm font-medium">
+                Organizations
+              </label>
+              <Input
+                id="kanban-orgs"
+                value={orgText}
+                onChange={(event) => setOrgText(event.target.value)}
+                placeholder="my-org, another-org"
+                disabled={!enabled}
+                aria-invalid={invalid.length > 0}
+              />
+              <p className="text-xs text-muted-foreground">
+                Comma-separated. Leave empty to include every organization and repository.
+              </p>
+              {invalid.length > 0 ? (
+                <p role="alert" className="text-xs text-destructive">
+                  Not a valid organization name: {invalid.join(", ")}
+                </p>
+              ) : null}
+            </div>
+
+            <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+              <p className="mb-1 font-medium text-foreground">Included open pull requests</p>
+              <ul className="list-disc space-y-0.5 pl-4">
+                <li>Pull requests you opened</li>
+                <li>Pull requests that request your review by name</li>
+                <li>Pull requests that @mention you in the description or a comment</li>
+              </ul>
+              <p className="mt-1">
+                Review requests sent to a team you belong to are left out, and so are issues.
+              </p>
+            </div>
+
+            {config === null ? null : (
+              <p className="text-xs text-muted-foreground">{TOKEN_SOURCE[config.tokenSource]}</p>
+            )}
+            {error === null ? null : (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
+
+            <DialogFooter>
+              <Button type="button" variant="ghost" onClick={onClose}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={saving || invalid.length > 0 || config === null}>
+                {saving ? "Saving…" : "Save and sync"}
+              </Button>
+            </DialogFooter>
+          </form>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function BoardPage() {
   const { rpc, cards, lastSync, syncConfigured, error, report, refetch } = useBoard();
   const navigate = useBbNavigate();
@@ -462,6 +609,7 @@ function BoardPage() {
   const [newTitle, setNewTitle] = useState("");
   const [filter, setFilter] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const openCard = useMemo(
     () => (openId === null ? null : (cards ?? []).find((c) => c.id === openId) ?? null),
@@ -544,6 +692,14 @@ function BoardPage() {
           <Icon name="RefreshCw" className={cn("size-4", syncing && "animate-spin")} />
           Sync
         </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setSettingsOpen(true)}
+          aria-label="GitHub sync settings"
+        >
+          <Icon name="Settings" className="size-4" />
+        </Button>
       </div>
       {error === null ? null : (
         <p role="alert" className="mt-2 text-sm text-destructive">
@@ -598,6 +754,9 @@ function BoardPage() {
           );
         })}
       </div>
+      {settingsOpen ? (
+        <SettingsDialog onClose={() => setSettingsOpen(false)} onSaved={refetch} />
+      ) : null}
       {openCard === null ? null : (
         <CardDialog
           card={openCard}

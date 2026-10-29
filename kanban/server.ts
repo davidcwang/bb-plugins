@@ -1,8 +1,7 @@
 // bb-plugin-kanban — backend entry.
 //
 // Cards are tasks you create, threads, and GitHub items (PRs you authored,
-// PRs requesting your review, issues or PRs that mention you, issues assigned
-// to you). Cards live in bb.storage.kv; every write publishes a realtime
+// PRs requesting your review by name, PRs that mention you). Cards live in bb.storage.kv; every write publishes a realtime
 // signal so open boards refetch.
 //
 // A task card can own a thread: start one from the card (the thread is
@@ -69,6 +68,30 @@ const cardSchema = z.object({
 export type Card = z.infer<typeof cardSchema>;
 
 const projectSchema = z.object({ id: z.string(), name: z.string() });
+
+/** A GitHub organization or user login, as accepted by the `org:` qualifier. */
+const orgSchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/, "Not a valid GitHub organization name");
+
+const configSchema = z.object({
+  syncPullRequests: z.boolean(),
+  orgs: z.array(z.string()),
+  /** Where the GitHub token comes from; the token itself never leaves the server. */
+  tokenSource: z.enum(["settings", "gh", "none"]),
+});
+export type KanbanConfig = z.infer<typeof configSchema>;
+
+/** Parse the stored comma/space separated org list, dropping invalid entries. */
+function parseOrgs(raw: string | undefined | null): string[] {
+  const seen = new Set<string>();
+  for (const part of (raw ?? "").split(/[\s,]+/)) {
+    const parsed = orgSchema.safeParse(part);
+    if (parsed.success) seen.add(parsed.data);
+  }
+  return [...seen];
+}
 
 export const rpcContract = defineRpcContract({
   cards_list: {
@@ -140,6 +163,17 @@ export const rpcContract = defineRpcContract({
   sync_now: {
     input: z.null(),
     output: z.object({ items: z.number() }),
+  },
+  config_get: {
+    input: z.null(),
+    output: configSchema,
+  },
+  config_set: {
+    input: z.object({
+      syncPullRequests: z.boolean(),
+      orgs: z.array(orgSchema).max(20),
+    }),
+    output: configSchema,
   },
 });
 
@@ -232,15 +266,14 @@ export default async function plugin(bb: BbPluginApi) {
       type: "boolean",
       label: "Sync from GitHub",
       description:
-        "Open PRs you authored or were asked to review, items that mention you, and issues assigned to you.",
+        "Open PRs you authored, PRs that request your review by name, and PRs that mention you. Team review requests are never included.",
       default: true,
     },
-    includeTeamReviews: {
-      type: "boolean",
-      label: "Include team review requests",
+    githubOrgs: {
+      type: "string",
+      label: "GitHub organizations",
       description:
-        "Also show PRs that request a review from a team you belong to, not only ones that name you directly.",
-      default: false,
+        "Comma-separated organizations to sync from. Leave empty to sync from every organization and repository.",
     },
   });
 
@@ -674,9 +707,11 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   async function syncGithub(signal?: AbortSignal): Promise<number> {
-    const { syncPullRequests: enabled, includeTeamReviews } = await settings.get();
+    const { syncPullRequests: enabled, githubOrgs } = await settings.get();
     if (!enabled) return 0;
-    const reviewQualifier = includeTeamReviews ? "review-requested:@me" : "user-review-requested:@me";
+    // Several org: qualifiers are OR'd by GitHub search.
+    const orgs = parseOrgs(githubOrgs).map((org) => `org:${org}`).join(" ");
+    const scope = orgs === "" ? "" : ` ${orgs}`;
     const token = await githubToken();
     if (token === null) {
       await bb.storage.kv.set(SYNC_KEY, {
@@ -689,12 +724,14 @@ export default async function plugin(bb: BbPluginApi) {
     let found: Found[];
     try {
       const batches = await Promise.all([
-        search(token, "is:pr is:open author:@me", "authored", signal),
-        search(token, `is:pr is:open ${reviewQualifier}`, "review-requested", signal),
-        search(token, "is:open mentions:@me -author:@me", "mentioned", signal),
-        search(token, "is:issue is:open assignee:@me", "assigned", signal),
+        search(token, `is:pr is:open author:@me${scope}`, "authored", signal),
+        // user-review-requested matches only requests naming you, never a
+        // team you belong to.
+        search(token, `is:pr is:open user-review-requested:@me${scope}`, "review-requested", signal),
+        // mentions: covers @you in the PR description and in comments.
+        search(token, `is:pr is:open mentions:@me -author:@me${scope}`, "mentioned", signal),
       ]);
-      // First match wins: authored > review-requested > mentioned > assigned.
+      // First match wins: authored > review-requested > mentioned.
       const seen = new Set<string>();
       found = batches.flat().filter((item) => {
         const key = `${item.repo}#${item.number}`;
@@ -765,7 +802,30 @@ export default async function plugin(bb: BbPluginApi) {
 
   // ---- RPC -------------------------------------------------------------
 
+  async function readConfig(): Promise<KanbanConfig> {
+    const values = await settings.get();
+    const fromSettings = (values.githubToken ?? "").trim() !== "";
+    let tokenSource: KanbanConfig["tokenSource"] = fromSettings ? "settings" : "none";
+    if (!fromSettings && (await githubToken()) !== null) tokenSource = "gh";
+    return {
+      syncPullRequests: values.syncPullRequests,
+      orgs: parseOrgs(values.githubOrgs),
+      tokenSource,
+    };
+  }
+
   bb.rpc.register(rpcContract, {
+    config_get: async () => readConfig(),
+    config_set: async ({ syncPullRequests, orgs }) => {
+      await settings.experimental_set({
+        syncPullRequests,
+        githubOrgs: orgs.length === 0 ? null : [...new Set(orgs)].join(", "),
+      });
+      // Re-sync right away so the board reflects the new scope; a sync
+      // failure is recorded in the sync state and shown on the board.
+      void syncGithub().catch(() => undefined);
+      return readConfig();
+    },
     cards_list: async () => {
       const sync = await readSync();
       const { syncPullRequests: enabled } = await settings.get();
@@ -1002,7 +1062,7 @@ export default async function plugin(bb: BbPluginApi) {
           },
         }),
         sync: cliCommand({
-          summary: "Sync PRs, review requests, mentions, and assigned issues now",
+          summary: "Sync your PRs, direct review requests, and PR mentions now",
           options: {
             json: { type: "boolean", description: "Emit machine-readable JSON" },
           },

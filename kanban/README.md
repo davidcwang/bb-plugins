@@ -6,10 +6,10 @@ A kanban board in the bb sidebar for tasks, threads, and GitHub items.
 
 | Column | What lands there |
 | --- | --- |
-| To do (`backlog`) | Tasks you create, issues assigned to you, idle threads |
+| To do (`backlog`) | Tasks you create, idle threads |
 | In progress | Threads that are running, draft PRs you authored |
 | In review | PRs you authored that await review |
-| To review | PRs that request your review, issues or PRs that mention you |
+| To review | PRs that request your review by name, PRs that mention you |
 | Done | Archived threads, merged or closed items, anything you drag there |
 
 Drag cards between columns or use the picker on each card. A card you move is
@@ -23,10 +23,13 @@ pinned: sync and lifecycle events stop moving it.
 - **Threads** appear automatically. A thread going active moves its card to In
   progress; archiving moves it to Done. Idle is not mapped, because an idle
   agent may be waiting on you.
-- **GitHub items** sync every five minutes (or with **Sync**) using the `gh`
-  CLI login or a token from settings. Closed or merged items move to Done and
-  leave after a week. Direct review requests only, unless
-  `includeTeamReviews` is on.
+- **GitHub pull requests** sync every five minutes (or with **Sync**) using
+  the `gh` CLI login or a token from settings. Only open PRs you opened, PRs
+  that request your review by name, and PRs that @mention you in the
+  description or a comment. Team review requests and issues are never
+  included. Closed or merged PRs move to Done and leave after a week.
+- **Settings** (the gear next to **Sync**) turns sync on or off and limits it
+  to one or more GitHub organizations; empty means every organization.
 
 ## Threads per card
 
@@ -35,7 +38,7 @@ A task or GitHub card can own one thread.
 - **Start a thread in phase** spawns a thread in the chosen project with a
   prompt for that phase and tags it with the card id in plugin metadata.
   Phases: research, plan, implement, review. Starting a thread from a GitHub
-  card opens a review thread for that PR or issue.
+  card opens a review thread for that PR.
 - **Link an existing thread** attaches a running thread. Its automatic card is
   absorbed so the board never shows the same work twice.
 - **Phase** buttons send the next phase prompt to the linked thread. Choosing
@@ -64,7 +67,7 @@ bb kanban sync
 npm install
 bb plugin build
 bb plugin install .
-bb plugin config kanban            # githubToken, syncPullRequests, includeTeamReviews
+bb plugin config kanban            # githubToken, syncPullRequests, githubOrgs
 ```
 
 ## Layout
