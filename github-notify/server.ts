@@ -4,7 +4,8 @@
 // github.com/notifications, already scoped to you: PRs you authored, were
 // assigned, were asked to review, commented on, or were mentioned in). Each
 // new or updated notification whose reason is enabled is published on the
-// realtime channel; app.tsx turns it into a desktop notification and a toast.
+// realtime channel; app.tsx turns it into a desktop notification and a toast,
+// and keeps the last MAX_RECENT on the GitHub Notify page.
 //
 // Polling honours GitHub's X-Poll-Interval and sends If-Modified-Since, so an
 // unchanged feed costs a 304 that does not count against the rate limit. The
@@ -14,15 +15,29 @@ import { execFile } from "node:child_process";
 import {
   cliCommand,
   defineCli,
+  defineRpcContract,
   type BbPluginApi,
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { NOTIFY_CHANNEL, REASONS, type NotifyEvent } from "./shared";
+import {
+  FEED_CHANNEL,
+  NOTIFY_CHANNEL,
+  REASONS,
+  feedSchema,
+  type NotifyEvent,
+} from "./shared";
+
+export const rpcContract = defineRpcContract({
+  feed_get: { input: z.null(), output: feedSchema },
+  feed_mark_viewed: { input: z.null(), output: z.object({ ok: z.literal(true) }) },
+  feed_clear: { input: z.null(), output: z.object({ ok: z.literal(true) }) },
+});
 
 const API = "https://api.github.com";
 const STATE_KEY = "state";
 const RECENT_KEY = "recent";
-const MAX_RECENT = 50;
+const VIEWED_KEY = "viewedAt";
+const MAX_RECENT = 100;
 /** Comment lookups per poll; the rest notify without the commenter's name. */
 const MAX_LOOKUPS = 10;
 const EXCERPT_CHARS = 200;
@@ -246,6 +261,7 @@ export default async function plugin(bb: BbPluginApi) {
       excerpt: excerpt(body),
       url,
       updatedAt: n.updated_at,
+      receivedAt: new Date().toISOString(),
     };
   }
 
@@ -327,6 +343,28 @@ export default async function plugin(bb: BbPluginApi) {
     return `${event.updatedAt}  ${ref}  ${event.headline}: ${event.title}  ${event.url}`;
   }
 
+  bb.rpc.register(rpcContract, {
+    feed_get: async () => {
+      const state = await readState();
+      return {
+        events: await readRecent(),
+        viewedAt: (await bb.storage.kv.get<string>(VIEWED_KEY)) ?? null,
+        lastPollAt: state.lastPollAt,
+        lastError: state.lastError,
+      };
+    },
+    feed_mark_viewed: async () => {
+      await bb.storage.kv.set(VIEWED_KEY, new Date().toISOString());
+      bb.realtime.publish(FEED_CHANNEL, { viewed: true });
+      return { ok: true as const };
+    },
+    feed_clear: async () => {
+      await bb.storage.kv.set(RECENT_KEY, []);
+      bb.realtime.publish(FEED_CHANNEL, { cleared: true });
+      return { ok: true as const };
+    },
+  });
+
   bb.cli.register(
     defineCli({
       name: "github-notify",
@@ -373,9 +411,9 @@ export default async function plugin(bb: BbPluginApi) {
           },
         }),
         test: cliCommand({
-          summary: "Send a sample notification to every open BB window",
+          summary: "Send a sample notification (also listed on the page; Clear removes it)",
           async run() {
-            bb.realtime.publish(NOTIFY_CHANNEL, {
+            await emit([{
               id: `test-${Date.now()}`,
               repo: "octocat/hello-world",
               number: 1,
@@ -387,7 +425,8 @@ export default async function plugin(bb: BbPluginApi) {
               excerpt: "This is a test notification from bb github-notify test.",
               url: "https://github.com/notifications",
               updatedAt: new Date().toISOString(),
-            } satisfies NotifyEvent);
+              receivedAt: new Date().toISOString(),
+            }]);
             return { exitCode: 0, stdout: "Sent a sample notification.\n" };
           },
         }),

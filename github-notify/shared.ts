@@ -3,6 +3,8 @@
 import { z } from "zod";
 
 export const NOTIFY_CHANNEL = "github-notify";
+/** Published when the feed is viewed or cleared, so unread counts refetch. */
+export const FEED_CHANNEL = "github-notify-feed";
 
 /** GitHub notification reasons this plugin can alert on. */
 export const REASONS = [
@@ -35,5 +37,16 @@ export const eventSchema = z.object({
   excerpt: z.string().nullable(),
   url: z.string(),
   updatedAt: z.string(),
+  /** When this plugin first saw this update. */
+  receivedAt: z.string(),
 });
 export type NotifyEvent = z.infer<typeof eventSchema>;
+
+export const feedSchema = z.object({
+  events: z.array(eventSchema),
+  /** Events received after this are unread; null until the page is opened. */
+  viewedAt: z.string().nullable(),
+  lastPollAt: z.string().nullable(),
+  lastError: z.string().nullable(),
+});
+export type Feed = z.infer<typeof feedSchema>;

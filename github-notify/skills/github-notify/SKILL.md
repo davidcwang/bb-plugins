@@ -13,14 +13,19 @@ assigned, were asked to review, commented on, or were mentioned in.
 Each new or updated notification shows an in-app toast with an **Open**
 button and, unless disabled, a system notification that opens the PR (or
 the exact comment) on click. Alerts only appear while a BB window is open;
-the poller keeps running and records what it saw, but signals are not
-replayed to windows opened later. `bb github-notify recent` lists them.
+the poller keeps running and records what it saw, but alerts are not
+replayed to windows opened later.
+
+The **GitHub Notify** sidebar page lists the last 100 notifications, newest
+first; click one to open it. The sidebar entry shows how many arrived since
+the page was last opened, and opening the page marks them read (in BB only;
+nothing is marked read on GitHub). **Clear** empties the list.
 
 ## Commands
 
     bb github-notify status     # last poll, last error, enabled reasons
-    bb github-notify recent     # last 50 notifications sent
-    bb github-notify test       # sample notification to every open window
+    bb github-notify recent     # last 100 notifications sent
+    bb github-notify test       # sample notification (also added to the page)
 
 ## Settings (`bb plugin config github-notify`)
 
