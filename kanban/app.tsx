@@ -34,6 +34,34 @@ const COLUMNS: Array<{ id: Column; title: string; hint: string }> = [
   { id: "done", title: "Done", hint: "" },
 ];
 
+/** Every status a card can be moved to; Archived is not a board column. */
+const MOVE_OPTIONS: Array<{ id: Column; title: string }> = [
+  ...COLUMNS,
+  { id: "archived", title: "Archived" },
+];
+
+const COLUMN_TITLE = Object.fromEntries(MOVE_OPTIONS.map((c) => [c.id, c.title])) as Record<
+  Column,
+  string
+>;
+
+function formatArchived(iso: string | undefined): string {
+  if (iso === undefined) return "";
+  const at = new Date(iso);
+  const ms = Date.now() - at.getTime();
+  if (Number.isNaN(ms)) return "";
+  const minutes = Math.round(ms / 60_000);
+  const rel =
+    minutes < 1
+      ? "just now"
+      : minutes < 60
+        ? `${minutes}m ago`
+        : minutes < 1440
+          ? `${Math.round(minutes / 60)}h ago`
+          : `${Math.round(minutes / 1440)}d ago`;
+  return `${rel} · ${at.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`;
+}
+
 const PHASES: Array<{ id: Phase; title: string }> = [
   { id: "research", title: "Research" },
   { id: "plan", title: "Plan" },
@@ -138,7 +166,7 @@ function CardView({
           onClick={(event) => event.stopPropagation()}
           className="ml-auto rounded border border-border bg-background px-1 py-0.5 text-xs"
         >
-          {COLUMNS.map((column) => (
+          {MOVE_OPTIONS.map((column) => (
             <option key={column.id} value={column.id}>
               {column.title}
             </option>
@@ -601,6 +629,65 @@ function SettingsDialog({ onClose, onSaved }: { onClose: () => void; onSaved: ()
   );
 }
 
+function ArchivedDialog({
+  cards,
+  onClose,
+  onOpen,
+  onRestore,
+}: {
+  cards: Card[];
+  onClose: () => void;
+  onOpen: (id: string) => void;
+  onRestore: (id: string) => void;
+}) {
+  const archived = cards
+    .filter((card) => card.column === "archived")
+    .sort((a, b) => (b.archivedAt ?? "").localeCompare(a.archivedAt ?? ""));
+  return (
+    <Dialog open onOpenChange={(open) => (open ? undefined : onClose())}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Icon name="Archive" className="size-4 text-muted-foreground" />
+            Archived
+          </DialogTitle>
+          <DialogDescription>
+            Most recently archived first. Restore puts a card back in the column it came from.
+          </DialogDescription>
+        </DialogHeader>
+        {archived.length === 0 ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            Nothing archived yet. Pick Archived from a card's menu to archive it.
+          </p>
+        ) : (
+          <ul className="max-h-[60vh] divide-y divide-border overflow-auto">
+            {archived.map((card) => (
+              <li key={card.id} className="flex items-center gap-3 py-2 text-sm">
+                <Icon name={cardIcon(card)} className="size-4 shrink-0 text-muted-foreground" />
+                <button
+                  type="button"
+                  onClick={() => onOpen(card.id)}
+                  className="min-w-0 flex-1 truncate text-left hover:underline"
+                >
+                  {card.title}
+                </button>
+                <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
+                  {card.archivedFrom === undefined ? "" : `from ${COLUMN_TITLE[card.archivedFrom]} · `}
+                  {formatArchived(card.archivedAt)}
+                </span>
+                <Button variant="ghost" size="sm" onClick={() => onRestore(card.id)}>
+                  <Icon name="ArchiveRestore" className="size-4" />
+                  Restore
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function BoardPage() {
   const { rpc, cards, lastSync, syncConfigured, error, report, refetch } = useBoard();
   const navigate = useBbNavigate();
@@ -610,6 +697,8 @@ function BoardPage() {
   const [filter, setFilter] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const archivedCount = (cards ?? []).filter((card) => card.column === "archived").length;
 
   const openCard = useMemo(
     () => (openId === null ? null : (cards ?? []).find((c) => c.id === openId) ?? null),
@@ -618,6 +707,9 @@ function BoardPage() {
 
   const move = (id: string, column: Column) => {
     rpc.call("cards_move", { id, column }).then(refetch, report);
+  };
+  const restore = (id: string) => {
+    rpc.call("cards_restore", { id }).then(refetch, report);
   };
   const sync = async () => {
     setSyncing(true);
@@ -692,6 +784,10 @@ function BoardPage() {
           <Icon name="RefreshCw" className={cn("size-4", syncing && "animate-spin")} />
           Sync
         </Button>
+        <Button variant="ghost" size="sm" onClick={() => setArchiveOpen(true)}>
+          <Icon name="Archive" className="size-4" />
+          Archived{archivedCount > 0 ? ` (${archivedCount})` : ""}
+        </Button>
         <Button
           variant="ghost"
           size="sm"
@@ -754,6 +850,17 @@ function BoardPage() {
           );
         })}
       </div>
+      {archiveOpen ? (
+        <ArchivedDialog
+          cards={cards ?? []}
+          onClose={() => setArchiveOpen(false)}
+          onOpen={(id) => {
+            setArchiveOpen(false);
+            setOpenId(id);
+          }}
+          onRestore={restore}
+        />
+      ) : null}
       {settingsOpen ? (
         <SettingsDialog onClose={() => setSettingsOpen(false)} onSaved={refetch} />
       ) : null}

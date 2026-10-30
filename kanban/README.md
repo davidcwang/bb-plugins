@@ -12,6 +12,12 @@ A kanban board in the bb sidebar for tasks, threads, and GitHub items.
 | To review | PRs that request your review by name, PRs that mention you |
 | Done | Archived threads, merged or closed items, anything you drag there |
 
+**Archived** is a status, not a column. Pick it from a card's menu to take the
+card off the board. The **Archived** button lists archived cards, most
+recently archived first, with **Restore** to put one back in the column it came
+from. Sync, thread activity, and the one-week Done cleanup never touch archived
+cards.
+
 Drag cards between columns or use the picker on each card. A card you move is
 pinned: sync and lifecycle events stop moving it.
 
@@ -53,11 +59,12 @@ Agents see which card they belong to and keep it current with `kanban_move`.
 ## CLI
 
 ```
-bb kanban list [--column <c>] [--json]
+bb kanban list [--column <c>] [--json]   # --column archived lists the archive, newest first
 bb kanban add <title> [--description <text>] [--column <c>]
 bb kanban move <card> <column>
 bb kanban link <card> [--thread <id>] [--unlink]
 bb kanban phase <card> <phase> [--no-send]
+bb kanban restore <card>
 bb kanban remove <card>
 bb kanban sync
 ```

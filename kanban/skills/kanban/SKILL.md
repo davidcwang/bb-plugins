@@ -9,7 +9,8 @@ Cards are tasks the user created and GitHub pull requests (PRs the
 user authored, PRs requesting their review by name, PRs that mention them;
 never team review requests or issues, optionally limited to the GitHub
 organizations set in the board's settings). Columns: `backlog`, `in_progress`, `in_review` (the user's
-work awaiting someone else), `to_review` (things the user must review), `done`.
+work awaiting someone else), `to_review` (things the user must review), `done`, plus `archived` (off the
+board; only archive when the user asks).
 
 Threads are not on the board by default. A task or GitHub card can own a
 thread. Threads started from a card carry the card id
@@ -20,11 +21,12 @@ and phase in plugin metadata, and your instructions name that card. Phases:
 
 | Command | Effect |
 | --- | --- |
-| `bb kanban list [--column <c>] [--json]` | Show cards with their ids. |
+| `bb kanban list [--column <c>] [--json]` | Show cards with their ids. Archived cards are hidden unless `--column archived` (newest first). |
 | `bb kanban add <title> [--description <text>] [--column <c>]` | Create a task card. |
 | `bb kanban move <card> <column>` | Move a card. `<card>` is a card id, a thread id, or a unique id or title prefix. |
 | `bb kanban link <card> [--thread <id>] [--unlink]` | Attach this thread (or another) to a task card. |
 | `bb kanban phase <card> <phase> [--no-send]` | Set the phase; by default the phase prompt is sent to the linked thread. |
+| `bb kanban restore <card>` | Move an archived card back to the column it was archived from. |
 | `bb kanban remove <card>` | Delete a card. |
 | `bb kanban sync` | Pull GitHub items now. |
 

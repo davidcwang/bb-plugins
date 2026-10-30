@@ -25,6 +25,9 @@ export const COLUMNS = [
   "in_review",
   "to_review",
   "done",
+  // Not drawn as a board column: archived cards are listed in the Archived
+  // pane, newest first, and nothing moves them automatically.
+  "archived",
 ] as const;
 const columnSchema = z.enum(COLUMNS);
 export type Column = z.infer<typeof columnSchema>;
@@ -64,6 +67,10 @@ const cardSchema = z.object({
   projectId: z.string().optional(),
   threadStatus: z.string().optional(),
   pr: githubSchema.optional(),
+  /** When the card was moved to "archived"; cleared when it leaves. */
+  archivedAt: z.string().optional(),
+  /** The column it was archived from, so Restore can put it back. */
+  archivedFrom: columnSchema.optional(),
 });
 export type Card = z.infer<typeof cardSchema>;
 
@@ -105,6 +112,10 @@ export const rpcContract = defineRpcContract({
   },
   cards_move: {
     input: z.object({ id: z.string(), column: columnSchema }),
+    output: cardSchema,
+  },
+  cards_restore: {
+    input: z.object({ id: z.string() }),
     output: cardSchema,
   },
   task_create: {
@@ -334,6 +345,10 @@ export default async function plugin(bb: BbPluginApi) {
     if (thread.visibility === "hidden") return;
     const existing = cardForThread(cards, thread.id);
     if (existing === undefined) return;
+    if (existing.column === "archived") {
+      existing.threadStatus = thread.status;
+      return;
+    }
     // A task card keeps its own title; a thread card follows the thread.
     if (existing.kind === "thread") existing.title = thread.title ?? "Untitled thread";
     existing.threadStatus = thread.status;
@@ -352,6 +367,10 @@ export default async function plugin(bb: BbPluginApi) {
     mutate((cards) => {
       const card = cardForThread(cards, thread.id);
       if (card === undefined) return;
+      if (card.column === "archived") {
+        card.threadStatus = thread.status;
+        return;
+      }
       // Reopen finished work, but never override a deliberate placement
       // beyond "backlog"/"done" the user or agent chose.
       const auto = card.column === "backlog" || card.column === "done" ? "in_progress" : null;
@@ -468,13 +487,38 @@ export default async function plugin(bb: BbPluginApi) {
         )
       : new Error(`No card "${ref}". Run "bb kanban list" to see ids.`);
 
+  /** Change a card's column, keeping the archive bookkeeping consistent. */
+  function setColumn(card: Card, column: Column): void {
+    if (column === card.column) return;
+    if (column === "archived") {
+      card.archivedFrom = card.column;
+      card.archivedAt = now();
+    } else if (card.column === "archived") {
+      card.archivedAt = undefined;
+      card.archivedFrom = undefined;
+    }
+    card.column = column;
+    card.updatedAt = now();
+  }
+
+  /** Move an archived card back to the column it came from. */
+  function restoreCard(ref: string): Promise<Card> {
+    return mutate((cards) => {
+      const card = findCard(cards, ref);
+      if (card === undefined) throw noCard(ref);
+      if (card.column !== "archived") throw new Error(`Card "${card.title}" is not archived.`);
+      setColumn(card, card.archivedFrom ?? "backlog");
+      card.pinned = true;
+      return card;
+    });
+  }
+
   function moveCard(ref: string, column: Column): Promise<Card> {
     return mutate((cards) => {
       const card = findCard(cards, ref);
       if (card === undefined) throw noCard(ref);
-      card.column = column;
+      setColumn(card, column);
       card.pinned = true;
-      card.updatedAt = now();
       return card;
     });
   }
@@ -764,7 +808,9 @@ export default async function plugin(bb: BbPluginApi) {
         } else {
           existing.title = title;
           existing.pr = info;
-          if (!existing.pinned) existing.column = defaultColumn(info);
+          if (!existing.pinned && existing.column !== "archived") {
+            existing.column = defaultColumn(info);
+          }
           existing.updatedAt = now();
         }
       }
@@ -774,6 +820,11 @@ export default async function plugin(bb: BbPluginApi) {
       for (let i = cards.length - 1; i >= 0; i--) {
         const card = cards[i]!;
         if (card.kind !== "pr" || live.has(card.id)) continue;
+        // Archived cards stay until you delete them; only record the close.
+        if (card.column === "archived") {
+          if (card.pr !== undefined) card.pr.closed = true;
+          continue;
+        }
         if (!card.pinned && card.pr !== undefined && !card.pr.closed && card.column !== "done") {
           // Never touched and no longer involving you (e.g. a team request
           // after turning team reviews off): just drop it.
@@ -833,6 +884,7 @@ export default async function plugin(bb: BbPluginApi) {
       };
     },
     cards_move: ({ id, column }) => moveCard(id, column),
+    cards_restore: ({ id }) => restoreCard(id),
     task_create: (input) => createTask(input),
     task_update: ({ id, title, description, projectId }) =>
       mutate((cards) => {
@@ -885,7 +937,7 @@ export default async function plugin(bb: BbPluginApi) {
       summary: "Manage cards on the Kanban board: tasks, threads, and GitHub items",
       commands: {
         list: cliCommand({
-          summary: "List cards, optionally for one column",
+          summary: "List cards, optionally for one column (archived cards only with --column archived)",
           options: {
             column: {
               type: "enum",
@@ -895,11 +947,13 @@ export default async function plugin(bb: BbPluginApi) {
             json: { type: "boolean", description: "Emit machine-readable JSON" },
           },
           async run(input) {
+            const wanted = input.options.column;
             const cards = (await readCards())
-              .filter(
-                (c) =>
-                  input.options.column === undefined ||
-                  c.column === input.options.column,
+              .filter((c) =>
+                wanted === undefined ? c.column !== "archived" : c.column === wanted,
+              )
+              .sort((a, b) =>
+                wanted === "archived" ? (b.archivedAt ?? "").localeCompare(a.archivedAt ?? "") : 0,
               )
               .slice(0, MAX_CLI_ROWS);
             return input.options.json
@@ -1052,6 +1106,19 @@ export default async function plugin(bb: BbPluginApi) {
                 if (card.kind !== "thread" && card.threadId !== undefined) await releaseThread(cards, card.threadId);
               });
               return { exitCode: 0, stdout: "Removed." };
+            } catch (cause) {
+              throw cliError(cause);
+            }
+          },
+        }),
+        restore: cliCommand({
+          summary: "Move an archived card back to the column it was archived from",
+          positionals: [
+            { name: "card", description: "Card id or unique prefix", required: true },
+          ],
+          async run(input) {
+            try {
+              return { exitCode: 0, stdout: line(await restoreCard(input.positionals.card)) };
             } catch (cause) {
               throw cliError(cause);
             }
