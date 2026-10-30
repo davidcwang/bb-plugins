@@ -6,7 +6,7 @@ A kanban board in the bb sidebar for tasks, threads, and GitHub items.
 
 | Column | What lands there |
 | --- | --- |
-| To do (`backlog`) | Tasks you create, idle threads |
+| To do (`backlog`) | Tasks you create |
 | In progress | Threads that are running, draft PRs you authored |
 | In review | PRs you authored that await review |
 | To review | PRs that request your review by name, PRs that mention you |
@@ -20,9 +20,12 @@ pinned: sync and lifecycle events stop moving it.
 - **Tasks** are yours. Add one from the box at the top, the `bb kanban add`
   command, or the `kanban_task` agent tool. Open a task to edit its details,
   pick a project, and work with its thread.
-- **Threads** appear automatically. A thread going active moves its card to In
-  progress; archiving moves it to Done. Idle is not mapped, because an idle
-  agent may be waiting on you.
+- **Threads are not added on their own.** The board holds only cards you add
+  and GitHub pull requests. A thread shows up through the card it is linked
+  to: started from a card, or attached with **Link an existing thread**. When
+  a linked thread goes active its card moves to In progress, and archiving
+  moves it to Done. Idle is not mapped, because an idle agent may be waiting
+  on you.
 - **GitHub pull requests** sync every five minutes (or with **Sync**) using
   the `gh` CLI login or a token from settings. Only open PRs you opened, PRs
   that request your review by name, and PRs that @mention you in the
@@ -39,8 +42,8 @@ A task or GitHub card can own one thread.
   prompt for that phase and tags it with the card id in plugin metadata.
   Phases: research, plan, implement, review. Starting a thread from a GitHub
   card opens a review thread for that PR.
-- **Link an existing thread** attaches a running thread. Its automatic card is
-  absorbed so the board never shows the same work twice.
+- **Link an existing thread** attaches a running thread to a task or GitHub
+  card.
 - **Phase** buttons send the next phase prompt to the linked thread. Choosing
   Review also starts a review round in the code-review plugin when it is
   installed.

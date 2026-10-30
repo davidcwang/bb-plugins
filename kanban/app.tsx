@@ -28,7 +28,7 @@ import { cn } from "@/lib/utils";
 
 const COLUMNS: Array<{ id: Column; title: string; hint: string }> = [
   { id: "backlog", title: "To do", hint: "Tasks you create" },
-  { id: "in_progress", title: "In progress", hint: "Threads working now" },
+  { id: "in_progress", title: "In progress", hint: "Cards whose thread is working" },
   { id: "in_review", title: "In review", hint: "Your work awaiting others" },
   { id: "to_review", title: "To review", hint: "Review requests and mentions" },
   { id: "done", title: "Done", hint: "" },

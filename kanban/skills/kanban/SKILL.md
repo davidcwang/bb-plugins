@@ -1,17 +1,18 @@
 ---
 name: kanban
-description: Keep the user's Kanban board current with `bb kanban` or the `kanban_move` and `kanban_task` tools. Use when you start work, need the user's review, open a PR, finish a task, or when the user asks to create, link, or move a card or to advance a task's phase.
+description: Keep the user's Kanban board current with `bb kanban` or the `kanban_move` and `kanban_task` tools. Use when this thread is linked to a Kanban card (your instructions name it), or when the user asks to create, link, or move a card or to advance a task's phase.
 ---
 
 # Kanban board
 
-Cards are tasks the user created, threads, and GitHub pull requests (PRs the
+Cards are tasks the user created and GitHub pull requests (PRs the
 user authored, PRs requesting their review by name, PRs that mention them;
 never team review requests or issues, optionally limited to the GitHub
 organizations set in the board's settings). Columns: `backlog`, `in_progress`, `in_review` (the user's
 work awaiting someone else), `to_review` (things the user must review), `done`.
 
-A task card can own a thread. Threads started from a card carry the card id
+Threads are not on the board by default. A task or GitHub card can own a
+thread. Threads started from a card carry the card id
 and phase in plugin metadata, and your instructions name that card. Phases:
 `research`, `plan`, `implement`, `review`.
 
@@ -27,10 +28,13 @@ and phase in plugin metadata, and your instructions name that card. Phases:
 | `bb kanban remove <card>` | Delete a card. |
 | `bb kanban sync` | Pull GitHub items now. |
 
-Tools: `kanban_move` (omit `card` to move this thread's card) and
+Tools: `kanban_move` (omit `card` to move the card linked to this thread) and
 `kanban_task` (create a card; `link: true` attaches this thread).
 
 ## Procedure
+
+If this thread is not linked to a card, leave the board alone: don't create,
+link, or move cards unless the user asks. Otherwise:
 
 1. When you start real work, move your card to `in_progress`.
 2. When you open a PR or need the user to look at something, move it to `in_review`.

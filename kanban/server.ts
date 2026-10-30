@@ -321,6 +321,11 @@ export default async function plugin(bb: BbPluginApi) {
     cards.find((c) => c.kind !== "thread" && c.threadId === threadId) ??
     cards.find((c) => c.threadId === threadId);
 
+  /**
+   * Reflect a thread's state on the card that owns it. Only cards you added
+   * (tasks) or GitHub cards own threads; a thread with no owning card is not
+   * on the board and never gets one automatically.
+   */
   function upsertThread(
     cards: Card[],
     thread: ThreadLike,
@@ -328,27 +333,7 @@ export default async function plugin(bb: BbPluginApi) {
   ): void {
     if (thread.visibility === "hidden") return;
     const existing = cardForThread(cards, thread.id);
-    if (existing === undefined) {
-      cards.push({
-        id: `thread:${thread.id}`,
-        kind: "thread",
-        title: thread.title ?? "Untitled thread",
-        description: "",
-        column:
-          thread.archivedAt !== null
-            ? "done"
-            : (autoColumn ??
-              (thread.status === "active" ? "in_progress" : "backlog")),
-        pinned: false,
-        phase: null,
-        createdAt: now(),
-        updatedAt: now(),
-        threadId: thread.id,
-        projectId: thread.projectId,
-        threadStatus: thread.status,
-      });
-      return;
-    }
+    if (existing === undefined) return;
     // A task card keeps its own title; a thread card follows the thread.
     if (existing.kind === "thread") existing.title = thread.title ?? "Untitled thread";
     existing.threadStatus = thread.status;
@@ -366,13 +351,11 @@ export default async function plugin(bb: BbPluginApi) {
   bb.events.on("thread.active", ({ thread }) =>
     mutate((cards) => {
       const card = cardForThread(cards, thread.id);
+      if (card === undefined) return;
       // Reopen finished work, but never override a deliberate placement
       // beyond "backlog"/"done" the user or agent chose.
-      const auto =
-        card === undefined || card.column === "backlog" || card.column === "done"
-          ? "in_progress"
-          : null;
-      if (card !== undefined && auto !== null) card.pinned = false;
+      const auto = card.column === "backlog" || card.column === "done" ? "in_progress" : null;
+      if (auto !== null) card.pinned = false;
       upsertThread(cards, thread, auto);
     }),
   );
@@ -400,12 +383,21 @@ export default async function plugin(bb: BbPluginApi) {
     }),
   );
 
-  // Backfill existing threads on first load so the board is not empty.
-  async function backfillThreads(): Promise<void> {
-    if ((await readCards()).some((c) => c.kind === "thread")) return;
-    const threads = await bb.sdk.threads.list({ limit: 100 });
-    await mutate((cards) => {
-      for (const thread of threads) upsertThread(cards, thread, null);
+  // Earlier versions put every thread on the board as its own card. The board
+  // now holds only cards you add and GitHub items, so drop those auto cards.
+  // Threads linked to a task or GitHub card are untouched: they live on that
+  // card, not on a separate "thread" card.
+  async function dropAutoThreadCards(): Promise<number> {
+    if (!(await readCards()).some((c) => c.kind === "thread")) return 0;
+    return mutate((cards) => {
+      let removed = 0;
+      for (let i = cards.length - 1; i >= 0; i--) {
+        if (cards[i]!.kind === "thread") {
+          cards.splice(i, 1);
+          removed += 1;
+        }
+      }
+      return removed;
     });
   }
 
@@ -470,7 +462,11 @@ export default async function plugin(bb: BbPluginApi) {
     return byTitle.length === 1 ? byTitle[0] : undefined;
   }
   const noCard = (ref: string) =>
-    new Error(`No card "${ref}". Run "bb kanban list" to see ids.`);
+    ref.startsWith("thr_")
+      ? new Error(
+          `Thread ${ref} is not on the Kanban board. Only cards the user added and GitHub items are tracked; create one with kanban_task (link: true) only if the user asks.`,
+        )
+      : new Error(`No card "${ref}". Run "bb kanban list" to see ids.`);
 
   function moveCard(ref: string, column: Column): Promise<Card> {
     return mutate((cards) => {
@@ -1094,9 +1090,9 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "kanban_move",
     description:
-      "Move a card on the Kanban board. Omit `card` to move this thread's own card. Columns: backlog, in_progress, in_review, to_review, done.",
+      "Move a card on the Kanban board. Omit `card` to move the card this thread is linked to. Columns: backlog, in_progress, in_review, to_review, done.",
     instructions:
-      "Keep this thread's Kanban card current: in_progress while working, in_review when you need the user's review or a PR is up, done when finished.",
+      "Only use this when this thread is linked to a Kanban card (your instructions name it) or the user asks. Threads are not on the board by default; never create or move cards on your own otherwise.",
     parameters: z.object({
       card: z.string().optional(),
       column: columnSchema,
@@ -1143,8 +1139,12 @@ export default async function plugin(bb: BbPluginApi) {
     };
   });
 
-  void backfillThreads().catch((cause) =>
-    bb.log.warn(`backfill failed: ${cause instanceof Error ? cause.message : String(cause)}`),
+  void dropAutoThreadCards().then(
+    (removed) => {
+      if (removed > 0) bb.log.info(`removed ${removed} automatic thread cards`);
+    },
+    (cause) =>
+      bb.log.warn(`thread card cleanup failed: ${cause instanceof Error ? cause.message : String(cause)}`),
   );
   bb.log.info("loaded");
 }
