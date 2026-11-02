@@ -19,7 +19,7 @@ import type { Node as PmNode } from "@tiptap/pm/model";
 import { toast } from "sonner";
 import type { DocRead, rpcContract } from "./server";
 import { markdownBlocks, parseFrontmatter, splitSections, type DocSection } from "./shared";
-import type { Anchor, Card, CardMode, Claim, Note, Sidecar } from "./sidecar";
+import { plainTitle, type Anchor, type Card, type CardMode, type Claim, type Note, type Sidecar } from "./sidecar";
 import { CardView, SectionChrome, SelectionToolbar, itemsForSection, useSelectionActions, type DiagramRenderer, type ItemsTab } from "./app-sidecar";
 import { useRpc } from "@get-bb/plugin-sdk/app";
 import { cn } from "@/lib/utils";
@@ -231,16 +231,18 @@ export function DocEditor({
   const sectionData = useMemo(() => {
     const map = new Map<string, SectionData>();
     const sc = annotate.sidecar;
+    const headings = sections.flatMap((x) => (x.heading === null ? [] : [x.heading.title]));
     sections.forEach((section, i) => {
       if (section.heading === null) return;
       const next = sections[i + 1]?.startLine ?? null;
-      const title = section.heading.title.trim();
+      // Keyed as the reader sees it; editor headings are matched by DOM text.
+      const title = plainTitle(section.heading.title);
       if (map.has(title)) return;
       map.set(title, {
         section,
-        notes: sc === null ? [] : itemsForSection(sc.notes, section, next),
-        claims: sc === null ? [] : itemsForSection(sc.claims, section, next),
-        cards: sc === null ? [] : itemsForSection(sc.cards, section, next),
+        notes: sc === null ? [] : itemsForSection(sc.notes, section, next, headings),
+        claims: sc === null ? [] : itemsForSection(sc.claims, section, next, headings),
+        cards: sc === null ? [] : itemsForSection(sc.cards, section, next, headings),
       });
     });
     return map;
@@ -258,7 +260,7 @@ export function DocEditor({
       RfcCodeBlock,
       TableKit.configure({ table: { resizable: false } }),
       Markdown.configure({ indentation: { style: "space", size: 2 } }),
-      chromeExtension(registry, bump, (title) => (sectionDataRef.current.get(title)?.cards.length ?? 0) > 0),
+      chromeExtension(registry, bump, (title) => (sectionDataRef.current.get(plainTitle(title))?.cards.length ?? 0) > 0),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -443,7 +445,7 @@ export function DocEditor({
   const widgets = Array.from(registry.current.values());
   const blockLines = useMemo(() => markdownBlocks(split.body).map((b) => b.line + split.offset), [split.body, split.offset]);
   const sectionFor = (w: Widget): SectionData => {
-    const hit = sectionData.get(w.title);
+    const hit = sectionData.get(plainTitle(w.title));
     if (hit !== undefined) return hit;
     const line = blockLines[w.blockIndex] ?? split.offset + 1;
     return { section: { heading: { level: w.level, title: w.title, line }, startLine: line, text: "", segments: [] }, notes: [], claims: [], cards: [] };

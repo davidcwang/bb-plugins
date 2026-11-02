@@ -169,15 +169,77 @@ function useReview(rpc: Rpc, threadId: string) {
 
 // ---- diagrams ------------------------------------------------------------
 
-let mermaidTheme: "dark" | "default" | null = null;
+// Mermaid is drawn with the palette of the D2 theme the server uses for the same mode
+// (server.ts renderD2Now: themeID 0 light, 200 dark), so both kinds of diagram match.
+// Values are D2's N/B/AA slots as rendered by @terrastruct/d2.
+const D2_PALETTE = {
+  light: { text: "#0A0F25", muted: "#676C7E", stroke: "#0D32B2", fill: "#EDF0FD", fillAlt: "#F7F8FE", container: "#E3E9FD", bg: "#FFFFFF", accent: "#4A6FF3" },
+  dark: { text: "#CDD6F4", muted: "#BAC2DE", stroke: "#CBA6F7", fill: "#45475A", fillAlt: "#313244", container: "#585B70", bg: "#1E1E2E", accent: "#F38BA8" },
+};
+
+function mermaidThemeVariables(dark: boolean) {
+  const p = dark ? D2_PALETTE.dark : D2_PALETTE.light;
+  return {
+    darkMode: dark,
+    background: "transparent",
+    fontFamily: "inherit",
+    primaryColor: p.fill,
+    primaryTextColor: p.text,
+    primaryBorderColor: p.stroke,
+    secondaryColor: p.fillAlt,
+    secondaryTextColor: p.text,
+    secondaryBorderColor: p.stroke,
+    tertiaryColor: p.container,
+    tertiaryTextColor: p.text,
+    tertiaryBorderColor: p.stroke,
+    mainBkg: p.fill,
+    nodeBorder: p.stroke,
+    nodeTextColor: p.text,
+    textColor: p.text,
+    lineColor: p.stroke,
+    clusterBkg: p.container,
+    clusterBorder: p.stroke,
+    titleColor: p.text,
+    edgeLabelBackground: p.bg,
+    labelBackground: p.bg,
+    noteBkgColor: p.fillAlt,
+    noteTextColor: p.text,
+    noteBorderColor: p.accent,
+    actorBkg: p.fill,
+    actorBorder: p.stroke,
+    actorTextColor: p.text,
+    actorLineColor: p.muted,
+    signalColor: p.stroke,
+    signalTextColor: p.text,
+    labelBoxBkgColor: p.fill,
+    labelBoxBorderColor: p.stroke,
+    labelTextColor: p.text,
+    loopTextColor: p.text,
+    activationBkgColor: p.fillAlt,
+    activationBorderColor: p.stroke,
+    sequenceNumberColor: p.bg,
+    stateBkg: p.fill,
+    stateBorder: p.stroke,
+    compositeBackground: p.container,
+    compositeTitleBackground: p.container,
+    altBackground: p.fillAlt,
+    transitionColor: p.stroke,
+    transitionLabelColor: p.text,
+    specialStateColor: p.stroke,
+    innerEndBackground: p.stroke,
+  };
+}
+
+let mermaidTheme: "dark" | "light" | null = null;
 function ensureMermaid(dark: boolean) {
-  const theme = dark ? "dark" : "default";
+  const theme = dark ? "dark" : "light";
   if (mermaidTheme === theme) return;
   mermaidTheme = theme;
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: "strict",
-    theme,
+    theme: "base",
+    themeVariables: mermaidThemeVariables(dark),
     fontFamily: "inherit",
     flowchart: { htmlLabels: false },
   });
@@ -673,14 +735,15 @@ export function RfcPreview({ rpc, content, className, annotate }: { rpc: Rpc; co
   const articleRef = useRef<HTMLElement>(null);
   const { selection, clear } = useSelectionActions(articleRef, annotate === undefined ? "" : content);
   const sidecar = annotate?.sidecar ?? null;
+  const headings = useMemo(() => sections.flatMap((x) => (x.heading === null ? [] : [x.heading.title])), [sections]);
   return (
     <article ref={articleRef} className={cn("rfc-preview relative px-4 py-3", className)}>
       {meta !== null ? <Frontmatter meta={meta} /> : null}
       {sections.map((section, index) => {
         const next = sections[index + 1]?.startLine ?? null;
-        const notes = sidecar === null ? [] : itemsForSection(sidecar.notes, section, next);
-        const claims = sidecar === null ? [] : itemsForSection(sidecar.claims, section, next);
-        const cards = sidecar === null ? [] : itemsForSection(sidecar.cards, section, next);
+        const notes = sidecar === null ? [] : itemsForSection(sidecar.notes, section, next, headings);
+        const claims = sidecar === null ? [] : itemsForSection(sidecar.claims, section, next, headings);
+        const cards = sidecar === null ? [] : itemsForSection(sidecar.cards, section, next, headings);
         const key = `s:${section.startLine}:${hashString(section.text)}`;
         return (
           <section key={key} data-section={section.heading?.title ?? ""} data-section-line={section.startLine} className="rfc-section">

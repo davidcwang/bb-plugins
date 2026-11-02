@@ -156,16 +156,30 @@ export type Sidecar = z.infer<typeof sidecarSchema>;
 
 export const emptySidecar = (): Sidecar => ({ version: 1, notes: [], cards: [], glossary: [], claims: [], walkthroughs: [] });
 
+/**
+ * A heading as the reader sees it: inline markdown (`code`, *emphasis*,
+ * [links](…)) stripped. Headings in the sidecar come from the source and in
+ * the editor from the DOM, so both sides are keyed through this.
+ */
+export function plainTitle(title: string): string {
+  return title
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/(\*\*|__)(.*?)\1/g, "$2")
+    .replace(/(\*|_)(.*?)\1/g, "$2")
+    .replace(/~~(.*?)~~/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** Which section heading (exact text) an anchor refers to, matched loosely. */
 export function sectionMatches(anchorSection: string | null, heading: string): boolean {
   if (anchorSection === null) return false;
-  // Ignore "## " and leading numbering ("4.", "4.1", "§4") so agents that
-  // omit them still match.
+  // Ignore "## ", inline formatting, and leading numbering ("4.", "4.1", "§4")
+  // so agents that omit them still match.
   const norm = (s: string) =>
-    s
-      .replace(/^#+\s*/, "")
+    plainTitle(s.replace(/^#+\s*/, ""))
       .replace(/^§?\s*\d+(\.\d+)*\.?\s*/, "")
-      .replace(/\s+/g, " ")
       .trim()
       .toLowerCase();
   const a = norm(anchorSection);

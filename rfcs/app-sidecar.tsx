@@ -68,10 +68,16 @@ export const claimTone: Record<ClaimStatus, string> = {
 const modeIcon: Record<CardMode, string> = { concept: "Lightbulb", code: "Code", data: "Database", flow: "GitBranch", question: "MessageCircleQuestion" };
 
 /** Items anchored to a section: by heading text, else by line range. */
-export function itemsForSection<T extends { anchor: Anchor }>(items: T[], section: DocSection, nextStart: number | null): T[] {
+export function itemsForSection<T extends { anchor: Anchor }>(items: T[], section: DocSection, nextStart: number | null, allHeadings: string[] = []): T[] {
+  const inRange = (line: number) => line >= section.startLine && (nextStart === null || line < nextStart);
   return items.filter((it) => {
-    if (section.heading !== null && it.anchor.section !== null) return sectionMatches(it.anchor.section, section.heading.title);
-    if (it.anchor.line !== null) return it.anchor.line >= section.startLine && (nextStart === null || it.anchor.line < nextStart);
+    if (section.heading !== null && it.anchor.section !== null && sectionMatches(it.anchor.section, section.heading.title)) return true;
+    if (it.anchor.line !== null) {
+      // Fall back to the line when the anchor's section name matches no heading
+      // in the document (renamed heading, formatting the matcher cannot see).
+      const orphan = it.anchor.section === null || !allHeadings.some((h) => sectionMatches(it.anchor.section, h));
+      return orphan && inRange(it.anchor.line);
+    }
     return section.heading === null && it.anchor.section === null;
   });
 }
