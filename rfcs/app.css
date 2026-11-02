@@ -114,3 +114,7 @@
 .rfc-diff .rfc-diff-del { text-decoration: line-through; text-decoration-color: color-mix(in oklab, var(--destructive) 60%, transparent); opacity: 0.85; }
 .rfc-diff .rfc-diff-del table, .rfc-diff .rfc-diff-del pre { text-decoration: none; }
 .rfc-diff .rfc-diff-block > * > :last-child { margin-bottom: 0; }
+
+/* Explainer cards: the follow-up conversation unrolls with the page. */
+.rfc-card-chat { overflow: hidden; }
+.rfc-card-chat > * { max-height: none !important; }

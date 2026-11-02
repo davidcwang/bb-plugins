@@ -1303,7 +1303,7 @@ export default async function plugin(bb: BbPluginApi) {
       `You are producing one explainer card for the RFC at ${JSON.stringify(doc.path)}. Read the RFC (at least the section involved) before answering.`,
       `Selection${anchorText(input.anchor) === "" ? "" : ` (${anchorText(input.anchor)})`}:\n"""${input.prompt}"""`,
       cardInstructions[input.mode],
-      `Publish the result with rfc_publish_card using cardId ${JSON.stringify(card.id)}: a short title, a markdown body, an optional diagram ({lang, source}; check D2 with rfc_check_diagram first), and \`files\` for any code you cite (workspace-relative path, startLine, endLine, snippet, note). Keep the body under ~400 words; put detail in the diagram and file references. After publishing, reply with one line and stop. The user may continue the conversation here with follow-up questions; answer them in chat and republish the card only if asked.`,
+      `Publish the result with rfc_publish_card using cardId ${JSON.stringify(card.id)}: a short title, a markdown body, an optional diagram ({lang, source}; check D2 with rfc_check_diagram first), and \`files\` for any code you cite (workspace-relative path, startLine, endLine, snippet, note). Keep the body under ~400 words; put detail in the diagram and file references. After publishing, reply with one line and stop. This conversation is shown unrolled under the card in the RFC, so answer follow-up questions directly in chat (markdown is rendered); republish the card only if asked to change the card itself.`,
     ].join("\n\n");
     const hidden = await spawnHidden(threadId, `Explain: ${card.title}`, prompt, { explainFor: threadId, cardId: card.id });
     return mutateSidecar(threadId, (d) => {

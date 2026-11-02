@@ -189,11 +189,14 @@ export function CardView({
   Diagram: DiagramRenderer;
   defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
-  const [chat, setChat] = useState(false);
+  const [open, setOpenState] = useState(() => recall(`card:${card.id}`) !== "closed" || defaultOpen);
+  const setOpen = (v: boolean) => {
+    setOpenState(v);
+    remember(`card:${card.id}`, v ? "open" : "closed");
+  };
   return (
     <div className={cn("my-1.5 rounded-md border text-sm", card.status === "pending" ? "border-dashed border-border" : "border-border bg-card")}>
-      <button type="button" className="flex w-full items-center gap-2 px-3 py-1.5 text-left" onClick={() => setOpen((v) => !v)}>
+      <button type="button" className="flex w-full items-center gap-2 px-3 py-1.5 text-left" onClick={() => setOpen(!open)}>
         <Icon name={modeIcon[card.mode]} className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate font-medium">{card.title}</span>
         {card.status === "pending" ? (
@@ -210,7 +213,6 @@ export function CardView({
           <p className="mb-2 text-[11px] text-muted-foreground">
             {card.mode === "question" ? "Asked" : "About"}: “{card.prompt.length > 160 ? `${card.prompt.slice(0, 160)}…` : card.prompt}”
           </p>
-          {card.status === "pending" ? <p className="text-xs text-muted-foreground">The explainer is reading the RFC and writing this card. It appears here when published.</p> : null}
           {card.body !== "" ? <Markdown content={card.body} /> : null}
           {card.diagram !== null ? <Diagram lang={card.diagram.lang} source={card.diagram.source} startLine={0} /> : null}
           {card.files.length > 0 ? (
@@ -220,13 +222,12 @@ export function CardView({
               ))}
             </div>
           ) : null}
-          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
-            {card.threadId !== null ? (
-              <Button size="sm" variant={chat ? "default" : "outline"} className="h-6 text-xs" onClick={() => setChat((v) => !v)}>
-                <Icon name="MessagesSquare" className="size-3.5" />
-                {chat ? "Hide conversation" : "Ask a follow-up"}
-              </Button>
-            ) : null}
+          {card.threadId !== null ? (
+            <div className={cn("rfc-card-chat rounded-md border border-border", card.body !== "" || card.diagram !== null ? "mt-2" : "")}>
+              <ThreadChat threadId={card.threadId} variant="compact" layout="document" permissionPolicy="inherit" />
+            </div>
+          ) : null}
+          <div className="mt-1.5 flex items-center text-xs">
             <button
               type="button"
               className="ml-auto text-muted-foreground hover:text-destructive"
@@ -235,11 +236,6 @@ export function CardView({
               Remove
             </button>
           </div>
-          {chat && card.threadId !== null ? (
-            <div className="mt-2 h-80 overflow-hidden rounded-md border border-border">
-              <ThreadChat threadId={card.threadId} variant="compact" layout="contained" permissionPolicy="inherit" className="h-full" />
-            </div>
-          ) : null}
         </div>
       ) : null}
     </div>
@@ -307,8 +303,6 @@ export function SectionChrome({
   const weakClaims = claims.filter((c) => c.status === "assumed" || c.status === "stale");
   const anchor: Anchor = { section: section.heading?.title ?? null, line: section.heading?.line ?? section.startLine, quote: null };
   const title = section.heading?.title ?? "this document";
-  const [asking, setAsking] = useState(false);
-  const [question, setQuestion] = useState("");
   return (
     <div className="rfc-section-chrome -mb-1 mt-1 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground opacity-70 transition-opacity hover:opacity-100">
       {openNotes.length > 0 ? (
@@ -325,12 +319,6 @@ export function SectionChrome({
       <span className="ml-auto flex items-center gap-0.5">
         <button type="button" className={cn("rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground", noting && "bg-muted text-foreground")} onClick={() => setNoting((v) => !v)} title={`Add a note on ${title}`}>
           + note
-        </button>
-        <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground" onClick={() => onExplain(anchor, "concept", section.heading?.title ?? section.text.slice(0, 200))} title={`Explain ${title}`}>
-          explain
-        </button>
-        <button type="button" className={cn("rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground", asking && "bg-muted text-foreground")} onClick={() => setAsking((v) => !v)} title={`Ask about ${title}`}>
-          ask
         </button>
       </span>
       {noting ? (
@@ -350,23 +338,6 @@ export function SectionChrome({
           </Button>
           <Button size="sm" type="button" variant="outline" className="h-7 text-xs" onClick={() => setNoting(false)}>
             Cancel
-          </Button>
-        </form>
-      ) : null}
-      {asking ? (
-        <form
-          className="flex w-full items-center gap-1"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (question.trim() === "") return;
-            onExplain(anchor, "question", question.trim());
-            setQuestion("");
-            setAsking(false);
-          }}
-        >
-          <Input value={question} onChange={(e) => setQuestion(e.target.value)} autoFocus placeholder={`Ask about ${title}…`} className="h-7 flex-1 text-xs" aria-label="Question" />
-          <Button size="sm" type="submit" className="h-7 text-xs" disabled={question.trim() === ""}>
-            Ask
           </Button>
         </form>
       ) : null}
@@ -503,12 +474,10 @@ export function SelectionToolbar({
         Note
       </button>
       <span className="mx-0.5 h-4 w-px bg-border" />
-      {(["concept", "code", "data", "flow"] as CardMode[]).map((m) => (
-        <button key={m} type="button" className="rounded px-2 py-1 hover:bg-muted" onClick={() => onExplain(selection.anchor, m, selection.text)} title={CARD_MODE_LABEL[m]}>
-          <Icon name={modeIcon[m]} className="mr-1 inline size-3.5 align-text-bottom" />
-          {m === "concept" ? "Explain" : m === "code" ? "Code" : m === "data" ? "Data" : "Flow"}
-        </button>
-      ))}
+      <button type="button" className="rounded px-2 py-1 hover:bg-muted" onClick={() => onExplain(selection.anchor, "concept", selection.text)} title="Explain this passage: what it means, why it is here, what it depends on">
+        <Icon name={modeIcon.concept} className="mr-1 inline size-3.5 align-text-bottom" />
+        Explain
+      </button>
       <button
         type="button"
         className={cn("rounded px-2 py-1 hover:bg-muted", asking && "bg-muted")}
