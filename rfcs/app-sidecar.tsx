@@ -224,7 +224,7 @@ export function CardView({
           ) : null}
           {card.threadId !== null ? (
             <div className={cn("rfc-card-chat rounded-md border border-border", card.body !== "" || card.diagram !== null ? "mt-2" : "")}>
-              <ThreadChat threadId={card.threadId} variant="compact" layout="document" permissionPolicy="inherit" />
+              <ThreadChat threadId={card.threadId} variant="compact" layout="document" permissionPolicy="inherit" className="min-h-12" />
             </div>
           ) : null}
           <div className="mt-1.5 flex items-center text-xs">
