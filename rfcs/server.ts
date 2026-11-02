@@ -749,7 +749,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
   async function renderD2Now(source: string, dark: boolean) {
     const { d2Layout, d2Sketch } = await settings.get();
-    const cacheKey = sha256(`${d2Layout}|${d2Sketch}|${dark}|${source}`);
+    const cacheKey = sha256(`${d2Layout}|${d2Sketch}|${source}`);
     const hit = d2Cache.get(cacheKey);
     if (hit !== undefined) return hit;
     let result: { ok: true; svg: string } | { ok: false; error: string };
@@ -761,8 +761,10 @@ export default async function plugin(bb: BbPluginApi) {
         options: {
           layout: d2Layout === "dagre" ? "dagre" : "elk",
           sketch: d2Sketch,
-          // 0 = neutral default; 200 = dark mauve. The diagram's own `vars.d2-config` wins.
-          themeID: dark ? 200 : 0,
+          // Always the neutral light theme: the panel draws D2 on a white backdrop
+          // so hardcoded pastel fills stay readable in dark mode. `dark` is kept
+          // in the RPC for compatibility. The diagram's own `vars.d2-config` wins.
+          themeID: 0,
           pad: 16,
           scale: 1,
           noXMLTag: true,

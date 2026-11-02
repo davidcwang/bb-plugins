@@ -238,7 +238,7 @@ function DiagramFrame({
                 </button>
               </div>
               <div className="group relative min-h-0 flex-1">
-                <DiagramViewport svg={svg} tall={false} fill />
+                <DiagramViewport svg={svg} tall={false} fill light={lang === "d2"} />
               </div>
             </div>,
             document.body,
@@ -285,7 +285,7 @@ function DiagramFrame({
       {error !== null ? (
         <pre className="m-0 whitespace-pre-wrap border-b border-border px-3 py-2 text-xs text-destructive">{error}</pre>
       ) : null}
-      {svg !== null ? <DiagramViewport svg={svg} tall={lang === "d2"} /> : null}
+      {svg !== null ? <DiagramViewport svg={svg} tall={lang === "d2"} light={lang === "d2"} /> : null}
       {showSource ? (
         <pre className="m-0 overflow-auto border-t border-border bg-muted/40 px-3 py-2 font-mono text-xs leading-5">{source}</pre>
       ) : null}
@@ -298,7 +298,7 @@ function DiagramFrame({
  * pinch arrives the same way) or the buttons; drag to pan; double-click or
  * the reset button returns to fit.
  */
-function DiagramViewport({ svg, tall, fill = false }: { svg: string; tall: boolean; fill?: boolean }) {
+function DiagramViewport({ svg, tall, fill = false, light = false }: { svg: string; tall: boolean; fill?: boolean; light?: boolean }) {
   const [t, setT] = useState({ scale: 1, x: 0, y: 0 });
   const ref = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
@@ -335,6 +335,8 @@ function DiagramViewport({ svg, tall, fill = false }: { svg: string; tall: boole
         ref={ref}
         className={cn(
           "rfc-diagram select-none overflow-hidden px-3 py-3",
+          // D2 renders with its light theme; agents often hardcode pastel fills, which only read on a light backdrop.
+          light && "bg-white text-black",
           fill ? "flex h-full items-center justify-center [&_svg]:max-h-[calc(100vh-5rem)]" : tall ? "max-h-[70vh]" : "",
           drag.current !== null ? "cursor-grabbing" : "cursor-grab",
         )}

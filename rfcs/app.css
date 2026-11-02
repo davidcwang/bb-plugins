@@ -115,7 +115,5 @@
 .rfc-diff .rfc-diff-del table, .rfc-diff .rfc-diff-del pre { text-decoration: none; }
 .rfc-diff .rfc-diff-block > * > :last-child { margin-bottom: 0; }
 
-/* Explainer cards: the follow-up conversation unrolls with the page. No
-   overflow rule here: the chat sizes itself against the nearest scroll
-   container, and an overflow-hidden wrapper would read as a 0px viewport. */
-.rfc-card-chat { overflow: visible; min-height: 3rem; }
+/* Explainer cards: the conversation box is drag-resizable from its corner. */
+.rfc-card-chat { resize: vertical; }

@@ -223,9 +223,7 @@ export function CardView({
             </div>
           ) : null}
           {card.threadId !== null ? (
-            <div className={cn("rfc-card-chat rounded-md border border-border", card.body !== "" || card.diagram !== null ? "mt-2" : "")}>
-              <ThreadChat threadId={card.threadId} variant="compact" layout="document" permissionPolicy="inherit" className="min-h-12" />
-            </div>
+            <CardChat threadId={card.threadId} cardId={card.id} spaced={card.body !== "" || card.diagram !== null} />
           ) : null}
           <div className="mt-1.5 flex items-center text-xs">
             <button
@@ -238,6 +236,30 @@ export function CardView({
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The card's conversation in a bounded box the user can drag taller; the
+ * height is remembered per card. (The host chat needs a sized parent.)
+ */
+function CardChat({ threadId, cardId, spaced }: { threadId: string; cardId: string; spaced: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const initial = Number(recall(`cardChat:${cardId}`) ?? "") || 480;
+  useEffect(() => {
+    const el = ref.current;
+    if (el === null) return;
+    const ro = new ResizeObserver(() => {
+      const h = Math.round(el.getBoundingClientRect().height);
+      if (h > 0 && h !== initial) remember(`cardChat:${cardId}`, String(h));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [cardId, initial]);
+  return (
+    <div ref={ref} className={cn("rfc-card-chat resize-y overflow-hidden rounded-md border border-border", spaced && "mt-2")} style={{ height: initial, minHeight: 160, maxHeight: "85vh" }}>
+      <ThreadChat threadId={threadId} variant="compact" layout="contained" permissionPolicy="inherit" className="h-full" />
     </div>
   );
 }
