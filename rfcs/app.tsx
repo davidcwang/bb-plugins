@@ -17,6 +17,7 @@ import type { Anchor, CardMode } from "./sidecar";
 import { CardView, ItemsView, SectionChrome, SelectionToolbar, WalkthroughView, itemsForSection, useSelectionActions, useSidecar, type DiagramRenderer, type ItemsTab } from "./app-sidecar";
 import type { Sidecar } from "./sidecar";
 import { recall, remember } from "./memory";
+import "./app.css";
 import { ChangesView, unseenChanges, useRevisions } from "./app-changes";
 import { DocEditor, type LineScroller } from "./app-rich";
 import { Button } from "@/components/ui/button";

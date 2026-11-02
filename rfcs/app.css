@@ -3,46 +3,104 @@
 @keyframes rfc-jump-flash { 0% { background-color: color-mix(in oklab, var(--primary) 18%, transparent); } 100% { background-color: transparent; } }
 .rfc-section-chrome { min-height: 0; }
 
-/* Rendered prose is click-to-edit; hint with a text cursor and a faint hover. */
-.rfc-preview .rfc-editable {
-  cursor: text;
-  border-radius: 4px;
-  transition: background-color 120ms;
-}
-.rfc-preview .rfc-editable:hover {
-  background-color: color-mix(in oklab, var(--muted) 45%, transparent);
-}
-.rfc-preview .rfc-editable a,
-.rfc-preview .rfc-editable button {
-  cursor: pointer;
-}
-
-/* Rich section editor: match the rendered document's typography. */
+/* Document editor typography: GitHub-flavoured rendered markdown, themed by
+   the host's tokens so it reads the same in light and dark. */
 .rfc-rich {
   min-height: 2rem;
-  line-height: 1.6;
-  font-size: 0.925rem;
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  color: var(--foreground);
+  word-wrap: break-word;
 }
-.rfc-rich > * + * { margin-top: 0.6em; }
-.rfc-rich h1 { font-size: 1.6em; font-weight: 700; margin-top: 1em; }
-.rfc-rich h2 { font-size: 1.35em; font-weight: 650; margin-top: 1em; }
-.rfc-rich h3 { font-size: 1.15em; font-weight: 600; margin-top: 0.9em; }
-.rfc-rich h4, .rfc-rich h5, .rfc-rich h6 { font-size: 1em; font-weight: 600; }
-.rfc-rich ul { list-style: disc; padding-left: 1.4em; }
-.rfc-rich ol { list-style: decimal; padding-left: 1.4em; }
+.rfc-rich > * { margin-top: 0; margin-bottom: 0.9em; }
+.rfc-rich > *:last-child { margin-bottom: 0; }
+.rfc-rich h1, .rfc-rich h2, .rfc-rich h3, .rfc-rich h4, .rfc-rich h5, .rfc-rich h6 {
+  font-weight: 600;
+  line-height: 1.25;
+  margin-top: 1.5em;
+  margin-bottom: 0.6em;
+  letter-spacing: -0.01em;
+}
+.rfc-rich > h1:first-child, .rfc-rich > h2:first-child, .rfc-rich > h3:first-child { margin-top: 0; }
+.rfc-rich h1 { font-size: 1.75em; padding-bottom: 0.3em; border-bottom: 1px solid var(--border); }
+.rfc-rich h2 { font-size: 1.4em; padding-bottom: 0.25em; border-bottom: 1px solid var(--border); }
+.rfc-rich h3 { font-size: 1.2em; }
+.rfc-rich h4 { font-size: 1.05em; }
+.rfc-rich h5, .rfc-rich h6 { font-size: 0.95em; color: var(--muted-foreground); }
+.rfc-rich p { margin-top: 0; margin-bottom: 0.9em; }
+.rfc-rich strong { font-weight: 600; }
+.rfc-rich em { font-style: italic; }
+.rfc-rich s { text-decoration: line-through; }
+.rfc-rich a { color: var(--primary); text-decoration: underline; text-underline-offset: 2px; }
+.rfc-rich ul, .rfc-rich ol { padding-left: 1.75em; margin-top: 0; margin-bottom: 0.9em; }
+.rfc-rich ul { list-style: disc; }
+.rfc-rich ul ul { list-style: circle; }
+.rfc-rich ul ul ul { list-style: square; }
+.rfc-rich ol { list-style: decimal; }
+.rfc-rich li { margin: 0.2em 0; }
 .rfc-rich li > p { margin: 0; }
-.rfc-rich li + li { margin-top: 0.2em; }
-.rfc-rich blockquote { border-left: 3px solid var(--border); padding-left: 0.8em; color: var(--muted-foreground); }
-.rfc-rich code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.875em; background: color-mix(in oklab, var(--muted) 70%, transparent); padding: 0.1em 0.3em; border-radius: 3px; }
-.rfc-rich pre { background: color-mix(in oklab, var(--muted) 70%, transparent); padding: 0.6em 0.8em; border-radius: 6px; overflow-x: auto; }
-.rfc-rich pre code { background: none; padding: 0; font-size: 0.85em; }
-.rfc-rich a { color: var(--primary); text-decoration: underline; }
-.rfc-rich hr { border: 0; border-top: 1px solid var(--border); margin: 1em 0; }
-.rfc-rich table { border-collapse: collapse; width: 100%; font-size: 0.9em; }
-.rfc-rich th, .rfc-rich td { border: 1px solid var(--border); padding: 0.25em 0.5em; text-align: left; vertical-align: top; }
-.rfc-rich th { background: color-mix(in oklab, var(--muted) 60%, transparent); font-weight: 600; }
-.rfc-rich .selectedCell { background: color-mix(in oklab, var(--primary) 12%, transparent); }
+.rfc-rich li > ul, .rfc-rich li > ol { margin: 0.2em 0 0; }
+.rfc-rich ul[data-type="taskList"] { list-style: none; padding-left: 0.25em; }
+.rfc-rich ul[data-type="taskList"] li { display: flex; gap: 0.5em; align-items: flex-start; }
+.rfc-rich ul[data-type="taskList"] li > label { margin-top: 0.3em; }
+.rfc-rich blockquote {
+  margin: 0 0 0.9em;
+  padding: 0.1em 1em;
+  border-left: 3px solid var(--border);
+  color: var(--muted-foreground);
+}
+.rfc-rich blockquote > :last-child { margin-bottom: 0; }
+.rfc-rich code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.875em;
+  background: color-mix(in oklab, var(--muted) 85%, transparent);
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+}
+.rfc-rich pre {
+  margin: 0 0 0.9em;
+  padding: 0.75em 1em;
+  background: color-mix(in oklab, var(--muted) 85%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow-x: auto;
+  line-height: 1.5;
+}
+.rfc-rich pre code { background: none; padding: 0; border-radius: 0; font-size: 0.85em; white-space: pre; }
+.rfc-rich hr { border: 0; border-top: 1px solid var(--border); margin: 1.5em 0; }
+.rfc-rich img { max-width: 100%; }
+.rfc-rich .tableWrapper { overflow-x: auto; margin: 0 0 0.9em; }
+.rfc-rich table {
+  border-collapse: collapse;
+  width: auto;
+  max-width: 100%;
+  font-size: 0.9em;
+  line-height: 1.45;
+  margin: 0;
+  table-layout: auto;
+}
+.rfc-rich th, .rfc-rich td {
+  border: 1px solid var(--border);
+  padding: 0.4em 0.75em;
+  text-align: left;
+  vertical-align: top;
+  min-width: 3em;
+  position: relative;
+}
+.rfc-rich th, .rfc-rich td { > p { margin: 0; } }
+.rfc-rich th { font-weight: 600; background: color-mix(in oklab, var(--muted) 70%, transparent); }
+.rfc-rich tbody tr:nth-child(even) td { background: color-mix(in oklab, var(--muted) 30%, transparent); }
+.rfc-rich td code, .rfc-rich th code { white-space: nowrap; }
+.rfc-rich .selectedCell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in oklab, var(--primary) 12%, transparent);
+  pointer-events: none;
+}
+.rfc-rich .column-resize-handle { display: none; }
 .rfc-rich p.is-editor-empty:first-child::before { content: "Type here…"; color: var(--muted-foreground); float: left; pointer-events: none; height: 0; }
+.rfc-rich ::selection { background: color-mix(in oklab, var(--primary) 25%, transparent); }
 
 /* Document editor: widgets injected between blocks. */
 .rfc-doc .rfc-chrome-widget { margin-top: 0.75rem; }
