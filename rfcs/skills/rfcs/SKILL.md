@@ -27,7 +27,13 @@ make them), an editor the user may type in, and a Review tab.
 Two fenced-block languages render inline in the preview:
 
 - ```` ```mermaid ```` for sequence diagrams, flowcharts, state machines,
-  ER diagrams, gantt. Keep to standard syntax; the renderer is mermaid 12.
+  ER diagrams, gantt. Keep to standard syntax; the renderer is mermaid 12 and
+  nothing can pre-check it, so: flowchart edge text is `A -- text --> B`,
+  `A -->|text| B`, or dotted `A -. text .-> B` (never `-- text -.->`); quote
+  labels with punctuation and keep `+ ( ) ;` out of edge text; erDiagram
+  attributes are `type name PK "comment"` with keys `PK, FK` or `UK` (never
+  `PK_FK`) and types without spaces or parentheses; use
+  `participant X as Label` for labels with spaces.
 - ```` ```d2 ```` for architecture diagrams (containers, nested systems,
   cylinders, clouds, icons, labelled edges). D2 produces Lucidchart-grade
   output; prefer it for anything with boxes-in-boxes or more than ~8 nodes.

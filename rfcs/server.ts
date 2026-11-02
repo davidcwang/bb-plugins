@@ -242,6 +242,19 @@ export const rpcContract = defineRpcContract({
     input: z.object({ threadId: z.string(), id: z.string() }),
     output: z.object({ ok: z.literal(true) }),
   },
+  card_diagram_error: {
+    // The panel is the only mermaid validator we have: when a card's diagram
+    // fails to render, ask the card's thread to fix it (once per source).
+    input: z.object({
+      threadId: z.string(),
+      cardId: z.string(),
+      exchangeId: z.string().nullable(),
+      lang: z.enum(["mermaid", "d2"]),
+      source: z.string().max(200_000),
+      error: z.string().max(4000),
+    }),
+    output: z.object({ requested: z.boolean() }),
+  },
   card_followup: {
     input: z.object({ threadId: z.string(), cardId: z.string(), question: z.string().min(1).max(4000) }),
     output: cardSchema,
@@ -389,6 +402,10 @@ const now = () => new Date().toISOString();
 const newId = (prefix: string) => `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 const describe = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+
+/** Mermaid cannot be validated server-side; these are the mistakes that break it most often. */
+const MERMAID_RULES =
+  "Mermaid rules (the panel renders mermaid 12 and cannot pre-check it): flowchart edge text is `A -- text --> B`, `A -->|text| B`, or dotted `A -. text .-> B` (never `-- text -.->`); quote any label containing punctuation and avoid `+`, `(`, `)`, `;` inside edge text; erDiagram attributes are `type name PK \"comment\"` with keys written `PK, FK` or `UK` (never `PK_FK`), types without spaces or parentheses, comments as a quoted string; sequenceDiagram participants need `participant X as Label` for labels with spaces; no HTML except `<br/>` in flowchart labels.";
 
 const isAbsolute = (p: string) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
 function joinPath(base: string, rel: string): string {
@@ -1291,6 +1308,8 @@ export default async function plugin(bb: BbPluginApi) {
     return id;
   }
 
+  /** Keys of diagram-fix requests already sent, so a broken diagram is retried once, not forever. */
+  const diagramFixRequests = new Set<string>();
   const cardInstructions: Record<CardMode, string> = {
     concept:
       "Explain the concept the selection relies on, for a strong engineer who is new to this system. Define terms, say why it exists, how it works, and the one or two gotchas that matter here. Prefer a short mermaid or D2 diagram when a picture carries more than prose.",
@@ -1325,7 +1344,8 @@ export default async function plugin(bb: BbPluginApi) {
       `You are producing one explainer card for the RFC at ${JSON.stringify(doc.path)}. Read the RFC (at least the section involved) before answering.`,
       `Selection${anchorText(input.anchor) === "" ? "" : ` (${anchorText(input.anchor)})`}:\n"""${input.prompt}"""`,
       cardInstructions[input.mode],
-      `Publish the result with rfc_publish_card using cardId ${JSON.stringify(card.id)}: a short title, a markdown body, an optional diagram ({lang, source}; check D2 with rfc_check_diagram first), and \`files\` for any code you cite (workspace-relative path, startLine, endLine, snippet, note). Keep the body under ~400 words; put detail in the diagram and file references. After publishing, reply with one line and stop. This conversation is shown unrolled under the card in the RFC, so answer follow-up questions directly in chat (markdown is rendered); republish the card only if asked to change the card itself.`,
+      `Publish the result with rfc_publish_card using cardId ${JSON.stringify(card.id)}: a short title, a markdown body, an optional diagram ({lang, source}; check D2 with rfc_check_diagram first), and \`files\` for any code you cite (workspace-relative path, startLine, endLine, snippet, note). Keep the body under ~400 words; put detail in the diagram and file references. After publishing, reply with one line and stop. Follow-up questions arrive here with an exchangeId; answer each with rfc_card_reply.`,
+      MERMAID_RULES,
     ].join("\n\n");
     const hidden = await spawnHidden(threadId, `Explain: ${card.title}`, prompt, { explainFor: threadId, cardId: card.id });
     return mutateSidecar(threadId, (d) => {
@@ -1487,6 +1507,27 @@ export default async function plugin(bb: BbPluginApi) {
         return { ok: true as const };
       }),
     card_followup: ({ threadId, cardId, question }) => askCard(threadId, cardId, question),
+    card_diagram_error: async ({ threadId, cardId, exchangeId, lang, source, error }) => {
+      const sidecar = await readSidecar(threadId);
+      const card = sidecar?.cards.find((c) => c.id === cardId);
+      if (card === undefined || card.threadId === null) return { requested: false };
+      const key = `${cardId}:${exchangeId ?? "card"}:${sha256(source)}`;
+      if (diagramFixRequests.has(key)) return { requested: false };
+      diagramFixRequests.add(key);
+      const where = exchangeId === null ? `the card (republish with rfc_publish_card, cardId ${JSON.stringify(cardId)})` : `your answer to exchange ${JSON.stringify(exchangeId)} (republish with rfc_card_reply, same exchangeId)`;
+      const text = [
+        `The ${lang} diagram in ${where} does not render. The renderer says:`,
+        `\`\`\`\n${error}\n\`\`\``,
+        `Fix the diagram syntax only, keep the body and files as they were, and republish. ${MERMAID_RULES}`,
+      ].join("\n\n");
+      try {
+        await askRfcThread(card.threadId, text);
+        return { requested: true };
+      } catch (cause) {
+        bb.log.warn(`diagram fix request failed: ${describe(cause)}`);
+        return { requested: false };
+      }
+    },
     card_exchange_remove: ({ threadId, cardId, exchangeId }) =>
       mutateSidecar(threadId, (d) => {
         const card = d.cards.find((x) => x.id === cardId);

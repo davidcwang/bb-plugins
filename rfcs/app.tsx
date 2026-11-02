@@ -459,12 +459,16 @@ function DiagramViewport({ svg, tall, fill = false, light = false }: { svg: stri
   );
 }
 
-function MermaidBlock({ source, startLine, dark }: { source: string; startLine: number; dark: boolean }) {
+function MermaidBlock({ source, startLine, dark, onError }: { source: string; startLine: number; dark: boolean; onError?: (error: string | null) => void }) {
   const [state, setState] = useState<{ svg: string | null; error: string | null; pending: boolean }>({
     svg: null,
     error: null,
     pending: true,
   });
+  useEffect(() => {
+    if (!state.pending) onError?.(state.error);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.error, state.pending]);
   useEffect(() => {
     let cancelled = false;
     ensureMermaid(dark);
@@ -498,12 +502,16 @@ function MermaidBlock({ source, startLine, dark }: { source: string; startLine: 
   return <DiagramFrame lang="mermaid" source={source} startLine={startLine} {...state} />;
 }
 
-function D2Block({ rpc, source, startLine, dark }: { rpc: Rpc; source: string; startLine: number; dark: boolean }) {
+function D2Block({ rpc, source, startLine, dark, onError }: { rpc: Rpc; source: string; startLine: number; dark: boolean; onError?: (error: string | null) => void }) {
   const [state, setState] = useState<{ svg: string | null; error: string | null; pending: boolean }>({
     svg: null,
     error: null,
     pending: true,
   });
+  useEffect(() => {
+    if (!state.pending) onError?.(state.error);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.error, state.pending]);
   useEffect(() => {
     let cancelled = false;
     setState((s) => ({ ...s, pending: true }));
@@ -718,10 +726,10 @@ export interface PreviewAnnotations {
 }
 
 /** Diagram renderer handed to sidecar cards and walkthrough steps. */
-function DiagramAny({ lang, source, startLine }: { lang: "mermaid" | "d2"; source: string; startLine: number }) {
+function DiagramAny({ lang, source, startLine, onError }: { lang: "mermaid" | "d2"; source: string; startLine: number; onError?: (error: string | null) => void }) {
   const rpc = useRpc<typeof rpcContract>();
   const dark = useIsDark();
-  return lang === "mermaid" ? <MermaidBlock source={source} startLine={startLine} dark={dark} /> : <D2Block rpc={rpc} source={source} startLine={startLine} dark={dark} />;
+  return lang === "mermaid" ? <MermaidBlock source={source} startLine={startLine} dark={dark} onError={onError} /> : <D2Block rpc={rpc} source={source} startLine={startLine} dark={dark} onError={onError} />;
 }
 const DiagramForCards: DiagramRenderer = DiagramAny;
 

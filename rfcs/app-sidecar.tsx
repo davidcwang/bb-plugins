@@ -35,7 +35,7 @@ import { cn } from "@/lib/utils";
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
 const describe = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
 
-export type DiagramRenderer = ComponentType<{ lang: "mermaid" | "d2"; source: string; startLine: number }>;
+export type DiagramRenderer = ComponentType<{ lang: "mermaid" | "d2"; source: string; startLine: number; onError?: (error: string | null) => void }>;
 
 // ---- data ----------------------------------------------------------------
 
@@ -205,6 +205,18 @@ export function CardView({
   const [sending, setSending] = useState(false);
   const pending = card.status === "pending" || card.exchanges.some((e) => e.status === "pending");
   const fail = (cause: unknown) => toast.error(describe(cause));
+  const [fixing, setFixing] = useState<Record<string, boolean>>({});
+  // A diagram that fails to render asks the card's thread to fix it (once per source).
+  const reportDiagram = (exchangeId: string | null, lang: "mermaid" | "d2", source: string) => (error: string | null) => {
+    if (error === null) return;
+    const key = exchangeId ?? "card";
+    rpc.call("card_diagram_error", { threadId, cardId: card.id, exchangeId, lang, source, error }).then(
+      (r) => {
+        if (r.requested) setFixing((f) => ({ ...f, [key]: true }));
+      },
+      () => undefined,
+    );
+  };
   const ask = () => {
     const q = question.trim();
     if (q === "" || sending) return;
@@ -243,7 +255,8 @@ export function CardView({
           </p>
           {card.status === "pending" ? <p className="text-xs text-muted-foreground">Reading the RFC and writing the answer…</p> : null}
           {card.body !== "" ? <Markdown content={card.body} /> : null}
-          {card.diagram !== null ? <Diagram lang={card.diagram.lang} source={card.diagram.source} startLine={0} /> : null}
+          {card.diagram !== null ? <Diagram lang={card.diagram.lang} source={card.diagram.source} startLine={0} onError={reportDiagram(null, card.diagram.lang, card.diagram.source)} /> : null}
+          {fixing.card === true && card.diagram !== null ? <p className="text-[11px] text-muted-foreground">Asked the explainer to fix this diagram…</p> : null}
           {card.files.length > 0 ? (
             <div className="mt-2 flex flex-col gap-1.5">
               {card.files.map((f, i) => (
@@ -271,7 +284,8 @@ export function CardView({
                 </p>
               ) : null}
               {x.status === "failed" ? <p className="text-xs text-destructive">{x.answer}</p> : x.answer !== "" ? <Markdown content={x.answer} /> : null}
-              {x.diagram !== null ? <Diagram lang={x.diagram.lang} source={x.diagram.source} startLine={0} /> : null}
+              {x.diagram !== null ? <Diagram lang={x.diagram.lang} source={x.diagram.source} startLine={0} onError={reportDiagram(x.id, x.diagram.lang, x.diagram.source)} /> : null}
+              {fixing[x.id] === true && x.diagram !== null ? <p className="text-[11px] text-muted-foreground">Asked the explainer to fix this diagram…</p> : null}
               {x.files.length > 0 ? (
                 <div className="mt-2 flex flex-col gap-1.5">
                   {x.files.map((f, i) => (
