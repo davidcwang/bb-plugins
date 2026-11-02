@@ -18,7 +18,7 @@ import { CardView, ItemsView, SectionChrome, SelectionToolbar, WalkthroughView, 
 import type { Sidecar } from "./sidecar";
 import { recall, remember } from "./memory";
 import { ChangesView, unseenChanges, useRevisions } from "./app-changes";
-import { SectionRichEditor } from "./app-rich";
+import { DocEditor, type LineScroller } from "./app-rich";
 import { Button } from "@/components/ui/button";
 import { ICON_NAMES, Icon, iconComponent } from "./icons";
 import { Input } from "@/components/ui/input";
@@ -624,105 +624,6 @@ function Frontmatter({ meta }: { meta: Record<string, string> }) {
   );
 }
 
-/**
- * In-place raw-markdown editor for one section of the rendered document.
- * Saves when focus leaves or on ⌘/Ctrl+Enter; Esc cancels.
- */
-/** Best-effort source line for a rendered block: the first line in [from, to] whose text matches the block's opening words. */
-function sourceLineFor(lines: string[], from: number, to: number, blockText: string): number {
-  const norm = (t: string) => t.toLowerCase().replace(/[`*_~>#|\\[\]()!-]/g, "").replace(/\s+/g, " ").trim();
-  const needle = norm(blockText).slice(0, 24);
-  if (needle.length < 3) return from;
-  for (let i = from; i <= Math.min(to, lines.length); i++) {
-    const hay = norm(lines[i - 1] ?? "");
-    if (hay.length > 0 && (hay.startsWith(needle) || needle.startsWith(hay.slice(0, Math.min(hay.length, 24))))) return i;
-  }
-  for (let i = from; i <= Math.min(to, lines.length); i++) {
-    if (norm(lines[i - 1] ?? "").includes(needle.slice(0, 12))) return i;
-  }
-  return from;
-}
-
-function SectionEditor({ initial, startLine, focusLine, onSave, onCancel }: { initial: string; startLine: number; focusLine: number; onSave: (text: string) => Promise<void>; onCancel: () => void }) {
-  const [text, setText] = useState(initial);
-  const [busy, setBusy] = useState(false);
-  const ref = useRef<HTMLTextAreaElement>(null);
-  const latest = useRef({ text, busy, cancelled: false });
-  latest.current = { ...latest.current, text, busy };
-  const fit = () => {
-    const ta = ref.current;
-    if (ta === null) return;
-    ta.style.height = "0px";
-    ta.style.height = `${ta.scrollHeight + 2}px`;
-  };
-  useEffect(() => {
-    fit();
-    const ta = ref.current;
-    if (ta !== null) {
-      ta.focus({ preventScroll: true });
-      // Caret at the start of the clicked line.
-      const offset = initial
-        .split("\n")
-        .slice(0, Math.max(0, focusLine - startLine))
-        .reduce((n, l) => n + l.length + 1, 0);
-      ta.setSelectionRange(offset, offset);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  useEffect(fit, [text]);
-  const commit = async () => {
-    const cur = latest.current;
-    if (cur.busy || cur.cancelled) return;
-    if (cur.text === initial) {
-      onCancel();
-      return;
-    }
-    setBusy(true);
-    try {
-      await onSave(cur.text);
-    } catch (cause) {
-      toast.error(describe(cause));
-      setBusy(false);
-    }
-  };
-  const cancel = () => {
-    latest.current.cancelled = true;
-    onCancel();
-  };
-  return (
-    <div className="rfc-section-editor my-2 rounded border border-primary/40 bg-muted/30">
-      <div className="flex items-center gap-2 border-b border-border/60 px-2 py-0.5 text-[10px] text-muted-foreground">
-        <span>Editing markdown from line {startLine}</span>
-        <span className="ml-auto">⌘↩ save · esc cancel · saves when you click away</span>
-        <button type="button" className="rounded px-1 hover:bg-muted hover:text-foreground" onMouseDown={(e) => e.preventDefault()} onClick={cancel}>
-          cancel
-        </button>
-        <button type="button" className="rounded px-1 text-foreground hover:bg-muted" onMouseDown={(e) => e.preventDefault()} onClick={() => void commit()} disabled={busy}>
-          {busy ? "saving…" : "save"}
-        </button>
-      </div>
-      <textarea
-        ref={ref}
-        value={text}
-        disabled={busy}
-        onChange={(e) => setText(e.target.value)}
-        onBlur={() => void commit()}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            e.preventDefault();
-            cancel();
-          } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            void commit();
-          }
-        }}
-        spellCheck={false}
-        className="block w-full resize-none overflow-hidden bg-transparent px-2 py-1.5 font-mono text-[13px] leading-6 outline-none"
-      />
-    </div>
-  );
-}
-
 export interface PreviewAnnotations {
   threadId: string;
   sidecar: Sidecar | null;
@@ -731,8 +632,6 @@ export interface PreviewAnnotations {
   onAddNote: (anchor: Anchor, title: string) => void;
   onExplain: (anchor: Anchor, mode: CardMode, prompt: string) => void;
   onOpenItems: (tab: ItemsTab, section: string | null) => void;
-  /** Replace source lines [startLine, endLine] (1-based, inclusive) with new markdown. */
-  onEditSection?: (startLine: number, endLine: number, text: string) => Promise<void>;
 }
 
 /** Diagram renderer handed to sidecar cards and walkthrough steps. */
@@ -756,63 +655,18 @@ export function RfcPreview({ rpc, content, className, annotate }: { rpc: Rpc; co
   const articleRef = useRef<HTMLElement>(null);
   const { selection, clear } = useSelectionActions(articleRef, annotate === undefined ? "" : content);
   const sidecar = annotate?.sidecar ?? null;
-  const [editing, setEditing] = useState<{ startLine: number; focusLine: number; raw?: boolean } | null>(null);
-  const lines = useMemo(() => content.split("\n"), [content]);
-  const editable = annotate?.onEditSection !== undefined;
-  /** Click on rendered prose → edit that section with the caret on the clicked block's source line. */
-  const clickToEdit = (e: React.MouseEvent<HTMLElement>, sectionStart: number, segmentStart: number, segmentEnd: number) => {
-    if (!editable) return;
-    const t = e.target as HTMLElement;
-    if (t.closest("a,button,input,textarea,select,summary,[contenteditable],.rfc-cards,figure")) return;
-    const sel = window.getSelection();
-    if (sel !== null && !sel.isCollapsed) return;
-    const block = t.closest("li,p,h1,h2,h3,h4,h5,h6,td,th,pre,blockquote,dt,dd");
-    setEditing({ startLine: sectionStart, focusLine: sourceLineFor(lines, segmentStart, segmentEnd, block?.textContent ?? "") });
-  };
   return (
     <article ref={articleRef} className={cn("rfc-preview relative px-4 py-3", className)}>
       {meta !== null ? <Frontmatter meta={meta} /> : null}
       {sections.map((section, index) => {
         const next = sections[index + 1]?.startLine ?? null;
-        if (editing?.startLine === section.startLine && annotate?.onEditSection !== undefined) {
-          const endLine = next === null ? lines.length : next - 1;
-          return (
-            <section key={`edit:${section.startLine}`} data-section={section.heading?.title ?? ""} data-section-line={section.startLine} className="rfc-section">
-              {editing.raw === true ? (
-                <SectionEditor
-                  initial={lines.slice(section.startLine - 1, endLine).join("\n")}
-                  startLine={section.startLine}
-                  focusLine={editing.focusLine}
-                  onCancel={() => setEditing(null)}
-                  onSave={async (text) => {
-                    await annotate.onEditSection!(section.startLine, endLine, text);
-                    setEditing(null);
-                  }}
-                />
-              ) : (
-                <SectionRichEditor
-                  key={`rich:${section.startLine}`}
-                  initial={lines.slice(section.startLine - 1, endLine).join("\n")}
-                  startLine={section.startLine}
-                  focusLine={editing.focusLine}
-                  onCancel={() => setEditing(null)}
-                  onRaw={() => setEditing({ ...editing, raw: true })}
-                  onSave={async (text) => {
-                    await annotate.onEditSection!(section.startLine, endLine, text);
-                    setEditing(null);
-                  }}
-                />
-              )}
-            </section>
-          );
-        }
         const notes = sidecar === null ? [] : itemsForSection(sidecar.notes, section, next);
         const claims = sidecar === null ? [] : itemsForSection(sidecar.claims, section, next);
         const cards = sidecar === null ? [] : itemsForSection(sidecar.cards, section, next);
         const key = `s:${section.startLine}:${hashString(section.text)}`;
         return (
           <section key={key} data-section={section.heading?.title ?? ""} data-section-line={section.startLine} className="rfc-section">
-            {annotate !== undefined && (section.heading !== null || annotate.onEditSection !== undefined || notes.length + claims.length + cards.length > 0) ? (
+            {annotate !== undefined && (section.heading !== null || notes.length + claims.length + cards.length > 0) ? (
               <SectionChrome
                 section={section}
                 notes={notes}
@@ -823,25 +677,16 @@ export function RfcPreview({ rpc, content, className, annotate }: { rpc: Rpc; co
                 onAddNote={annotate.onAddNote}
                 onExplain={annotate.onExplain}
                 onOpenItems={annotate.onOpenItems}
-                onEdit={annotate.onEditSection === undefined ? undefined : () => setEditing({ startLine: section.startLine, focusLine: section.startLine })}
               />
             ) : null}
-            {section.segments.map((segment, si) => {
+            {section.segments.map((segment) => {
               const segKey = `${segment.kind}:${segment.startLine}:${hashString(segment.text)}`;
-              if (segment.kind === "markdown") {
-                const segEnd = (section.segments[si + 1]?.startLine ?? next ?? lines.length + 1) - 1;
+              if (segment.kind === "markdown")
                 return (
-                  <div
-                    key={segKey}
-                    data-src-line={segment.startLine}
-                    data-md=""
-                    className={editable ? "rfc-editable" : undefined}
-                    onClick={(e) => clickToEdit(e, section.startLine, segment.startLine, segEnd)}
-                  >
+                  <div key={segKey} data-src-line={segment.startLine} data-md="">
                     <Markdown content={segment.text} />
                   </div>
                 );
-              }
               if (segment.lang === "mermaid") return <MermaidBlock key={segKey} source={segment.text} startLine={segment.startLine} dark={dark} />;
               return <D2Block key={segKey} rpc={rpc} source={segment.text} startLine={segment.startLine} dark={dark} />;
             })}
@@ -877,11 +722,6 @@ export function RfcPreview({ rpc, content, className, annotate }: { rpc: Rpc; co
 
 // ---- editor/preview scroll sync -------------------------------------------
 
-/** Line-addressable scroll surface: `lineAtTop` is 1-based and fractional. */
-interface LineScroller {
-  lineAtTop(): number;
-  scrollToLine(line: number): void;
-}
 
 /** Normalize text for matching a source block against its rendered element. */
 function matchKey(text: string): string {
@@ -1840,7 +1680,7 @@ function RfcPanel({
     const root = document;
     let target: Element | null = null;
     if (anchor.section !== null) {
-      for (const el of Array.from(root.querySelectorAll<HTMLElement>("section[data-section]"))) {
+      for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-section]"))) {
         if (el.dataset.section !== undefined && el.dataset.section !== "" && anchor.section.toLowerCase().startsWith(el.dataset.section.toLowerCase().slice(0, 20))) {
           target = el;
           break;
@@ -1849,7 +1689,7 @@ function RfcPanel({
     }
     if (target === null && anchor.line !== null) {
       let best: { el: Element; line: number } | null = null;
-      for (const el of Array.from(root.querySelectorAll<HTMLElement>("section[data-section-line]"))) {
+      for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-section-line]"))) {
         const line = Number(el.dataset.sectionLine);
         if (line <= anchor.line && (best === null || line > best.line)) best = { el, line };
       }
@@ -1882,18 +1722,6 @@ function RfcPanel({
     setItemsSection(section);
     setView("items");
   };
-  const docRef = useRef<DocRead | null | undefined>(doc);
-  docRef.current = doc;
-  /** Replace a line range of the file with new markdown, guarded by the sha we rendered from. */
-  const editSection = async (startLine: number, endLine: number, text: string) => {
-    const cur = docRef.current;
-    if (cur === null || cur === undefined) throw new Error("The document is not loaded.");
-    const lines = cur.content.split("\n");
-    const next = [...lines.slice(0, startLine - 1), ...text.split("\n"), ...lines.slice(endLine)].join("\n");
-    const result = await rpc.call("doc_write", { threadId, content: next, expectedSha256: cur.sha256 });
-    if (result.outcome !== "written") throw new Error("The file changed on disk while you were editing; your section edit was not saved.");
-    reloadDoc();
-  };
   const restoreRevision = async (content: string) => {
     const result = await rpc.call("doc_write", { threadId, content, expectedSha256: null });
     if (result.outcome !== "written") throw new Error("Could not write the file.");
@@ -1908,22 +1736,21 @@ function RfcPanel({
     onAddNote: addNote,
     onExplain: explain,
     onOpenItems: openItems,
-    onEditSection: editSection,
   };
   // In Split view the editor is the source of truth for position (it restores
   // its own scroll and the preview follows), so only Preview restores itself.
   const previewScroll = useScrollMemory<HTMLDivElement>(`preview:${threadId}`, doc !== undefined && doc !== null && view === "preview");
   const sync = useScrollSync();
-  const splitPreviewRef = useRef<HTMLDivElement | null>(null);
   const docContent = doc?.content ?? "";
+  const onScroller = useCallback(
+    (s: LineScroller | null) => {
+      sync.preview.current = s;
+    },
+    [sync],
+  );
   useEffect(() => {
-    const el = splitPreviewRef.current;
-    if (view !== "split" || el === null) {
-      sync.preview.current = null;
-      return;
-    }
-    sync.preview.current = previewScroller(el, docContent);
-    // Align the preview to the editor once diagrams have had a moment to lay out.
+    if (view !== "split") return;
+    // Align the document to the editor once diagrams have had a moment to lay out.
     const timers = [250, 900].map((ms) =>
       window.setTimeout(() => {
         if (sync.editor.current !== null && sync.preview.current !== null) sync.preview.current.scrollToLine(sync.editor.current.lineAtTop());
@@ -1931,6 +1758,7 @@ function RfcPanel({
     );
     return () => timers.forEach((t) => window.clearTimeout(t));
   }, [view, docContent, sync]);
+  const docMeta = doc ? parseFrontmatter(doc.content)?.meta ?? null : null;
   const pending = review?.findings.filter((f) => f.status === "pending" && f.round === review.round).length ?? 0;
 
   const openExternally = () => {
@@ -2003,19 +1831,37 @@ function RfcPanel({
               </Button>
             </div>
           ) : view === "preview" ? (
-            <div ref={previewScroll.ref} onScroll={previewScroll.onScroll} className="relative min-h-0 flex-1 overflow-auto">
-              <PreviewToolbar termsExpanded={termsExpanded} onToggleTerms={() => setTermsExpanded(!termsExpanded)} hasTerms={(sidecar?.glossary.length ?? 0) > 0} />
-              <RfcPreview rpc={rpc} content={doc.content} annotate={annotate} />
-            </div>
+            <DocEditor
+              key={`doc:${context.doc.path}`}
+              rpc={rpc}
+              threadId={threadId}
+              doc={doc}
+              annotate={annotate}
+              header={docMeta !== null ? <Frontmatter meta={docMeta} /> : null}
+              Diagram={DiagramForCards}
+              onSaved={reloadDoc}
+              containerRef={previewScroll.ref}
+              onScroll={previewScroll.onScroll}
+              toolbar={<PreviewToolbar termsExpanded={termsExpanded} onToggleTerms={() => setTermsExpanded(!termsExpanded)} hasTerms={(sidecar?.glossary.length ?? 0) > 0} />}
+            />
           ) : (
             <SplitPane
               storageKey="editor"
               left={<RfcEditor key={context.doc.path} rpc={rpc} threadId={threadId} doc={doc} onSaved={reloadDoc} sync={sync} />}
               right={
-                <div ref={splitPreviewRef} onScroll={() => sync.follow("preview")} className="relative min-h-0 flex-1 overflow-auto">
-                  <PreviewToolbar termsExpanded={termsExpanded} onToggleTerms={() => setTermsExpanded(!termsExpanded)} hasTerms={(sidecar?.glossary.length ?? 0) > 0} />
-                  <RfcPreview rpc={rpc} content={doc.content} annotate={annotate} />
-                </div>
+                <DocEditor
+                  key={`split:${context.doc.path}`}
+                  rpc={rpc}
+                  threadId={threadId}
+                  doc={doc}
+                  annotate={annotate}
+                  header={docMeta !== null ? <Frontmatter meta={docMeta} /> : null}
+                  Diagram={DiagramForCards}
+                  onSaved={reloadDoc}
+                  onScroller={onScroller}
+                  onScroll={() => sync.follow("preview")}
+                  toolbar={<PreviewToolbar termsExpanded={termsExpanded} onToggleTerms={() => setTermsExpanded(!termsExpanded)} hasTerms={(sidecar?.glossary.length ?? 0) > 0} />}
+                />
               }
             />
           )}

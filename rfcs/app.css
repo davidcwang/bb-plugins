@@ -43,3 +43,11 @@
 .rfc-rich th { background: color-mix(in oklab, var(--muted) 60%, transparent); font-weight: 600; }
 .rfc-rich .selectedCell { background: color-mix(in oklab, var(--primary) 12%, transparent); }
 .rfc-rich p.is-editor-empty:first-child::before { content: "Type here…"; color: var(--muted-foreground); float: left; pointer-events: none; height: 0; }
+
+/* Document editor: widgets injected between blocks. */
+.rfc-doc .rfc-chrome-widget { margin-top: 0.75rem; }
+.rfc-doc .rfc-chrome-widget:first-child { margin-top: 0; }
+.rfc-doc .rfc-cards-widget { margin-top: 0.5rem; }
+.rfc-doc h1[data-section], .rfc-doc h2[data-section], .rfc-doc h3[data-section] { scroll-margin-top: 2rem; }
+.rfc-doc .rfc-codeblock pre { position: relative; }
+.rfc-doc .ProseMirror-selectednode { outline: 2px solid color-mix(in oklab, var(--primary) 40%, transparent); border-radius: 4px; }

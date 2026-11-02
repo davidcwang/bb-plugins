@@ -7,9 +7,8 @@ An RFC writing workbench that opens beside any thread.
     document, scroll-synced; ```` ```mermaid ```` and ```` ```d2 ```` fences
     draw as diagrams. D2 gives Lucidchart-style architecture diagrams;
     mermaid covers sequence, flow, state, and ER diagrams.
-  - **Document**: the rendered RFC alone; click into any section to edit it
-    as rich text in place (markdown round-trip), or switch that section to
-    raw markdown.
+  - **Document**: the RFC as an always-editable rich-text document (Tiptap,
+    markdown round-trip) with autosave; no edit mode, click and type.
   - **Changes**: revision history with a line diff, defaulting to what the
     last edit changed; restore any revision.
   - **Review** runs a review round in a hidden worker thread. Findings land

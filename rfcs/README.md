@@ -31,15 +31,20 @@ the agent or another editor changed the file since you loaded it, the save is
 refused rather than clobbering their change. When you have no unsaved edits,
 external changes flow in automatically.
 
-**Document** is the rendered RFC on its own, and it edits like a document:
-click any paragraph, list, heading, or table and that section becomes
-editable rich text in place (Tiptap), with the caret where you clicked.
-Markdown shortcuts work while typing (`## `, `- `, `**bold**`, ⌘B/⌘I).
-Clicking away or ⌘↩ serialises the section back to markdown and saves it;
-Esc cancels; a **raw** toggle swaps in a plain textarea for the section when
-you want byte-level control (diagram fences, HTML blocks). Only the edited
-section is re-serialised, and nothing is written if the round trip is a
-no-op, so an unchanged section never produces diff noise.
+**Document** is the RFC as an always-editable document: there is no edit
+mode. Click anywhere and type; the caret lands where you clicked and the page
+does not re-layout. It is a Tiptap (ProseMirror) editor that round-trips to
+markdown, so headings, lists, tables, links, and code blocks behave like a
+word processor while the file on disk stays plain `.md`. Markdown shortcuts
+work while typing (`## `, `- `, `**bold**`, ⌘B/⌘I). Edits autosave shortly
+after you stop typing and when focus leaves, guarded by the sha you loaded:
+if the agent changed the file meanwhile you get a Keep mine / Take theirs
+choice instead of a silent overwrite. When you have nothing pending, agent
+edits flow in without disturbing your scroll position. Nothing is written
+unless you actually typed, so the serializer never produces diff noise on its
+own. Mermaid and D2 fences draw as diagrams with an "edit source" toggle; the
+section notes, claims, cards, and term chips sit between blocks exactly as in
+the old preview. The same editor is the right pane of Split.
 
 **Changes** keeps a revision history of the file (snapshotted on every change,
 whether you, Claude, or an external editor made it; consecutive edits by the
