@@ -61,10 +61,24 @@ export const diagramSchema = z.object({
   source: z.string().max(20_000),
 });
 
+/** A follow-up question on a card and its answer, rolled out under the card. */
+export const exchangeSchema = z.object({
+  id: z.string(),
+  question: z.string().min(1).max(4000),
+  answer: z.string().max(20_000).default(""),
+  diagram: diagramSchema.nullable().default(null),
+  files: z.array(codeRefSchema).max(20).default([]),
+  status: z.enum(["pending", "ready", "failed"]).default("pending"),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type Exchange = z.infer<typeof exchangeSchema>;
+
 export const cardSchema = z.object({
   id: z.string(),
   anchor: anchorSchema,
   mode: z.enum(CARD_MODES),
+  exchanges: z.array(exchangeSchema).default([]),
   /** The user's selection or question that prompted the card. */
   prompt: z.string().max(2000),
   title: z.string().max(200),

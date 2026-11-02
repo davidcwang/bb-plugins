@@ -41,6 +41,7 @@ import {
   walkthroughSchema,
   walkthroughStepSchema,
   type Card,
+  type Exchange,
   type CardMode,
   type Claim,
   type Note,
@@ -239,6 +240,14 @@ export const rpcContract = defineRpcContract({
   },
   card_remove: {
     input: z.object({ threadId: z.string(), id: z.string() }),
+    output: z.object({ ok: z.literal(true) }),
+  },
+  card_followup: {
+    input: z.object({ threadId: z.string(), cardId: z.string(), question: z.string().min(1).max(4000) }),
+    output: cardSchema,
+  },
+  card_exchange_remove: {
+    input: z.object({ threadId: z.string(), cardId: z.string(), exchangeId: z.string() }),
     output: z.object({ ok: z.literal(true) }),
   },
   term_set: {
@@ -1305,6 +1314,7 @@ export default async function plugin(bb: BbPluginApi) {
       files: [],
       status: "pending",
       threadId: null,
+      exchanges: [],
       createdAt: nowIso,
       updatedAt: nowIso,
     };
@@ -1327,6 +1337,91 @@ export default async function plugin(bb: BbPluginApi) {
 
   async function askRfcThread(threadId: string, text: string) {
     await bb.sdk.threads.send({ threadId, mode: "auto", input: [{ type: "text", text, mentions: [] }] });
+  }
+
+  /** A follow-up question on a card: recorded as a pending exchange, sent to the card's hidden thread. */
+  async function askCard(threadId: string, cardId: string, question: string): Promise<Card> {
+    const nowIso = now();
+    const exchange: Exchange = { id: newId("x"), question, answer: "", diagram: null, files: [], status: "pending", createdAt: nowIso, updatedAt: nowIso };
+    const card = await mutateSidecar(threadId, (d) => {
+      const c = d.cards.find((x) => x.id === cardId);
+      if (c === undefined) throw new Error("Card not found.");
+      c.exchanges.push(exchange);
+      c.updatedAt = nowIso;
+      return c;
+    });
+    const text = [
+      `Follow-up question on this card (exchange ${JSON.stringify(exchange.id)}):`,
+      `"""${question}"""`,
+      `Answer by calling rfc_card_reply with exchangeId ${JSON.stringify(exchange.id)}: a markdown body (under ~300 words), an optional diagram, and \`files\` for any code you cite. The user reads the card in the RFC, not this chat; after the tool call reply with one line and stop.`,
+    ].join("\n\n");
+    if (card.threadId === null) {
+      const { doc } = await sidecarFor(threadId);
+      const prompt = [
+        `You are discussing one explainer card on the RFC at ${JSON.stringify(doc.path)}. Read the RFC (at least the section involved) before answering.`,
+        `Card: ${card.title}${anchorText(card.anchor) === "" ? "" : ` (${anchorText(card.anchor)})`}\n${card.body}`,
+        text,
+      ].join("\n\n");
+      const hidden = await spawnHidden(threadId, `Explain: ${card.title}`, prompt, { explainFor: threadId, cardId: card.id });
+      return mutateSidecar(threadId, (d) => {
+        const c = d.cards.find((x) => x.id === cardId);
+        if (c !== undefined) c.threadId = hidden;
+        return c ?? card;
+      });
+    }
+    try {
+      await askRfcThread(card.threadId, text);
+    } catch (cause) {
+      await mutateSidecar(threadId, (d) => {
+        const e = d.cards.find((x) => x.id === cardId)?.exchanges.find((x) => x.id === exchange.id);
+        if (e !== undefined) Object.assign(e, { status: "failed", answer: `Could not reach the card's thread: ${describe(cause)}`, updatedAt: now() });
+      });
+    }
+    return card;
+  }
+
+  /**
+   * Safety net for explain threads: when one goes idle with a pending card or
+   * exchange, take the thread's final output as the answer so a reply typed in
+   * chat instead of the tool still lands in the card.
+   */
+  async function settleCardThread(hiddenId: string) {
+    let meta: Record<string, unknown>;
+    try {
+      meta = (await bb.sdk.threads.getPluginMetadata({ threadId: hiddenId })) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    const owner = meta.explainFor;
+    const cardId = meta.cardId;
+    if (typeof owner !== "string" || typeof cardId !== "string") return;
+    const sidecar = await readSidecar(owner);
+    const card = sidecar?.cards.find((c) => c.id === cardId);
+    if (card === undefined) return;
+    const pendingExchange = [...card.exchanges].reverse().find((e) => e.status === "pending");
+    const pendingCard = card.status === "pending";
+    if (pendingExchange === undefined && !pendingCard) return;
+    let output: string | null = null;
+    try {
+      output = (await bb.sdk.threads.output({ threadId: hiddenId })).output;
+    } catch {
+      output = null;
+    }
+    const text = output?.trim() ?? "";
+    await mutateSidecar(owner, (d) => {
+      const c = d.cards.find((x) => x.id === cardId);
+      if (c === undefined) return;
+      const nowIso = now();
+      if (pendingExchange !== undefined) {
+        const e = c.exchanges.find((x) => x.id === pendingExchange.id);
+        if (e !== undefined && e.status === "pending") {
+          Object.assign(e, text === "" ? { status: "failed", answer: "The explainer finished without publishing an answer. Delete this and ask again." } : { status: "ready", answer: text }, { updatedAt: nowIso });
+        }
+      } else if (c.status === "pending") {
+        if (text === "") Object.assign(c, { status: "failed", body: "The explainer finished without publishing a card. Remove it and ask again.", updatedAt: nowIso });
+        else Object.assign(c, { status: "ready", body: text, updatedAt: nowIso });
+      }
+    });
   }
 
   /** bb's unread rule: attention arrived after the last read. */
@@ -1389,6 +1484,13 @@ export default async function plugin(bb: BbPluginApi) {
     card_remove: ({ threadId, id }) =>
       mutateSidecar(threadId, (d) => {
         d.cards = d.cards.filter((x) => x.id !== id);
+        return { ok: true as const };
+      }),
+    card_followup: ({ threadId, cardId, question }) => askCard(threadId, cardId, question),
+    card_exchange_remove: ({ threadId, cardId, exchangeId }) =>
+      mutateSidecar(threadId, (d) => {
+        const card = d.cards.find((x) => x.id === cardId);
+        if (card !== undefined) card.exchanges = card.exchanges.filter((e) => e.id !== exchangeId);
         return { ok: true as const };
       }),
     term_set: ({ threadId, term }) =>
@@ -1843,6 +1945,7 @@ export default async function plugin(bb: BbPluginApi) {
             files,
             status: "ready",
             threadId: typeof meta.explainFor === "string" ? threadId : null,
+            exchanges: [],
             createdAt: nowIso,
             updatedAt: nowIso,
           };
@@ -1850,6 +1953,39 @@ export default async function plugin(bb: BbPluginApi) {
           return created;
         });
         return `Published card "${card.title}"; it is attached to ${card.anchor.section === null ? "the document" : `section "${card.anchor.section}"`} in the RFC panel.`;
+      } catch (cause) {
+        return toolError(describe(cause));
+      }
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "rfc_card_reply",
+    description: "Answer a follow-up question on an explainer card. Use the exchangeId given in the question; the answer is rolled out under the card in the RFC panel.",
+    presentation: { label: { pending: "Answering follow-up", completed: "Answered follow-up" } },
+    parameters: z.object({
+      exchangeId: z.string(),
+      body: z.string().min(1).max(20_000),
+      diagram: diagramSchema.nullable().default(null),
+      files: z.array(codeRefSchema).max(20).default([]),
+    }),
+    async execute({ exchangeId, body, diagram, files }, { threadId }) {
+      try {
+        const meta = await bb.sdk.threads.getPluginMetadata({ threadId });
+        const owner = await ownerThread(threadId);
+        const cardId = typeof meta.cardId === "string" ? meta.cardId : null;
+        if (cardId === null) return toolError("This thread is not attached to a card.");
+        if (diagram !== null && diagram.lang === "d2") {
+          const check = await renderD2(diagram.source, false);
+          if (!check.ok) return toolError(`The D2 diagram does not compile: ${check.error}. Fix it and reply again.`);
+        }
+        const ok = await mutateSidecar(owner, (d) => {
+          const e = d.cards.find((c) => c.id === cardId)?.exchanges.find((x) => x.id === exchangeId);
+          if (e === undefined) return false;
+          Object.assign(e, { answer: body, diagram, files, status: "ready", updatedAt: now() });
+          return true;
+        });
+        return ok ? "Answer published under the card." : toolError(`No exchange ${exchangeId} on this card; use the id from the question.`);
       } catch (cause) {
         return toolError(describe(cause));
       }
@@ -1966,10 +2102,10 @@ export default async function plugin(bb: BbPluginApi) {
     const { reviewFor, discussFor, explainFor, noteFor } = context.pluginMetadata;
     if (typeof explainFor === "string") {
       return {
-        tools: ["rfc_publish_card", "rfc_check_diagram"],
+        tools: ["rfc_publish_card", "rfc_card_reply", "rfc_check_diagram"],
         skills: [],
         instructions:
-          "You are producing and then discussing one explainer card for an RFC section. Publish with rfc_publish_card using the cardId from your prompt. Read the workspace freely; never edit files.",
+          "You are producing and then discussing one explainer card for an RFC section. Publish the card with rfc_publish_card using the cardId from your prompt; answer each follow-up question with rfc_card_reply using the exchangeId given. The user reads the card in the RFC panel, not this chat. Read the workspace freely; never edit files.",
       };
     }
     if (typeof noteFor === "string") {
@@ -2034,6 +2170,8 @@ export default async function plugin(bb: BbPluginApi) {
     invalidateLibrary();
   };
   bb.events.on("thread.idle", publishThread);
+  bb.events.on("thread.idle", ({ thread }) => void settleCardThread(thread.id).catch((cause: unknown) => bb.log.warn(`settle card thread: ${describe(cause)}`)));
+  bb.events.on("thread.failed", ({ thread }) => void settleCardThread(thread.id).catch(() => undefined));
   bb.events.on("thread.active", publishThread);
   bb.events.on("thread.failed", publishThread);
   bb.events.on("interaction.pending", publishThread);

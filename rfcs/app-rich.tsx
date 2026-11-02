@@ -9,7 +9,8 @@ import { createPortal } from "react-dom";
 import { EditorContent, NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer, useEditor, type NodeViewProps } from "@tiptap/react";
 import { Extension } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
-import CodeBlock from "@tiptap/extension-code-block";
+import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
+import { common, createLowlight } from "lowlight";
 import { Markdown } from "@tiptap/markdown";
 import { TableKit } from "@tiptap/extension-table";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
@@ -88,11 +89,12 @@ function CodeBlockView({ node, updateAttributes }: NodeViewProps) {
   );
 }
 
-const RfcCodeBlock = CodeBlock.extend({
+const lowlight = createLowlight(common);
+const RfcCodeBlock = CodeBlockLowlight.extend({
   addNodeView() {
     return ReactNodeViewRenderer(CodeBlockView);
   },
-});
+}).configure({ lowlight, defaultLanguage: null });
 
 // ---- section chrome as widget decorations ----------------------------------
 

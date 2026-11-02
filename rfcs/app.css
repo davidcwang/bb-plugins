@@ -115,5 +115,24 @@
 .rfc-diff .rfc-diff-del table, .rfc-diff .rfc-diff-del pre { text-decoration: none; }
 .rfc-diff .rfc-diff-block > * > :last-child { margin-bottom: 0; }
 
-/* Explainer cards: the conversation box is drag-resizable from its corner. */
-.rfc-card-chat { resize: vertical; }
+
+/* Syntax highlighting for code blocks in the document editor (lowlight /
+   highlight.js classes). One palette tuned for dark, a lighter one for light. */
+.rfc-rich .hljs-comment, .rfc-rich .hljs-quote { color: #8b949e; font-style: italic; }
+.rfc-rich .hljs-keyword, .rfc-rich .hljs-selector-tag, .rfc-rich .hljs-literal, .rfc-rich .hljs-doctag, .rfc-rich .hljs-meta .hljs-keyword { color: #ff7b72; }
+.rfc-rich .hljs-built_in, .rfc-rich .hljs-type, .rfc-rich .hljs-class .hljs-title, .rfc-rich .hljs-title.class_ { color: #ffa657; }
+.rfc-rich .hljs-string, .rfc-rich .hljs-regexp, .rfc-rich .hljs-addition, .rfc-rich .hljs-meta .hljs-string { color: #a5d6ff; }
+.rfc-rich .hljs-number, .rfc-rich .hljs-symbol, .rfc-rich .hljs-bullet, .rfc-rich .hljs-link { color: #79c0ff; }
+.rfc-rich .hljs-title, .rfc-rich .hljs-title.function_, .rfc-rich .hljs-section, .rfc-rich .hljs-name { color: #d2a8ff; }
+.rfc-rich .hljs-attr, .rfc-rich .hljs-attribute, .rfc-rich .hljs-variable, .rfc-rich .hljs-template-variable, .rfc-rich .hljs-property { color: #79c0ff; }
+.rfc-rich .hljs-tag { color: #7ee787; }
+.rfc-rich .hljs-deletion { color: #ffa198; }
+.rfc-rich .hljs-emphasis { font-style: italic; }
+.rfc-rich .hljs-strong { font-weight: 600; }
+html.light .rfc-rich .hljs-comment, html.light .rfc-rich .hljs-quote { color: #6e7781; }
+html.light .rfc-rich .hljs-keyword, html.light .rfc-rich .hljs-selector-tag, html.light .rfc-rich .hljs-literal, html.light .rfc-rich .hljs-doctag { color: #cf222e; }
+html.light .rfc-rich .hljs-built_in, html.light .rfc-rich .hljs-type, html.light .rfc-rich .hljs-title.class_ { color: #953800; }
+html.light .rfc-rich .hljs-string, html.light .rfc-rich .hljs-regexp, html.light .rfc-rich .hljs-addition { color: #0a3069; }
+html.light .rfc-rich .hljs-number, html.light .rfc-rich .hljs-symbol, html.light .rfc-rich .hljs-attr, html.light .rfc-rich .hljs-variable, html.light .rfc-rich .hljs-property { color: #0550ae; }
+html.light .rfc-rich .hljs-title, html.light .rfc-rich .hljs-title.function_, html.light .rfc-rich .hljs-section, html.light .rfc-rich .hljs-name { color: #8250df; }
+html.light .rfc-rich .hljs-tag { color: #116329; }

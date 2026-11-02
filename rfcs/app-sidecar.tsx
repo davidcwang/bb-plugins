@@ -194,18 +194,40 @@ export function CardView({
     setOpenState(v);
     remember(`card:${card.id}`, v ? "open" : "closed");
   };
+  const [asking, setAsking] = useState(false);
+  const [question, setQuestion] = useState("");
+  const [sending, setSending] = useState(false);
+  const pending = card.status === "pending" || card.exchanges.some((e) => e.status === "pending");
+  const fail = (cause: unknown) => toast.error(describe(cause));
+  const ask = () => {
+    const q = question.trim();
+    if (q === "" || sending) return;
+    setSending(true);
+    rpc.call("card_followup", { threadId, cardId: card.id, question: q }).then(
+      () => {
+        setQuestion("");
+        setAsking(false);
+        setSending(false);
+      },
+      (cause: unknown) => {
+        fail(cause);
+        setSending(false);
+      },
+    );
+  };
   return (
-    <div className={cn("my-1.5 rounded-md border text-sm", card.status === "pending" ? "border-dashed border-border" : "border-border bg-card")}>
+    <div className={cn("rfc-card my-1.5 rounded-md border text-sm", card.status === "pending" ? "border-dashed border-border" : "border-border bg-card")}>
       <button type="button" className="flex w-full items-center gap-2 px-3 py-1.5 text-left" onClick={() => setOpen(!open)}>
         <Icon name={modeIcon[card.mode]} className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate font-medium">{card.title}</span>
-        {card.status === "pending" ? (
+        {pending ? (
           <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
-            <Icon name="LoaderCircle" className="size-3 animate-spin" /> writing…
+            <Icon name="LoaderCircle" className="size-3 animate-spin" /> {card.status === "pending" ? "writing…" : "answering…"}
           </span>
         ) : (
           <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">{CARD_MODE_LABEL[card.mode].split(" ").slice(-1)[0]}</span>
         )}
+        {card.exchanges.length > 0 ? <span className="text-[10px] text-muted-foreground">{card.exchanges.length} follow-up{card.exchanges.length === 1 ? "" : "s"}</span> : null}
         <Icon name={open ? "ChevronDown" : "ChevronRight"} className="size-3.5 shrink-0 text-muted-foreground" />
       </button>
       {open ? (
@@ -213,6 +235,7 @@ export function CardView({
           <p className="mb-2 text-[11px] text-muted-foreground">
             {card.mode === "question" ? "Asked" : "About"}: “{card.prompt.length > 160 ? `${card.prompt.slice(0, 160)}…` : card.prompt}”
           </p>
+          {card.status === "pending" ? <p className="text-xs text-muted-foreground">Reading the RFC and writing the answer…</p> : null}
           {card.body !== "" ? <Markdown content={card.body} /> : null}
           {card.diagram !== null ? <Diagram lang={card.diagram.lang} source={card.diagram.source} startLine={0} /> : null}
           {card.files.length > 0 ? (
@@ -222,44 +245,79 @@ export function CardView({
               ))}
             </div>
           ) : null}
-          {card.threadId !== null ? (
-            <CardChat threadId={card.threadId} cardId={card.id} spaced={card.body !== "" || card.diagram !== null} />
-          ) : null}
-          <div className="mt-1.5 flex items-center text-xs">
+          {card.exchanges.map((x) => (
+            <div key={x.id} className="group/x relative mt-3 border-t border-dashed border-border pt-2">
+              <div className="mb-1.5 flex items-start gap-2">
+                <Icon name="MessageCircleQuestion" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                <p className="min-w-0 flex-1 whitespace-pre-wrap text-[13px] font-medium">{x.question}</p>
+                <button
+                  type="button"
+                  className="shrink-0 rounded px-1 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover/x:opacity-100"
+                  title="Delete this follow-up"
+                  onClick={() => void rpc.call("card_exchange_remove", { threadId, cardId: card.id, exchangeId: x.id }).catch(fail)}
+                >
+                  delete
+                </button>
+              </div>
+              {x.status === "pending" ? (
+                <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <Icon name="LoaderCircle" className="size-3 animate-spin" /> answering…
+                </p>
+              ) : null}
+              {x.status === "failed" ? <p className="text-xs text-destructive">{x.answer}</p> : x.answer !== "" ? <Markdown content={x.answer} /> : null}
+              {x.diagram !== null ? <Diagram lang={x.diagram.lang} source={x.diagram.source} startLine={0} /> : null}
+              {x.files.length > 0 ? (
+                <div className="mt-2 flex flex-col gap-1.5">
+                  {x.files.map((f, i) => (
+                    <CodeRefView key={`${f.path}:${i}`} file={f} environmentId={environmentId} />
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ))}
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-border pt-2 text-xs">
+            {asking ? (
+              <form
+                className="flex w-full items-center gap-1"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  ask();
+                }}
+              >
+                <Input
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  autoFocus
+                  placeholder="Ask a follow-up… (Esc to cancel)"
+                  className="h-7 flex-1 text-xs"
+                  aria-label="Follow-up question"
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      setAsking(false);
+                      setQuestion("");
+                    }
+                  }}
+                />
+                <Button size="sm" type="submit" className="h-7 text-xs" disabled={question.trim() === "" || sending}>
+                  {sending ? "Sending…" : "Ask"}
+                </Button>
+              </form>
+            ) : (
+              <Button size="sm" variant="outline" className="h-6 text-xs" onClick={() => setAsking(true)} disabled={card.status === "pending"}>
+                <Icon name="MessageCircleQuestion" className="size-3.5" />
+                Ask a follow-up
+              </Button>
+            )}
             <button
               type="button"
               className="ml-auto text-muted-foreground hover:text-destructive"
-              onClick={() => void rpc.call("card_remove", { threadId, id: card.id }).catch((cause: unknown) => toast.error(describe(cause)))}
+              onClick={() => void rpc.call("card_remove", { threadId, id: card.id }).catch(fail)}
             >
-              Remove
+              Remove card
             </button>
           </div>
         </div>
       ) : null}
-    </div>
-  );
-}
-
-/**
- * The card's conversation in a bounded box the user can drag taller; the
- * height is remembered per card. (The host chat needs a sized parent.)
- */
-function CardChat({ threadId, cardId, spaced }: { threadId: string; cardId: string; spaced: boolean }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const initial = Number(recall(`cardChat:${cardId}`) ?? "") || 480;
-  useEffect(() => {
-    const el = ref.current;
-    if (el === null) return;
-    const ro = new ResizeObserver(() => {
-      const h = Math.round(el.getBoundingClientRect().height);
-      if (h > 0 && h !== initial) remember(`cardChat:${cardId}`, String(h));
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [cardId, initial]);
-  return (
-    <div ref={ref} className={cn("rfc-card-chat resize-y overflow-hidden rounded-md border border-border", spaced && "mt-2")} style={{ height: initial, minHeight: 160, maxHeight: "85vh" }}>
-      <ThreadChat threadId={threadId} variant="compact" layout="contained" permissionPolicy="inherit" className="h-full" />
     </div>
   );
 }
