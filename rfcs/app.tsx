@@ -238,7 +238,7 @@ function DiagramFrame({
                 </button>
               </div>
               <div className="group relative min-h-0 flex-1">
-                <DiagramViewport svg={svg} tall={false} fill light={lang === "d2"} />
+                <DiagramViewport svg={svg} tall={false} fill />
               </div>
             </div>,
             document.body,
@@ -285,7 +285,7 @@ function DiagramFrame({
       {error !== null ? (
         <pre className="m-0 whitespace-pre-wrap border-b border-border px-3 py-2 text-xs text-destructive">{error}</pre>
       ) : null}
-      {svg !== null ? <DiagramViewport svg={svg} tall={lang === "d2"} light={lang === "d2"} /> : null}
+      {svg !== null ? <DiagramViewport svg={svg} tall={lang === "d2"} /> : null}
       {showSource ? (
         <pre className="m-0 overflow-auto border-t border-border bg-muted/40 px-3 py-2 font-mono text-xs leading-5">{source}</pre>
       ) : null}

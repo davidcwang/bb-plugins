@@ -23,6 +23,7 @@
   "include": [
     "server.ts",
     "diff.ts",
+    "d2colors.ts",
     "app-changes.tsx",
     "app-rich.tsx",
     "shared.ts",

@@ -22,6 +22,7 @@ import {
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { CHANGED, PRIORITIES, SEVERITIES, outline, parseFrontmatter, type Priority, type Severity } from "./shared";
+import { darkenFills } from "./d2colors";
 import {
   CARD_MODES,
   CARD_MODE_LABEL,
@@ -749,22 +750,21 @@ export default async function plugin(bb: BbPluginApi) {
   }
   async function renderD2Now(source: string, dark: boolean) {
     const { d2Layout, d2Sketch } = await settings.get();
-    const cacheKey = sha256(`${d2Layout}|${d2Sketch}|${source}`);
+    const cacheKey = sha256(`${d2Layout}|${d2Sketch}|${dark}|${source}`);
     const hit = d2Cache.get(cacheKey);
     if (hit !== undefined) return hit;
     let result: { ok: true; svg: string } | { ok: false; error: string };
     try {
       const engine = await d2();
       const compiled = await engine.compile({
-        fs: { index: source },
+        // Hardcoded pastel fills are darkened for the dark theme so its light text stays readable.
+        fs: { index: dark ? darkenFills(source) : source },
         inputPath: "index",
         options: {
           layout: d2Layout === "dagre" ? "dagre" : "elk",
           sketch: d2Sketch,
-          // Always the neutral light theme: the panel draws D2 on a white backdrop
-          // so hardcoded pastel fills stay readable in dark mode. `dark` is kept
-          // in the RPC for compatibility. The diagram's own `vars.d2-config` wins.
-          themeID: 0,
+          // 0 = neutral default; 200 = dark mauve. The diagram's own `vars.d2-config` wins.
+          themeID: dark ? 200 : 0,
           pad: 16,
           scale: 1,
           noXMLTag: true,
