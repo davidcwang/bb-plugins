@@ -210,11 +210,26 @@ function DiagramFrame({
   startLine: number;
 }) {
   const [showSource, setShowSource] = useState(error !== null);
+  // Source opened by an error closes itself once the diagram compiles again;
+  // source the user opened stays open.
+  const autoOpened = useRef(error !== null);
   const [full, setFull] = useState(false);
   const portalProps = usePortalScopeProps();
   useEffect(() => {
-    if (error !== null) setShowSource(true);
+    if (error !== null) {
+      setShowSource((v) => {
+        if (!v) autoOpened.current = true;
+        return true;
+      });
+    } else if (autoOpened.current) {
+      autoOpened.current = false;
+      setShowSource(false);
+    }
   }, [error]);
+  const toggleSource = () => {
+    autoOpened.current = false;
+    setShowSource((v) => !v);
+  };
   useEffect(() => {
     if (!full) return;
     const onKey = (e: KeyboardEvent) => {
@@ -250,7 +265,7 @@ function DiagramFrame({
         {startLine > 0 ? <span className="opacity-70">line {startLine}</span> : null}
         {pending ? <span className="italic">rendering…</span> : null}
         <span className="ml-auto flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-          <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted" onClick={() => setShowSource((v) => !v)}>
+          <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted" onClick={toggleSource}>
             {showSource ? "Hide source" : "Source"}
           </button>
           <button
