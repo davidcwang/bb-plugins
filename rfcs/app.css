@@ -2,3 +2,17 @@
 .rfc-jump-flash { animation: rfc-jump-flash 1.6s ease-out; }
 @keyframes rfc-jump-flash { 0% { background-color: color-mix(in oklab, var(--primary) 18%, transparent); } 100% { background-color: transparent; } }
 .rfc-section-chrome { min-height: 0; }
+
+/* Rendered prose is click-to-edit; hint with a text cursor and a faint hover. */
+.rfc-preview .rfc-editable {
+  cursor: text;
+  border-radius: 4px;
+  transition: background-color 120ms;
+}
+.rfc-preview .rfc-editable:hover {
+  background-color: color-mix(in oklab, var(--muted) 45%, transparent);
+}
+.rfc-preview .rfc-editable a,
+.rfc-preview .rfc-editable button {
+  cursor: pointer;
+}

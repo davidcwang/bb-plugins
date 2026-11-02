@@ -627,7 +627,22 @@ function Frontmatter({ meta }: { meta: Record<string, string> }) {
  * In-place raw-markdown editor for one section of the rendered document.
  * Saves when focus leaves or on ⌘/Ctrl+Enter; Esc cancels.
  */
-function SectionEditor({ initial, startLine, onSave, onCancel }: { initial: string; startLine: number; onSave: (text: string) => Promise<void>; onCancel: () => void }) {
+/** Best-effort source line for a rendered block: the first line in [from, to] whose text matches the block's opening words. */
+function sourceLineFor(lines: string[], from: number, to: number, blockText: string): number {
+  const norm = (t: string) => t.toLowerCase().replace(/[`*_~>#|\\[\]()!-]/g, "").replace(/\s+/g, " ").trim();
+  const needle = norm(blockText).slice(0, 24);
+  if (needle.length < 3) return from;
+  for (let i = from; i <= Math.min(to, lines.length); i++) {
+    const hay = norm(lines[i - 1] ?? "");
+    if (hay.length > 0 && (hay.startsWith(needle) || needle.startsWith(hay.slice(0, Math.min(hay.length, 24))))) return i;
+  }
+  for (let i = from; i <= Math.min(to, lines.length); i++) {
+    if (norm(lines[i - 1] ?? "").includes(needle.slice(0, 12))) return i;
+  }
+  return from;
+}
+
+function SectionEditor({ initial, startLine, focusLine, onSave, onCancel }: { initial: string; startLine: number; focusLine: number; onSave: (text: string) => Promise<void>; onCancel: () => void }) {
   const [text, setText] = useState(initial);
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -643,9 +658,15 @@ function SectionEditor({ initial, startLine, onSave, onCancel }: { initial: stri
     fit();
     const ta = ref.current;
     if (ta !== null) {
-      ta.focus();
-      ta.setSelectionRange(0, 0);
+      ta.focus({ preventScroll: true });
+      // Caret at the start of the clicked line.
+      const offset = initial
+        .split("\n")
+        .slice(0, Math.max(0, focusLine - startLine))
+        .reduce((n, l) => n + l.length + 1, 0);
+      ta.setSelectionRange(offset, offset);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(fit, [text]);
   const commit = async () => {
@@ -734,20 +755,32 @@ export function RfcPreview({ rpc, content, className, annotate }: { rpc: Rpc; co
   const articleRef = useRef<HTMLElement>(null);
   const { selection, clear } = useSelectionActions(articleRef, annotate === undefined ? "" : content);
   const sidecar = annotate?.sidecar ?? null;
-  const [editing, setEditing] = useState<number | null>(null);
+  const [editing, setEditing] = useState<{ startLine: number; focusLine: number } | null>(null);
   const lines = useMemo(() => content.split("\n"), [content]);
+  const editable = annotate?.onEditSection !== undefined;
+  /** Click on rendered prose → edit that section with the caret on the clicked block's source line. */
+  const clickToEdit = (e: React.MouseEvent<HTMLElement>, sectionStart: number, segmentStart: number, segmentEnd: number) => {
+    if (!editable) return;
+    const t = e.target as HTMLElement;
+    if (t.closest("a,button,input,textarea,select,summary,[contenteditable],.rfc-cards,figure")) return;
+    const sel = window.getSelection();
+    if (sel !== null && !sel.isCollapsed) return;
+    const block = t.closest("li,p,h1,h2,h3,h4,h5,h6,td,th,pre,blockquote,dt,dd");
+    setEditing({ startLine: sectionStart, focusLine: sourceLineFor(lines, segmentStart, segmentEnd, block?.textContent ?? "") });
+  };
   return (
     <article ref={articleRef} className={cn("rfc-preview relative px-4 py-3", className)}>
       {meta !== null ? <Frontmatter meta={meta} /> : null}
       {sections.map((section, index) => {
         const next = sections[index + 1]?.startLine ?? null;
-        if (editing === section.startLine && annotate?.onEditSection !== undefined) {
+        if (editing?.startLine === section.startLine && annotate?.onEditSection !== undefined) {
           const endLine = next === null ? lines.length : next - 1;
           return (
             <section key={`edit:${section.startLine}`} data-section={section.heading?.title ?? ""} data-section-line={section.startLine} className="rfc-section">
               <SectionEditor
                 initial={lines.slice(section.startLine - 1, endLine).join("\n")}
                 startLine={section.startLine}
+                focusLine={editing.focusLine}
                 onCancel={() => setEditing(null)}
                 onSave={async (text) => {
                   await annotate.onEditSection!(section.startLine, endLine, text);
@@ -774,17 +807,25 @@ export function RfcPreview({ rpc, content, className, annotate }: { rpc: Rpc; co
                 onAddNote={annotate.onAddNote}
                 onExplain={annotate.onExplain}
                 onOpenItems={annotate.onOpenItems}
-                onEdit={annotate.onEditSection === undefined ? undefined : () => setEditing(section.startLine)}
+                onEdit={annotate.onEditSection === undefined ? undefined : () => setEditing({ startLine: section.startLine, focusLine: section.startLine })}
               />
             ) : null}
-            {section.segments.map((segment) => {
+            {section.segments.map((segment, si) => {
               const segKey = `${segment.kind}:${segment.startLine}:${hashString(segment.text)}`;
-              if (segment.kind === "markdown")
+              if (segment.kind === "markdown") {
+                const segEnd = (section.segments[si + 1]?.startLine ?? next ?? lines.length + 1) - 1;
                 return (
-                  <div key={segKey} data-src-line={segment.startLine} data-md="">
+                  <div
+                    key={segKey}
+                    data-src-line={segment.startLine}
+                    data-md=""
+                    className={editable ? "rfc-editable" : undefined}
+                    onClick={(e) => clickToEdit(e, section.startLine, segment.startLine, segEnd)}
+                  >
                     <Markdown content={segment.text} />
                   </div>
                 );
+              }
               if (segment.lang === "mermaid") return <MermaidBlock key={segKey} source={segment.text} startLine={segment.startLine} dark={dark} />;
               return <D2Block key={segKey} rpc={rpc} source={segment.text} startLine={segment.startLine} dark={dark} />;
             })}
