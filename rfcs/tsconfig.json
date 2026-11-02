@@ -24,6 +24,7 @@
     "server.ts",
     "diff.ts",
     "app-changes.tsx",
+    "app-rich.tsx",
     "shared.ts",
     "sidecar.ts",
     "app.tsx",

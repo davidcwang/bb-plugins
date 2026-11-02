@@ -31,9 +31,15 @@ the agent or another editor changed the file since you loaded it, the save is
 refused rather than clobbering their change. When you have no unsaved edits,
 external changes flow in automatically.
 
-**Document** is the rendered RFC on its own. Every section has an **edit**
-action that swaps that section for its raw markdown in place; it saves when
-you click away or press ⌘↩, Esc cancels.
+**Document** is the rendered RFC on its own, and it edits like a document:
+click any paragraph, list, heading, or table and that section becomes
+editable rich text in place (Tiptap), with the caret where you clicked.
+Markdown shortcuts work while typing (`## `, `- `, `**bold**`, ⌘B/⌘I).
+Clicking away or ⌘↩ serialises the section back to markdown and saves it;
+Esc cancels; a **raw** toggle swaps in a plain textarea for the section when
+you want byte-level control (diagram fences, HTML blocks). Only the edited
+section is re-serialised, and nothing is written if the round trip is a
+no-op, so an unchanged section never produces diff noise.
 
 **Changes** keeps a revision history of the file (snapshotted on every change,
 whether you, Claude, or an external editor made it; consecutive edits by the

@@ -18,6 +18,7 @@ import { CardView, ItemsView, SectionChrome, SelectionToolbar, WalkthroughView, 
 import type { Sidecar } from "./sidecar";
 import { recall, remember } from "./memory";
 import { ChangesView, unseenChanges, useRevisions } from "./app-changes";
+import { SectionRichEditor } from "./app-rich";
 import { Button } from "@/components/ui/button";
 import { ICON_NAMES, Icon, iconComponent } from "./icons";
 import { Input } from "@/components/ui/input";
@@ -755,7 +756,7 @@ export function RfcPreview({ rpc, content, className, annotate }: { rpc: Rpc; co
   const articleRef = useRef<HTMLElement>(null);
   const { selection, clear } = useSelectionActions(articleRef, annotate === undefined ? "" : content);
   const sidecar = annotate?.sidecar ?? null;
-  const [editing, setEditing] = useState<{ startLine: number; focusLine: number } | null>(null);
+  const [editing, setEditing] = useState<{ startLine: number; focusLine: number; raw?: boolean } | null>(null);
   const lines = useMemo(() => content.split("\n"), [content]);
   const editable = annotate?.onEditSection !== undefined;
   /** Click on rendered prose → edit that section with the caret on the clicked block's source line. */
@@ -777,16 +778,31 @@ export function RfcPreview({ rpc, content, className, annotate }: { rpc: Rpc; co
           const endLine = next === null ? lines.length : next - 1;
           return (
             <section key={`edit:${section.startLine}`} data-section={section.heading?.title ?? ""} data-section-line={section.startLine} className="rfc-section">
-              <SectionEditor
-                initial={lines.slice(section.startLine - 1, endLine).join("\n")}
-                startLine={section.startLine}
-                focusLine={editing.focusLine}
-                onCancel={() => setEditing(null)}
-                onSave={async (text) => {
-                  await annotate.onEditSection!(section.startLine, endLine, text);
-                  setEditing(null);
-                }}
-              />
+              {editing.raw === true ? (
+                <SectionEditor
+                  initial={lines.slice(section.startLine - 1, endLine).join("\n")}
+                  startLine={section.startLine}
+                  focusLine={editing.focusLine}
+                  onCancel={() => setEditing(null)}
+                  onSave={async (text) => {
+                    await annotate.onEditSection!(section.startLine, endLine, text);
+                    setEditing(null);
+                  }}
+                />
+              ) : (
+                <SectionRichEditor
+                  key={`rich:${section.startLine}`}
+                  initial={lines.slice(section.startLine - 1, endLine).join("\n")}
+                  startLine={section.startLine}
+                  focusLine={editing.focusLine}
+                  onCancel={() => setEditing(null)}
+                  onRaw={() => setEditing({ ...editing, raw: true })}
+                  onSave={async (text) => {
+                    await annotate.onEditSection!(section.startLine, endLine, text);
+                    setEditing(null);
+                  }}
+                />
+              )}
             </section>
           );
         }
