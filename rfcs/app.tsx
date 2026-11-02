@@ -220,6 +220,7 @@ function mermaidThemeVariables(dark: boolean) {
     sequenceNumberColor: p.bg,
     stateBkg: p.fill,
     stateBorder: p.stroke,
+    stateLabelColor: p.text,
     compositeBackground: p.container,
     compositeTitleBackground: p.container,
     altBackground: p.fillAlt,
@@ -241,6 +242,8 @@ function ensureMermaid(dark: boolean) {
     theme: "base",
     themeVariables: mermaidThemeVariables(dark),
     fontFamily: "inherit",
+    // SVG text labels everywhere: HTML (foreignObject) labels came out empty in state diagrams.
+    htmlLabels: false,
     flowchart: { htmlLabels: false },
   });
 }
