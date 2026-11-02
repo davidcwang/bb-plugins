@@ -211,6 +211,11 @@ export function ChangesView({ rpc, threadId, items, currentSha, onRestore }: { r
             <RenderedDiff before={before} after={after} context={context >= 1000 ? 1000 : 1} />
           ) : (
             <table className="w-full max-w-full table-fixed border-collapse">
+              <colgroup>
+                <col style={{ width: "2.75rem" }} />
+                <col style={{ width: "2.75rem" }} />
+                <col />
+              </colgroup>
               <tbody>
                 {grouped.map((h, hi) => (
                   <HunkRows key={hi} ops={h.ops} skipped={h.skipped} />
@@ -242,8 +247,8 @@ function HunkRows({ ops, skipped }: { ops: DiffOp[]; skipped: number }) {
             op.kind === "del" && "bg-destructive/10",
           )}
         >
-          <td className="w-10 select-none pr-1 text-right text-[10px] text-muted-foreground/70">{op.a ?? ""}</td>
-          <td className="w-10 select-none pr-2 text-right text-[10px] text-muted-foreground/70">{op.b ?? ""}</td>
+          <td className="select-none pr-1 text-right align-top text-[10px] text-muted-foreground/70">{op.a ?? ""}</td>
+          <td className="select-none pr-2 text-right align-top text-[10px] text-muted-foreground/70">{op.b ?? ""}</td>
           <td className={cn("whitespace-pre-wrap break-words pr-3", op.kind === "del" && "text-destructive", op.kind === "add" && "text-green-800 dark:text-green-300")}>
             <span className="inline-block w-3 select-none text-muted-foreground/70">{op.kind === "add" ? "+" : op.kind === "del" ? "−" : " "}</span>
             {op.text}
