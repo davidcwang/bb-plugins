@@ -109,3 +109,8 @@
 .rfc-doc h1[data-section], .rfc-doc h2[data-section], .rfc-doc h3[data-section] { scroll-margin-top: 2rem; }
 .rfc-doc .rfc-codeblock pre { position: relative; }
 .rfc-doc .ProseMirror-selectednode { outline: 2px solid color-mix(in oklab, var(--primary) 40%, transparent); border-radius: 4px; }
+
+/* Rendered diff: removed blocks read as struck-through, added as fresh. */
+.rfc-diff .rfc-diff-del { text-decoration: line-through; text-decoration-color: color-mix(in oklab, var(--destructive) 60%, transparent); opacity: 0.85; }
+.rfc-diff .rfc-diff-del table, .rfc-diff .rfc-diff-del pre { text-decoration: none; }
+.rfc-diff .rfc-diff-block > * > :last-child { margin-bottom: 0; }

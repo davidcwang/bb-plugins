@@ -9,14 +9,21 @@ export interface DiffOp {
   text: string;
 }
 
-export function lineDiff(oldText: string, newText: string): DiffOp[] {
-  const a = oldText.split("\n");
-  const b = newText.split("\n");
+export interface SeqOp {
+  kind: "eq" | "add" | "del";
+  /** 0-based index into the old sequence (eq/del). */
+  ai: number | null;
+  /** 0-based index into the new sequence (eq/add). */
+  bi: number | null;
+}
+
+/** Myers diff over two string sequences. */
+export function diffArrays(a: string[], b: string[]): SeqOp[] {
   const n = a.length;
   const m = b.length;
   const max = n + m;
   const offset = max;
-  let v = new Array<number>(2 * max + 2).fill(0);
+  const v = new Array<number>(2 * max + 2).fill(0);
   const trace: number[][] = [];
   let found = false;
   for (let d = 0; d <= max && !found; d++) {
@@ -37,8 +44,7 @@ export function lineDiff(oldText: string, newText: string): DiffOp[] {
       }
     }
   }
-  // Backtrack.
-  const ops: DiffOp[] = [];
+  const ops: SeqOp[] = [];
   let x = n;
   let y = m;
   for (let d = trace.length - 1; d >= 0; d--) {
@@ -50,16 +56,16 @@ export function lineDiff(oldText: string, newText: string): DiffOp[] {
     const prevX = vd[offset + prevK]!;
     const prevY = prevX - prevK;
     while (x > prevX && y > prevY) {
-      ops.push({ kind: "eq", a: x, b: y, text: a[x - 1]! });
+      ops.push({ kind: "eq", ai: x - 1, bi: y - 1 });
       x--;
       y--;
     }
     if (d > 0) {
       if (x === prevX) {
-        ops.push({ kind: "add", a: null, b: y, text: b[y - 1]! });
+        ops.push({ kind: "add", ai: null, bi: y - 1 });
         y--;
       } else {
-        ops.push({ kind: "del", a: x, b: null, text: a[x - 1]! });
+        ops.push({ kind: "del", ai: x - 1, bi: null });
         x--;
       }
     }
@@ -68,20 +74,31 @@ export function lineDiff(oldText: string, newText: string): DiffOp[] {
   return ops;
 }
 
+export function lineDiff(oldText: string, newText: string): DiffOp[] {
+  const a = oldText.split("\n");
+  const b = newText.split("\n");
+  return diffArrays(a, b).map((op) => ({
+    kind: op.kind,
+    a: op.ai === null ? null : op.ai + 1,
+    b: op.bi === null ? null : op.bi + 1,
+    text: op.kind === "add" ? b[op.bi!]! : a[op.ai!]!,
+  }));
+}
+
 export interface DiffHunk {
   ops: DiffOp[];
   /** Unchanged lines skipped before this hunk. */
   skipped: number;
 }
 
-/** Group ops into hunks with `context` unchanged lines around each change. */
-export function hunks(ops: DiffOp[], context = 3): DiffHunk[] {
+/** Group ops into hunks with `context` unchanged entries around each change. */
+export function groupHunks<T extends { kind: "eq" | "add" | "del" }>(ops: T[], context = 3): Array<{ ops: T[]; skipped: number }> {
   const keep = new Array<boolean>(ops.length).fill(false);
   ops.forEach((op, i) => {
     if (op.kind === "eq") return;
     for (let k = Math.max(0, i - context); k <= Math.min(ops.length - 1, i + context); k++) keep[k] = true;
   });
-  const out: DiffHunk[] = [];
+  const out: Array<{ ops: T[]; skipped: number }> = [];
   let i = 0;
   let lastEnd = 0;
   while (i < ops.length) {
@@ -98,7 +115,11 @@ export function hunks(ops: DiffOp[], context = 3): DiffHunk[] {
   return out;
 }
 
-export function diffStats(ops: DiffOp[]): { added: number; removed: number } {
+export function hunks(ops: DiffOp[], context = 3): DiffHunk[] {
+  return groupHunks(ops, context);
+}
+
+export function diffStats(ops: Array<{ kind: "eq" | "add" | "del" }>): { added: number; removed: number } {
   let added = 0;
   let removed = 0;
   for (const op of ops) {

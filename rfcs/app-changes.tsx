@@ -1,11 +1,11 @@
 // The Changes view: revision history of the RFC file and a line diff between
 // any two revisions, defaulting to "what changed last".
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
+import { Markdown, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { rpcContract } from "./server";
-import { CHANGED, type ChangedPayload } from "./shared";
-import { diffStats, hunks, lineDiff, type DiffOp } from "./diff";
+import { CHANGED, markdownBlocks, parseFrontmatter, type ChangedPayload } from "./shared";
+import { diffArrays, diffStats, groupHunks, hunks, lineDiff, type DiffOp } from "./diff";
 import { recall, remember } from "./memory";
 import { Icon } from "./icons";
 import { cn } from "@/lib/utils";
@@ -69,6 +69,13 @@ export function ChangesView({ rpc, threadId, items, currentSha, onRestore }: { r
   const [texts, setTexts] = useState<Record<string, string>>({});
   const [restoring, setRestoring] = useState<"idle" | "confirm" | "busy">("idle");
   const [context, setContext] = useState(3);
+  const [mode, setModeState] = useState<"raw" | "rendered">(() => (recall("changesMode") === "raw" ? "raw" : "rendered"));
+  const setMode = (m: "raw" | "rendered") => {
+    setModeState(m);
+    remember("changesMode", m);
+  };
+  const before = base === null ? "" : texts[base.id];
+  const after = target === null ? undefined : texts[target.id];
   // Looking at the list marks everything as seen.
   useEffect(() => {
     if (latest !== null) remember(seenKey(threadId), latest.at);
@@ -87,12 +94,9 @@ export function ChangesView({ rpc, threadId, items, currentSha, onRestore }: { r
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [base, target, rpc, threadId]);
   const ops = useMemo(() => {
-    if (target === null) return null;
-    const after = texts[target.id];
-    const before = base === null ? "" : texts[base.id];
     if (after === undefined || before === undefined) return null;
     return lineDiff(before, after);
-  }, [texts, base, target]);
+  }, [before, after]);
   const stats = ops === null ? null : diffStats(ops);
   const grouped = useMemo(() => (ops === null ? [] : hunks(ops, context)), [ops, context]);
 
@@ -162,6 +166,13 @@ export function ChangesView({ rpc, threadId, items, currentSha, onRestore }: { r
             </span>
           ) : null}
           <span className="ml-auto flex items-center gap-1">
+            <span className="flex overflow-hidden rounded border border-border text-[11px]">
+              {(["rendered", "raw"] as const).map((m) => (
+                <button key={m} type="button" onClick={() => setMode(m)} className={cn("px-1.5 py-0.5", mode === m ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}>
+                  {m === "rendered" ? "Rendered" : "Raw"}
+                </button>
+              ))}
+            </span>
             <button type="button" className="rounded px-1.5 py-0.5 text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => setContext((c) => (c >= 1000 ? 3 : 1000))}>
               {context >= 1000 ? "Collapse unchanged" : "Show whole file"}
             </button>
@@ -191,11 +202,13 @@ export function ChangesView({ rpc, threadId, items, currentSha, onRestore }: { r
             ) : null}
           </span>
         </div>
-        <div className="min-h-0 flex-1 overflow-auto font-mono text-[12px] leading-5">
-          {ops === null ? (
+        <div className={cn("min-h-0 flex-1 overflow-auto", mode === "raw" && "font-mono text-[12px] leading-5")}>
+          {ops === null || before === undefined || after === undefined ? (
             <p className="p-3 text-sm text-muted-foreground">Loading…</p>
           ) : stats!.added + stats!.removed === 0 ? (
             <p className="p-3 text-sm text-muted-foreground">No differences.</p>
+          ) : mode === "rendered" ? (
+            <RenderedDiff before={before} after={after} context={context >= 1000 ? 1000 : 1} />
           ) : (
             <table className="w-full border-collapse">
               <tbody>
@@ -238,5 +251,71 @@ function HunkRows({ ops, skipped }: { ops: DiffOp[]; skipped: number }) {
         </tr>
       ))}
     </>
+  );
+}
+
+// ---- rendered diff ---------------------------------------------------------
+
+interface Block {
+  text: string;
+  line: number;
+}
+
+/** Top-level markdown blocks of a document body, as text (frontmatter stripped). */
+function blocksOf(content: string): Block[] {
+  const fm = parseFrontmatter(content);
+  const body = fm === null ? content : fm.body;
+  const offset = fm === null ? 0 : content.slice(0, content.length - body.length).split("\n").length - 1;
+  const lines = body.split("\n");
+  const starts = markdownBlocks(body);
+  return starts.map((b, i) => {
+    const end = (starts[i + 1]?.line ?? lines.length + 1) - 1;
+    return { text: lines.slice(b.line - 1, end).join("\n").replace(/\n+$/, ""), line: b.line + offset };
+  });
+}
+
+/**
+ * The two revisions rendered as markdown, diffed at block level so paragraphs,
+ * lists, and tables stay whole: removed blocks in red, added blocks in green.
+ */
+function RenderedDiff({ before, after, context }: { before: string; after: string; context: number }) {
+  const groups = useMemo(() => {
+    const a = blocksOf(before);
+    const b = blocksOf(after);
+    const ops = diffArrays(
+      a.map((x) => x.text),
+      b.map((x) => x.text),
+    );
+    return { a, b, hunks: groupHunks(ops, context) };
+  }, [before, after, context]);
+  return (
+    <div className="rfc-preview rfc-diff px-4 py-3 text-[0.9375rem] leading-relaxed">
+      {groups.hunks.map((h, hi) => (
+        <div key={hi}>
+          {h.skipped > 0 ? (
+            <div className="my-3 flex items-center gap-2 text-[11px] text-muted-foreground">
+              <span className="h-px flex-1 bg-border" />⋯ {h.skipped} unchanged block{h.skipped === 1 ? "" : "s"}
+              <span className="h-px flex-1 bg-border" />
+            </div>
+          ) : null}
+          {h.ops.map((op, i) => {
+            const block = op.kind === "add" ? groups.b[op.bi!]! : groups.a[op.ai!]!;
+            return (
+              <div
+                key={i}
+                className={cn(
+                  "rfc-diff-block relative my-1 rounded px-2 py-0.5",
+                  op.kind === "add" && "rfc-diff-add bg-green-500/12 border-l-2 border-green-500",
+                  op.kind === "del" && "rfc-diff-del bg-destructive/10 border-l-2 border-destructive",
+                )}
+                title={op.kind === "add" ? "Added" : op.kind === "del" ? "Removed" : undefined}
+              >
+                <Markdown content={block.text} />
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
   );
 }

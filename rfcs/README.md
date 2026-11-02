@@ -50,7 +50,10 @@ the old preview. The same editor is the right pane of Split.
 whether you, Claude, or an external editor made it; consecutive edits by the
 same author within a few minutes fold into one revision) and shows a line
 diff. It defaults to the latest revision against the one before, so after the
-agent edits you see exactly what moved. Click a revision to show it, shift-
+agent edits you see exactly what moved. **Rendered** mode (the default) shows
+both revisions as rendered markdown diffed by block, removed blocks in red and
+added in green, so a table or list change reads as a table or list; **Raw**
+shows the line diff of the markdown source. Click a revision to show it, shift-
 click another to compare from it, and restore any revision with two clicks.
 The tab carries a badge for agent changes you have not looked at yet.
 
