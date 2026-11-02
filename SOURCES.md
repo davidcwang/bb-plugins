@@ -15,3 +15,4 @@ table, commit.
 | code-review | (own plugin, authored in this repo) | — | 0.1.0 | — |
 | rfcs | (own plugin, authored in this repo) | — | 0.1.0 | — |
 | github-notify | (own plugin, authored in this repo) | — | 0.1.0 | — |
+| reuse-checkout | (own plugin, authored in this repo) | — | 0.1.0 | — |

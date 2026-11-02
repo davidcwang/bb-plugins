@@ -38,6 +38,10 @@
     {
       "name": "github-notify",
       "source": "./github-notify"
+    },
+    {
+      "name": "reuse-checkout",
+      "source": "./reuse-checkout"
     }
   ]
 }

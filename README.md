@@ -21,6 +21,7 @@ Nothing upgrades on its own.
 | rfcs | RFC workbench beside a thread: live markdown preview with mermaid + D2 diagrams, editor, triaged review rounds, a discussion thread per finding |
 | github-notify | Desktop notifications and toasts for comments, reviews, and assignments on your GitHub PRs, from your own notifications feed |
 | sidebar-rail | Collapsing the left sidebar (⌘\\) leaves an icon-only rail instead of hiding it |
+| reuse-checkout | New threads default to reusing the project's existing checkout environment |
 
 ## Conventions for new plugins
 
