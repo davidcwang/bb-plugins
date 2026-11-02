@@ -738,7 +738,16 @@ export default async function plugin(bb: BbPluginApi) {
     return d2Instance;
   };
   const d2Cache = new Map<string, { ok: true; svg: string } | { ok: false; error: string }>();
-  async function renderD2(source: string, dark: boolean) {
+  // The D2 worker keeps one pending-result slot, so concurrent compile/render
+  // calls can receive each other's results (a render then sees a compile
+  // object instead of an SVG string). Run them one at a time.
+  let d2Queue: Promise<unknown> = Promise.resolve();
+  function renderD2(source: string, dark: boolean) {
+    const run = d2Queue.then(() => renderD2Now(source, dark));
+    d2Queue = run.catch(() => undefined);
+    return run;
+  }
+  async function renderD2Now(source: string, dark: boolean) {
     const { d2Layout, d2Sketch } = await settings.get();
     const cacheKey = sha256(`${d2Layout}|${d2Sketch}|${dark}|${source}`);
     const hit = d2Cache.get(cacheKey);
@@ -759,7 +768,8 @@ export default async function plugin(bb: BbPluginApi) {
           noXMLTag: true,
         },
       });
-      const svg = await engine.render(compiled.diagram, compiled.renderOptions);
+      const svg: unknown = await engine.render(compiled.diagram, compiled.renderOptions);
+      if (typeof svg !== "string") throw new Error("D2 returned no SVG; try again.");
       result = { ok: true, svg: sanitizeSvg(svg) };
     } catch (cause) {
       result = { ok: false, error: formatD2Error(cause) };
