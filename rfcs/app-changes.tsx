@@ -109,12 +109,12 @@ export function ChangesView({ rpc, threadId, items, currentSha, onRestore }: { r
     );
   }
   return (
-    <div className="flex min-h-0 flex-1">
-      <div className="flex w-56 shrink-0 flex-col border-r border-border">
-        <div className="flex items-center gap-1 border-b border-border px-2 py-1 text-[11px] text-muted-foreground">
+    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+      <div className="flex w-52 shrink-0 flex-col border-r border-border">
+        <div className="flex items-center gap-1 border-b border-border px-2 py-1 text-[11px] text-muted-foreground" title="Click a revision to show it; shift-click another to compare from it.">
           <Icon name="History" className="size-3.5" />
           {items.length} revision{items.length === 1 ? "" : "s"}
-          <span className="ml-auto">click: show · ⇧click: compare from</span>
+          <span className="ml-auto text-[10px]">⇧click = from</span>
         </div>
         <ol className="min-h-0 flex-1 overflow-auto py-1">
           {[...items].reverse().map((r, i) => {
@@ -150,8 +150,8 @@ export function ChangesView({ rpc, threadId, items, currentSha, onRestore }: { r
           })}
         </ol>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col">
-        <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-1 text-xs">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border px-3 py-1 text-xs">
           {target !== null ? (
             <span>
               <span className="text-muted-foreground">{base === null ? "Everything in" : `${byLabel[base.by]} ${when(base.at)} → `}</span>
@@ -202,7 +202,7 @@ export function ChangesView({ rpc, threadId, items, currentSha, onRestore }: { r
             ) : null}
           </span>
         </div>
-        <div className={cn("min-h-0 flex-1 overflow-auto", mode === "raw" && "font-mono text-[12px] leading-5")}>
+        <div className={cn("min-h-0 min-w-0 flex-1 overflow-auto", mode === "raw" && "font-mono text-[12px] leading-5")}>
           {ops === null || before === undefined || after === undefined ? (
             <p className="p-3 text-sm text-muted-foreground">Loading…</p>
           ) : stats!.added + stats!.removed === 0 ? (
@@ -210,7 +210,7 @@ export function ChangesView({ rpc, threadId, items, currentSha, onRestore }: { r
           ) : mode === "rendered" ? (
             <RenderedDiff before={before} after={after} context={context >= 1000 ? 1000 : 1} />
           ) : (
-            <table className="w-full border-collapse">
+            <table className="w-full max-w-full table-fixed border-collapse">
               <tbody>
                 {grouped.map((h, hi) => (
                   <HunkRows key={hi} ops={h.ops} skipped={h.skipped} />
@@ -289,7 +289,7 @@ function RenderedDiff({ before, after, context }: { before: string; after: strin
     return { a, b, hunks: groupHunks(ops, context) };
   }, [before, after, context]);
   return (
-    <div className="rfc-preview rfc-diff px-4 py-3 text-[0.9375rem] leading-relaxed">
+    <div className="rfc-preview rfc-diff min-w-0 px-4 py-3 text-[0.9375rem] leading-relaxed">
       {groups.hunks.map((h, hi) => (
         <div key={hi}>
           {h.skipped > 0 ? (
@@ -304,7 +304,7 @@ function RenderedDiff({ before, after, context }: { before: string; after: strin
               <div
                 key={i}
                 className={cn(
-                  "rfc-diff-block relative my-1 rounded px-2 py-0.5",
+                  "rfc-diff-block relative my-1 min-w-0 overflow-x-auto rounded px-2 py-0.5",
                   op.kind === "add" && "rfc-diff-add bg-green-500/12 border-l-2 border-green-500",
                   op.kind === "del" && "rfc-diff-del bg-destructive/10 border-l-2 border-destructive",
                 )}
