@@ -247,7 +247,10 @@ function ensureMermaid(dark: boolean) {
     fontFamily: getComputedStyle(document.body).fontFamily || "ui-sans-serif, system-ui, sans-serif",
     // SVG text labels everywhere: HTML (foreignObject) labels came out empty in state diagrams.
     htmlLabels: false,
-    flowchart: { htmlLabels: false },
+    // Shapes grow to fit their text; mermaid otherwise wraps at 200px and
+    // breaks long identifiers mid-word. An explicit <br/> still wraps.
+    markdownAutoWrap: false,
+    flowchart: { htmlLabels: false, wrappingWidth: 600 },
   });
 }
 
