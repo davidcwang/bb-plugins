@@ -395,6 +395,33 @@ function DiagramViewport({ svg, tall, fill = false, light = false }: { svg: stri
   const ref = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
   const zoomed = t.scale !== 1 || t.x !== 0 || t.y !== 0;
+  // Mermaid places SVG-text node labels from a width it measured elsewhere, and
+  // in state diagrams that leaves them hugging the left edge. Re-centre each
+  // node label inside its shape once the SVG is in the document.
+  useEffect(() => {
+    const root = ref.current;
+    if (root === null) return;
+    const frame = requestAnimationFrame(() => {
+      for (const node of Array.from(root.querySelectorAll<SVGGElement>("g.node"))) {
+        const shape = node.querySelector<SVGGraphicsElement>(":scope > rect, :scope > g > rect, :scope > polygon, :scope > g > polygon, :scope > circle, :scope > ellipse");
+        const label = node.querySelector<SVGGElement>(":scope > g.label, :scope > g > g.label");
+        const text = label?.querySelector<SVGGraphicsElement>("text");
+        if (shape === null || !label || !text) continue;
+        try {
+          const sb = shape.getBBox();
+          const tb = text.getBBox();
+          if (sb.width <= 0 || tb.width <= 0) continue;
+          const m = /translate\(\s*([-\d.]+)[ ,]+([-\d.]+)\s*\)/.exec(label.getAttribute("transform") ?? "");
+          const ty = m === null ? -tb.height / 2 - tb.y : Number(m[2]);
+          const tx = sb.x + (sb.width - tb.width) / 2 - tb.x;
+          if (m === null || Math.abs(tx - Number(m[1])) > 0.5) label.setAttribute("transform", `translate(${tx.toFixed(2)}, ${ty})`);
+        } catch {
+          // getBBox throws on detached/hidden nodes; nothing to fix then.
+        }
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [svg]);
   const clamp = (v: number) => Math.min(8, Math.max(0.25, v));
   const zoomAt = (factor: number, cx?: number, cy?: number) => {
     setT((cur) => {
