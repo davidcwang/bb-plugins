@@ -395,29 +395,31 @@ function DiagramViewport({ svg, tall, fill = false, light = false }: { svg: stri
   const ref = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
   const zoomed = t.scale !== 1 || t.x !== 0 || t.y !== 0;
-  // Mermaid places SVG-text node labels from a width it measured elsewhere, and
-  // in state diagrams that leaves them hugging the left edge. Re-centre each
-  // node label inside its shape once the SVG is in the document.
+  // Mermaid places SVG-text node labels from a width it measured elsewhere,
+  // which can leave them off-centre (state boxes) once in the document.
+  // Re-centre each node label on its shape by comparing the two on screen,
+  // so the fix holds for any label structure and any nested transform.
   useEffect(() => {
     const root = ref.current;
     if (root === null) return;
     const frame = requestAnimationFrame(() => {
+      const svgEl = root.querySelector("svg");
+      const scale = svgEl?.getScreenCTM()?.a ?? 1;
+      if (!(scale > 0)) return;
       for (const node of Array.from(root.querySelectorAll<SVGGElement>("g.node"))) {
-        const shape = node.querySelector<SVGGraphicsElement>(":scope > rect, :scope > g > rect, :scope > polygon, :scope > g > polygon, :scope > circle, :scope > ellipse");
-        const label = node.querySelector<SVGGElement>(":scope > g.label, :scope > g > g.label");
-        const text = label?.querySelector<SVGGraphicsElement>("text");
+        const shape = node.querySelector<SVGGraphicsElement>(":scope > rect, :scope > g > rect, :scope > polygon, :scope > g > polygon, :scope > circle, :scope > ellipse, :scope > path, :scope > g > path");
+        const label = node.querySelector<SVGGElement>("g.label");
+        const text = label?.querySelector<SVGGraphicsElement>("text, foreignObject");
         if (shape === null || !label || !text) continue;
-        try {
-          const sb = shape.getBBox();
-          const tb = text.getBBox();
-          if (sb.width <= 0 || tb.width <= 0) continue;
-          const m = /translate\(\s*([-\d.]+)[ ,]+([-\d.]+)\s*\)/.exec(label.getAttribute("transform") ?? "");
-          const ty = m === null ? -tb.height / 2 - tb.y : Number(m[2]);
-          const tx = sb.x + (sb.width - tb.width) / 2 - tb.x;
-          if (m === null || Math.abs(tx - Number(m[1])) > 0.5) label.setAttribute("transform", `translate(${tx.toFixed(2)}, ${ty})`);
-        } catch {
-          // getBBox throws on detached/hidden nodes; nothing to fix then.
-        }
+        const sb = shape.getBoundingClientRect();
+        const tb = text.getBoundingClientRect();
+        if (sb.width <= 0 || tb.width <= 0 || tb.width > sb.width + 2) continue;
+        const dx = (sb.left + sb.width / 2 - (tb.left + tb.width / 2)) / scale;
+        if (Math.abs(dx) < 0.75) continue;
+        const m = /translate\(\s*([-\d.]+)[ ,]+([-\d.]+)\s*\)/.exec(label.getAttribute("transform") ?? "");
+        const tx = (m === null ? 0 : Number(m[1])) + dx;
+        const ty = m === null ? 0 : Number(m[2]);
+        label.setAttribute("transform", `translate(${tx.toFixed(2)}, ${ty})`);
       }
     });
     return () => cancelAnimationFrame(frame);
