@@ -240,8 +240,11 @@ function ensureMermaid(dark: boolean) {
     startOnLoad: false,
     securityLevel: "strict",
     theme: "base",
-    themeVariables: mermaidThemeVariables(dark),
-    fontFamily: "inherit",
+    themeVariables: { ...mermaidThemeVariables(dark), fontSize: "16px" },
+    // Measured and displayed with the same explicit font: "inherit" measured
+    // in <body> (16px) but displayed inside the document's 15px prose, so
+    // labels came out narrower than the boxes sized for them.
+    fontFamily: getComputedStyle(document.body).fontFamily || "ui-sans-serif, system-ui, sans-serif",
     // SVG text labels everywhere: HTML (foreignObject) labels came out empty in state diagrams.
     htmlLabels: false,
     flowchart: { htmlLabels: false },

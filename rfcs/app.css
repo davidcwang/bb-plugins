@@ -136,3 +136,7 @@ html.light .rfc-rich .hljs-string, html.light .rfc-rich .hljs-regexp, html.light
 html.light .rfc-rich .hljs-number, html.light .rfc-rich .hljs-symbol, html.light .rfc-rich .hljs-attr, html.light .rfc-rich .hljs-variable, html.light .rfc-rich .hljs-property { color: #0550ae; }
 html.light .rfc-rich .hljs-title, html.light .rfc-rich .hljs-title.function_, html.light .rfc-rich .hljs-section, html.light .rfc-rich .hljs-name { color: #8250df; }
 html.light .rfc-rich .hljs-tag { color: #116329; }
+
+/* Diagrams are measured at the body font size; keep them there regardless of
+   the prose size around them, or labels drift off-centre in their boxes. */
+.rfc-diagram svg { font-size: 16px; line-height: normal; }
