@@ -35,7 +35,14 @@ import { cn } from "@/lib/utils";
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
 const describe = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
 
-export type DiagramRenderer = ComponentType<{ lang: "mermaid" | "d2"; source: string; startLine: number; onError?: (error: string | null) => void }>;
+export type DiagramRenderer = ComponentType<{
+  lang: "mermaid" | "d2";
+  source: string;
+  startLine: number;
+  onError?: (error: string | null) => void;
+  /** Document editor only: toggles the editable fence under the diagram. */
+  editSource?: { open: boolean; toggle: () => void };
+}>;
 
 // ---- data ----------------------------------------------------------------
 

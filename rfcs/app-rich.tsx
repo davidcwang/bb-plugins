@@ -57,21 +57,16 @@ function CodeBlockView({ node, updateAttributes }: NodeViewProps) {
   return (
     <NodeViewWrapper className="rfc-codeblock" data-lang={lang ?? ""}>
       {diagram ? (
-        <div contentEditable={false} className={cn("rfc-diagram-node", editing && "hidden")}>
-          <Diagram lang={lang} source={node.textContent} startLine={0} />
-          <div className="-mt-1 mb-2 flex justify-end">
-            <button type="button" className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => setEditing(true)}>
-              edit source
-            </button>
-          </div>
+        <div contentEditable={false} className="rfc-diagram-node">
+          <Diagram lang={lang} source={node.textContent} startLine={0} editSource={{ open: editing, toggle: () => setEditing((v) => !v) }} />
         </div>
       ) : null}
       <pre className={cn(diagram && !editing && "hidden")}>
         {diagram ? (
           <div contentEditable={false} className="mb-1 flex items-center gap-2 text-[10px] text-muted-foreground">
-            <span>{lang} source</span>
+            <span>{lang} source · the diagram above re-renders as you type</span>
             <button type="button" className="ml-auto rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground" onClick={() => setEditing(false)}>
-              show diagram
+              done
             </button>
           </div>
         ) : (

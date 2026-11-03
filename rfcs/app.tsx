@@ -266,6 +266,7 @@ function DiagramFrame({
   error,
   pending,
   startLine,
+  editSource,
 }: {
   lang: string;
   source: string;
@@ -273,6 +274,8 @@ function DiagramFrame({
   error: string | null;
   pending: boolean;
   startLine: number;
+  /** In the document editor: the fence is editable in place. `open` says whether it is showing. */
+  editSource?: { open: boolean; toggle: () => void };
 }) {
   const [showSource, setShowSource] = useState(error !== null);
   // Source opened by an error closes itself once the diagram compiles again;
@@ -330,9 +333,15 @@ function DiagramFrame({
         {startLine > 0 ? <span className="opacity-70">line {startLine}</span> : null}
         {pending ? <span className="italic">rendering…</span> : null}
         <span className="ml-auto flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-          <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted" onClick={toggleSource}>
-            {showSource ? "Hide source" : "Source"}
-          </button>
+          {editSource !== undefined ? (
+            <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted" onClick={editSource.toggle}>
+              {editSource.open ? "Done editing" : "Edit source"}
+            </button>
+          ) : (
+            <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted" onClick={toggleSource}>
+              {showSource ? "Hide source" : "Source"}
+            </button>
+          )}
           <button
             type="button"
             className="rounded px-1.5 py-0.5 hover:bg-muted"
@@ -366,7 +375,7 @@ function DiagramFrame({
         <pre className="m-0 whitespace-pre-wrap border-b border-border px-3 py-2 text-xs text-destructive">{error}</pre>
       ) : null}
       {svg !== null ? <DiagramViewport svg={svg} tall={lang === "d2"} /> : null}
-      {showSource ? (
+      {showSource && editSource === undefined ? (
         <pre className="m-0 overflow-auto border-t border-border bg-muted/40 px-3 py-2 font-mono text-xs leading-5">{source}</pre>
       ) : null}
     </figure>
@@ -459,7 +468,7 @@ function DiagramViewport({ svg, tall, fill = false, light = false }: { svg: stri
   );
 }
 
-function MermaidBlock({ source, startLine, dark, onError }: { source: string; startLine: number; dark: boolean; onError?: (error: string | null) => void }) {
+function MermaidBlock({ source, startLine, dark, onError, editSource }: { source: string; startLine: number; dark: boolean; onError?: (error: string | null) => void; editSource?: { open: boolean; toggle: () => void } }) {
   const [state, setState] = useState<{ svg: string | null; error: string | null; pending: boolean }>({
     svg: null,
     error: null,
@@ -499,10 +508,10 @@ function MermaidBlock({ source, startLine, dark, onError }: { source: string; st
       window.clearTimeout(timer);
     };
   }, [source, dark]);
-  return <DiagramFrame lang="mermaid" source={source} startLine={startLine} {...state} />;
+  return <DiagramFrame lang="mermaid" source={source} startLine={startLine} editSource={editSource} {...state} />;
 }
 
-function D2Block({ rpc, source, startLine, dark, onError }: { rpc: Rpc; source: string; startLine: number; dark: boolean; onError?: (error: string | null) => void }) {
+function D2Block({ rpc, source, startLine, dark, onError, editSource }: { rpc: Rpc; source: string; startLine: number; dark: boolean; onError?: (error: string | null) => void; editSource?: { open: boolean; toggle: () => void } }) {
   const [state, setState] = useState<{ svg: string | null; error: string | null; pending: boolean }>({
     svg: null,
     error: null,
@@ -532,7 +541,7 @@ function D2Block({ rpc, source, startLine, dark, onError }: { rpc: Rpc; source: 
       window.clearTimeout(timer);
     };
   }, [rpc, source, dark]);
-  return <DiagramFrame lang="d2" source={source} startLine={startLine} {...state} />;
+  return <DiagramFrame lang="d2" source={source} startLine={startLine} editSource={editSource} {...state} />;
 }
 
 // ---- view memory ---------------------------------------------------------
@@ -726,10 +735,14 @@ export interface PreviewAnnotations {
 }
 
 /** Diagram renderer handed to sidecar cards and walkthrough steps. */
-function DiagramAny({ lang, source, startLine, onError }: { lang: "mermaid" | "d2"; source: string; startLine: number; onError?: (error: string | null) => void }) {
+function DiagramAny({ lang, source, startLine, onError, editSource }: { lang: "mermaid" | "d2"; source: string; startLine: number; onError?: (error: string | null) => void; editSource?: { open: boolean; toggle: () => void } }) {
   const rpc = useRpc<typeof rpcContract>();
   const dark = useIsDark();
-  return lang === "mermaid" ? <MermaidBlock source={source} startLine={startLine} dark={dark} onError={onError} /> : <D2Block rpc={rpc} source={source} startLine={startLine} dark={dark} onError={onError} />;
+  return lang === "mermaid" ? (
+    <MermaidBlock source={source} startLine={startLine} dark={dark} onError={onError} editSource={editSource} />
+  ) : (
+    <D2Block rpc={rpc} source={source} startLine={startLine} dark={dark} onError={onError} editSource={editSource} />
+  );
 }
 const DiagramForCards: DiagramRenderer = DiagramAny;
 
