@@ -428,16 +428,33 @@ function DiagramViewport({ svg, tall, fill = false, light = false }: { svg: stri
     return () => cancelAnimationFrame(frame);
   }, [svg]);
   const clamp = (v: number) => Math.min(8, Math.max(0.25, v));
+  const inner = useRef<HTMLDivElement>(null);
+  /** Keep at least 30% of the diagram (or of the viewport, whichever is smaller) in view on each axis. */
+  const keepInView = (n: { scale: number; x: number; y: number }) => {
+    const el = ref.current;
+    const content = inner.current;
+    if (el === null || content === null) return n;
+    const W = el.clientWidth;
+    const H = el.clientHeight;
+    const cw = content.offsetWidth * n.scale;
+    const ch = content.offsetHeight * n.scale;
+    if (W <= 0 || H <= 0 || cw <= 0 || ch <= 0) return n;
+    const mx = Math.min(cw, W) * 0.3;
+    const my = Math.min(ch, H) * 0.3;
+    const x = Math.min(W / 2 + cw / 2 - mx, Math.max(mx - cw / 2 - W / 2, n.x));
+    const y = Math.min(H / 2 + ch / 2 - my, Math.max(my - ch / 2 - H / 2, n.y));
+    return { ...n, x, y };
+  };
   const zoomAt = (factor: number, cx?: number, cy?: number) => {
     setT((cur) => {
       const next = clamp(cur.scale * factor);
       const el = ref.current;
-      if (el === null || cx === undefined || cy === undefined) return { ...cur, scale: next };
+      if (el === null || cx === undefined || cy === undefined) return keepInView({ ...cur, scale: next });
       const rect = el.getBoundingClientRect();
       const px = cx - rect.left - rect.width / 2;
       const py = cy - rect.top - rect.height / 2;
       const k = next / cur.scale;
-      return { scale: next, x: px - (px - cur.x) * k, y: py - (py - cur.y) * k };
+      return keepInView({ scale: next, x: px - (px - cur.x) * k, y: py - (py - cur.y) * k });
     });
   };
   useEffect(() => {
@@ -447,7 +464,7 @@ function DiagramViewport({ svg, tall, fill = false, light = false }: { svg: stri
       if (!(e.ctrlKey || e.metaKey) && !zoomed) return; // leave page scrolling alone until zoomed in
       e.preventDefault();
       if (e.ctrlKey || e.metaKey) zoomAt(Math.exp(-e.deltaY * 0.01), e.clientX, e.clientY);
-      else setT((cur) => ({ ...cur, x: cur.x - e.deltaX, y: cur.y - e.deltaY }));
+      else setT((cur) => keepInView({ ...cur, x: cur.x - e.deltaX, y: cur.y - e.deltaY }));
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
@@ -472,7 +489,7 @@ function DiagramViewport({ svg, tall, fill = false, light = false }: { svg: stri
         onPointerMove={(e) => {
           const d = drag.current;
           if (d === null) return;
-          setT((cur) => ({ ...cur, x: d.ox + (e.clientX - d.x), y: d.oy + (e.clientY - d.y) }));
+          setT((cur) => keepInView({ ...cur, x: d.ox + (e.clientX - d.x), y: d.oy + (e.clientY - d.y) }));
         }}
         onPointerUp={() => {
           drag.current = null;
@@ -483,6 +500,7 @@ function DiagramViewport({ svg, tall, fill = false, light = false }: { svg: stri
         onDoubleClick={reset}
       >
         <div
+          ref={inner}
           className="[&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-w-full"
           style={{ transform: `translate(${t.x}px, ${t.y}px) scale(${t.scale})`, transformOrigin: "center center", transition: drag.current ? "none" : "transform 60ms linear" }}
           dangerouslySetInnerHTML={{ __html: svg }}
