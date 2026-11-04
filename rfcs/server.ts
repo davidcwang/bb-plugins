@@ -674,8 +674,9 @@ export default async function plugin(bb: BbPluginApi) {
     try {
       const thread = await bb.sdk.threads.get({ threadId });
       if (live(thread.status)) return true;
-      const children = await bb.sdk.threads.list({ parentThreadId: threadId, includeHidden: true });
-      return children.some((t) => live(t.status));
+      const children = await childThreads(threadId);
+      const states = await Promise.all(children.map((id) => bb.sdk.threads.get({ threadId: id }).then((t) => t.status, () => null)));
+      return states.some(live);
     } catch {
       return false;
     }
@@ -809,6 +810,15 @@ export default async function plugin(bb: BbPluginApi) {
 
   // ---- review worker ----
   type EnvChoice = Parameters<typeof bb.sdk.threads.spawn>[0]["environment"];
+  const kidsKey = (threadId: string) => `kids:${threadId}`;
+  async function rememberChild(threadId: string, childId: string) {
+    try {
+      const cur = (await bb.storage.kv.get<string[]>(kidsKey(threadId))) ?? [];
+      if (!cur.includes(childId)) await bb.storage.kv.set(kidsKey(threadId), [...cur, childId].slice(-200));
+    } catch (cause) {
+      bb.log.warn(`could not record child ${childId}: ${describe(cause)}`);
+    }
+  }
   async function spawnHidden(
     threadId: string,
     title: string,
@@ -820,11 +830,13 @@ export default async function plugin(bb: BbPluginApi) {
       workspacePath === null
         ? ""
         : `\n\nThe workspace is the directory ${JSON.stringify(workspacePath)} on this machine; run every file command inside it.`;
+    // Not a BB child of the RFC thread: a child's completion posts a chip in
+    // the parent that opens the hidden thread, which is never where the user
+    // wants to go (the result lives in the panel). Children are tracked in kv.
     const base = {
       projectId: thread.projectId,
       title,
       visibility: "hidden" as const,
-      parentThreadId: threadId,
       pluginMetadata,
     };
     const candidates: Array<{ environment: EnvChoice; prompt: string }> = [];
@@ -844,6 +856,7 @@ export default async function plugin(bb: BbPluginApi) {
     for (const candidate of candidates) {
       try {
         const spawned = await bb.sdk.threads.spawn({ ...base, ...candidate });
+        await rememberChild(threadId, spawned.id);
         return spawned.id;
       } catch (cause) {
         lastError = cause;
@@ -2193,11 +2206,13 @@ export default async function plugin(bb: BbPluginApi) {
   async function childThreads(parentId: string): Promise<string[]> {
     const ids = new Set<string>();
     try {
+      // Older helpers were BB children; newer ones are only in our registry.
       const list = await bb.sdk.threads.list({ parentThreadId: parentId, includeHidden: true });
       for (const t of list as Array<{ id: string }>) ids.add(t.id);
     } catch (cause) {
       bb.log.warn(`could not list children of ${parentId}: ${describe(cause)}`);
     }
+    for (const id of (await bb.storage.kv.get<string[]>(kidsKey(parentId))) ?? []) ids.add(id);
     // Belt and braces: ids we recorded ourselves (review workers, discussions).
     const review = await readReview(parentId);
     if (review.reviewThreadId !== null) ids.add(review.reviewThreadId);

@@ -1847,6 +1847,29 @@ function RfcPanel({
     const t = window.setTimeout(performJump, 120);
     return () => window.clearTimeout(t);
   });
+  // A card or follow-up that just finished: offer to jump to it in the document.
+  const cardStatuses = useRef<Map<string, string> | null>(null);
+  useEffect(() => {
+    if (sidecar === null) return;
+    const next = new Map<string, string>();
+    for (const c of sidecar.cards) {
+      next.set(c.id, c.status);
+      for (const x of c.exchanges) next.set(`${c.id}/${x.id}`, x.status);
+    }
+    const prev = cardStatuses.current;
+    cardStatuses.current = next;
+    if (prev === null) return;
+    for (const c of sidecar.cards) {
+      const was = prev.get(c.id);
+      const show = { label: "Show", onClick: () => jumpTo(c.anchor) };
+      if (was === "pending" && c.status === "ready") toast.success(`Card ready: ${c.title}`, { action: show });
+      for (const x of c.exchanges) {
+        if (prev.get(`${c.id}/${x.id}`) === "pending" && x.status === "ready") toast.success(`Follow-up answered on “${c.title}”`, { action: show });
+      }
+    }
+    // jumpTo is recreated each render; the effect keys on sidecar changes only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidecar]);
   const addNote = (anchor: Anchor, title: string) => {
     void rpc
       .call("note_add", { threadId, anchor, title: title.trim(), body: "", status: "open", discuss: false })
