@@ -75,11 +75,11 @@ export const claimTone: Record<ClaimStatus, string> = {
 const modeIcon: Record<CardMode, string> = { concept: "Lightbulb", code: "Code", data: "Database", flow: "GitBranch", question: "MessageCircleQuestion" };
 /** Accent per card mode: left border, header tint, badge. Makes cards stand out from prose while scrolling. */
 const modeTone: Record<CardMode, { border: string; head: string; badge: string; icon: string }> = {
-  concept: { border: "border-violet-500/70 border-l-violet-500", head: "bg-violet-500/10", badge: "bg-violet-500/20 text-violet-700 dark:text-violet-300", icon: "text-violet-600 dark:text-violet-400" },
-  code: { border: "border-sky-500/70 border-l-sky-500", head: "bg-sky-500/10", badge: "bg-sky-500/20 text-sky-700 dark:text-sky-300", icon: "text-sky-600 dark:text-sky-400" },
-  data: { border: "border-emerald-500/70 border-l-emerald-500", head: "bg-emerald-500/10", badge: "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300", icon: "text-emerald-600 dark:text-emerald-400" },
-  flow: { border: "border-amber-500/70 border-l-amber-500", head: "bg-amber-500/10", badge: "bg-amber-500/20 text-amber-700 dark:text-amber-300", icon: "text-amber-600 dark:text-amber-400" },
-  question: { border: "border-rose-500/70 border-l-rose-500", head: "bg-rose-500/10", badge: "bg-rose-500/20 text-rose-700 dark:text-rose-300", icon: "text-rose-600 dark:text-rose-400" },
+  concept: { border: "border-violet-500/70", head: "bg-violet-500/10", badge: "bg-violet-500/20 text-violet-700 dark:text-violet-300", icon: "text-violet-600 dark:text-violet-400" },
+  code: { border: "border-sky-500/70", head: "bg-sky-500/10", badge: "bg-sky-500/20 text-sky-700 dark:text-sky-300", icon: "text-sky-600 dark:text-sky-400" },
+  data: { border: "border-emerald-500/70", head: "bg-emerald-500/10", badge: "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300", icon: "text-emerald-600 dark:text-emerald-400" },
+  flow: { border: "border-amber-500/70", head: "bg-amber-500/10", badge: "bg-amber-500/20 text-amber-700 dark:text-amber-300", icon: "text-amber-600 dark:text-amber-400" },
+  question: { border: "border-rose-500/70", head: "bg-rose-500/10", badge: "bg-rose-500/20 text-rose-700 dark:text-rose-300", icon: "text-rose-600 dark:text-rose-400" },
 };
 
 /** Items anchored to a section: by heading text, else by line range. */
@@ -249,7 +249,7 @@ export function CardView({
     );
   };
   return (
-    <div className={cn("rfc-card my-2 overflow-hidden rounded-md border-2 border-l-4 text-sm shadow-sm", modeTone[card.mode].border, card.status === "pending" ? "border-dashed" : "bg-card")}>
+    <div className={cn("rfc-card my-2 overflow-hidden rounded-md border-2 text-sm shadow-sm", modeTone[card.mode].border, card.status === "pending" ? "border-dashed" : "bg-card")}>
       <button type="button" className={cn("flex w-full items-center gap-2 px-3 py-1.5 text-left", modeTone[card.mode].head)} onClick={() => setOpen(!open)}>
         <span className={cn("flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide", modeTone[card.mode].badge)}>
           <Icon name={modeIcon[card.mode]} className="size-3" />
