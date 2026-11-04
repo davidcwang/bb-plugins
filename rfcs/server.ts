@@ -1250,7 +1250,10 @@ export default async function plugin(bb: BbPluginApi) {
     if (file === null) return { data: emptySidecar(), sha: null };
     try {
       const parsed = sidecarSchema.safeParse(JSON.parse(file.content));
-      return { data: parsed.success ? parsed.data : emptySidecar(), sha: file.sha256 };
+      if (!parsed.success) return { data: emptySidecar(), sha: file.sha256 };
+      // Every card is an Ask now; older concept/code/data/flow cards are folded in.
+      for (const c of parsed.data.cards) c.mode = "question";
+      return { data: parsed.data, sha: file.sha256 };
     } catch {
       return { data: emptySidecar(), sha: file.sha256 };
     }

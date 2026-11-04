@@ -90,14 +90,15 @@ beside the RFC (so git carries it):
   superseded), an optional resolution, and its own hidden discussion thread.
   Add one from the selection toolbar, from a section's "+ note", from the
   Items list, or let the agent record decisions with `rfc_note_add`.
-- **Explainer cards**: highlight text in the document and pick Explain or
-  Ask. A hidden thread reads the RFC (and the workspace) and publishes a card
-  under that section: markdown, an optional diagram, and code references
-  with file links. The card is a rolled-out transcript: **Ask a follow-up**
-  appends a question, the answer lands beneath it (via `rfc_card_reply`, or
-  the thread's final reply if the agent skipped the tool), and each follow-up
-  or the whole card can be deleted. Cards open by default and remember being
-  collapsed. The hidden thread itself is never shown.
+- **Ask cards**: highlight text in the document and type a question (explain
+  it, where is the code, why is it this way). A hidden thread reads the RFC
+  and the workspace and publishes a card under that section: markdown, an
+  optional diagram, and code references with file links. The card is a
+  rolled-out transcript: **Ask a follow-up** appends a question and the
+  answer lands beneath it; each follow-up or the whole card can be deleted.
+  Cards open by default and remember being collapsed; the toolbar at the top
+  of the document expands or collapses all of them. The hidden thread itself
+  is never shown.
 - **Glossary**: terms and IDs (S12, A2, OIDC) with one-line definitions.
   Each section lists the terms it mentions; hover or click for the
   definition, or expand them all. "Build from document" asks the agent to

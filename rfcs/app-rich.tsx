@@ -41,6 +41,7 @@ export interface DocAnnotations {
   onAddNote: (anchor: Anchor, title: string) => void;
   onExplain: (anchor: Anchor, mode: CardMode, prompt: string) => void;
   onOpenItems: (tab: ItemsTab, section: string | null) => void;
+  cardsOpen?: { open: boolean; seq: number };
 }
 
 // ---- diagram code blocks ---------------------------------------------------
@@ -475,7 +476,7 @@ export function DocEditor({
             return createPortal(
               <>
                 {data.cards.map((card) => (
-                  <CardView key={card.id} rpc={rpc} threadId={annotate.threadId} card={card} environmentId={annotate.environmentId} Diagram={Diagram} defaultOpen={card.status === "pending"} />
+                  <CardView key={card.id} rpc={rpc} threadId={annotate.threadId} card={card} environmentId={annotate.environmentId} Diagram={Diagram} defaultOpen={card.status === "pending"} forceOpen={annotate.cardsOpen} />
                 ))}
               </>,
               w.dom,

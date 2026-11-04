@@ -785,6 +785,8 @@ export interface PreviewAnnotations {
   onAddNote: (anchor: Anchor, title: string) => void;
   onExplain: (anchor: Anchor, mode: CardMode, prompt: string) => void;
   onOpenItems: (tab: ItemsTab, section: string | null) => void;
+  /** Expand/collapse-all request for cards; applied when `seq` changes. */
+  cardsOpen?: { open: boolean; seq: number };
 }
 
 /** Diagram renderer handed to sidecar cards and walkthrough steps. */
@@ -851,7 +853,7 @@ export function RfcPreview({ rpc, content, className, annotate }: { rpc: Rpc; co
             {annotate !== undefined && cards.length > 0 ? (
               <div className="rfc-cards mb-2">
                 {cards.map((card) => (
-                  <CardView key={card.id} rpc={rpc} threadId={annotate.threadId} card={card} environmentId={annotate.environmentId} Diagram={DiagramForCards} defaultOpen={card.status === "pending"} />
+                  <CardView key={card.id} rpc={rpc} threadId={annotate.threadId} card={card} environmentId={annotate.environmentId} Diagram={DiagramForCards} defaultOpen={card.status === "pending"} forceOpen={annotate.cardsOpen} />
                 ))}
               </div>
             ) : null}
@@ -1778,13 +1780,38 @@ function ViewTabs({ view, onChange, pending, badges = {}, compact = false }: { v
   );
 }
 
-function PreviewToolbar({ termsExpanded, onToggleTerms, hasTerms }: { termsExpanded: boolean; onToggleTerms: () => void; hasTerms: boolean }) {
-  if (!hasTerms) return null;
+function PreviewToolbar({
+  termsExpanded,
+  onToggleTerms,
+  hasTerms,
+  cardCount,
+  onCards,
+}: {
+  termsExpanded: boolean;
+  onToggleTerms: () => void;
+  hasTerms: boolean;
+  cardCount: number;
+  onCards: (open: boolean) => void;
+}) {
+  if (!hasTerms && cardCount === 0) return null;
+  const btn = "rounded border border-border bg-background/90 px-1.5 py-0.5 text-[10px] text-muted-foreground backdrop-blur hover:text-foreground";
   return (
-    <div className="sticky top-0 z-10 flex justify-end px-3 pt-1">
-      <button type="button" onClick={onToggleTerms} className="rounded border border-border bg-background/90 px-1.5 py-0.5 text-[10px] text-muted-foreground backdrop-blur hover:text-foreground">
-        {termsExpanded ? "Collapse terms" : "Expand terms"}
-      </button>
+    <div className="sticky top-0 z-10 flex justify-end gap-1 px-3 pt-1">
+      {cardCount > 0 ? (
+        <>
+          <button type="button" onClick={() => onCards(true)} className={btn} title="Expand every Ask card">
+            Expand cards ({cardCount})
+          </button>
+          <button type="button" onClick={() => onCards(false)} className={btn} title="Collapse every Ask card">
+            Collapse cards
+          </button>
+        </>
+      ) : null}
+      {hasTerms ? (
+        <button type="button" onClick={onToggleTerms} className={btn}>
+          {termsExpanded ? "Collapse terms" : "Expand terms"}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -1909,6 +1936,9 @@ function RfcPanel({
     reloadDoc();
     toast.success("Restored.");
   };
+  const [cardsOpen, setCardsOpen] = useState<{ open: boolean; seq: number }>({ open: true, seq: 0 });
+  const toggleAllCards = (open: boolean) => setCardsOpen((c) => ({ open, seq: c.seq + 1 }));
+  const cardCount = sidecar?.cards.length ?? 0;
   const annotate: PreviewAnnotations = {
     threadId,
     sidecar,
@@ -1917,6 +1947,7 @@ function RfcPanel({
     onAddNote: addNote,
     onExplain: explain,
     onOpenItems: openItems,
+    cardsOpen,
   };
   // In Split view the editor is the source of truth for position (it restores
   // its own scroll and the preview follows), so only Preview restores itself.
@@ -2023,7 +2054,7 @@ function RfcPanel({
               onSaved={reloadDoc}
               containerRef={previewScroll.ref}
               onScroll={previewScroll.onScroll}
-              toolbar={<PreviewToolbar termsExpanded={termsExpanded} onToggleTerms={() => setTermsExpanded(!termsExpanded)} hasTerms={(sidecar?.glossary.length ?? 0) > 0} />}
+              toolbar={<PreviewToolbar termsExpanded={termsExpanded} onToggleTerms={() => setTermsExpanded(!termsExpanded)} hasTerms={(sidecar?.glossary.length ?? 0) > 0} cardCount={cardCount} onCards={toggleAllCards} />}
             />
           ) : (
             <SplitPane
@@ -2041,7 +2072,7 @@ function RfcPanel({
                   onSaved={reloadDoc}
                   onScroller={onScroller}
                   onScroll={() => sync.follow("preview")}
-                  toolbar={<PreviewToolbar termsExpanded={termsExpanded} onToggleTerms={() => setTermsExpanded(!termsExpanded)} hasTerms={(sidecar?.glossary.length ?? 0) > 0} />}
+                  toolbar={<PreviewToolbar termsExpanded={termsExpanded} onToggleTerms={() => setTermsExpanded(!termsExpanded)} hasTerms={(sidecar?.glossary.length ?? 0) > 0} cardCount={cardCount} onCards={toggleAllCards} />}
                 />
               }
             />

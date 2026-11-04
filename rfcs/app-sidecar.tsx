@@ -74,6 +74,8 @@ export const claimTone: Record<ClaimStatus, string> = {
 };
 const modeIcon: Record<CardMode, string> = { concept: "Lightbulb", code: "Code", data: "Database", flow: "GitBranch", question: "MessageCircleQuestion" };
 /** Accent per card mode: left border, header tint, badge. Makes cards stand out from prose while scrolling. */
+// Every card is an Ask now (older concept/code/data/flow cards are shown the same way).
+const askTone = { border: "border-rose-500/70", head: "bg-rose-500/10", badge: "bg-rose-500/20 text-rose-700 dark:text-rose-300", icon: "text-rose-600 dark:text-rose-400" };
 const modeTone: Record<CardMode, { border: string; head: string; badge: string; icon: string }> = {
   concept: { border: "border-violet-500/70", head: "bg-violet-500/10", badge: "bg-violet-500/20 text-violet-700 dark:text-violet-300", icon: "text-violet-600 dark:text-violet-400" },
   code: { border: "border-sky-500/70", head: "bg-sky-500/10", badge: "bg-sky-500/20 text-sky-700 dark:text-sky-300", icon: "text-sky-600 dark:text-sky-400" },
@@ -202,6 +204,7 @@ export function CardView({
   environmentId,
   Diagram,
   defaultOpen = false,
+  forceOpen,
 }: {
   rpc: Rpc;
   threadId: string;
@@ -209,12 +212,22 @@ export function CardView({
   environmentId: string | null;
   Diagram: DiagramRenderer;
   defaultOpen?: boolean;
+  /** "Expand all / collapse all" from the toolbar: applied whenever `seq` changes. */
+  forceOpen?: { open: boolean; seq: number };
 }) {
   const [open, setOpenState] = useState(() => recall(`card:${card.id}`) !== "closed" || defaultOpen);
   const setOpen = (v: boolean) => {
     setOpenState(v);
     remember(`card:${card.id}`, v ? "open" : "closed");
   };
+  const lastSeq = useRef(forceOpen?.seq ?? 0);
+  useEffect(() => {
+    if (forceOpen === undefined || forceOpen.seq === lastSeq.current) return;
+    lastSeq.current = forceOpen.seq;
+    setOpen(forceOpen.open);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forceOpen?.seq]);
+  const tone = askTone;
   const [asking, setAsking] = useState(false);
   const [question, setQuestion] = useState("");
   const [sending, setSending] = useState(false);
@@ -249,11 +262,11 @@ export function CardView({
     );
   };
   return (
-    <div className={cn("rfc-card my-2 overflow-hidden rounded-md border-2 text-sm shadow-sm", modeTone[card.mode].border, card.status === "pending" ? "border-dashed" : "bg-card")}>
-      <button type="button" className={cn("flex w-full items-center gap-2 px-3 py-1.5 text-left", modeTone[card.mode].head)} onClick={() => setOpen(!open)}>
-        <span className={cn("flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide", modeTone[card.mode].badge)}>
-          <Icon name={modeIcon[card.mode]} className="size-3" />
-          {card.mode === "question" ? "Ask" : CARD_MODE_LABEL[card.mode].split(" ").slice(-1)[0]}
+    <div className={cn("rfc-card my-2 overflow-hidden rounded-md border-2 text-sm shadow-sm", tone.border, card.status === "pending" ? "border-dashed" : "bg-card")}>
+      <button type="button" className={cn("flex w-full items-center gap-2 px-3 py-1.5 text-left", tone.head)} onClick={() => setOpen(!open)}>
+        <span className={cn("flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide", tone.badge)}>
+          <Icon name="MessageCircleQuestion" className="size-3" />
+          Ask
         </span>
         <span className="min-w-0 flex-1 truncate font-medium">{card.title}</span>
         {pending ? (
@@ -311,7 +324,7 @@ export function CardView({
               ) : null}
             </div>
           ))}
-          <div className={cn("-mx-3 -mb-2 mt-2 flex flex-wrap items-center gap-1.5 border-t px-3 py-1.5 text-xs", modeTone[card.mode].head)}>
+          <div className={cn("-mx-3 -mb-2 mt-2 flex flex-wrap items-center gap-1.5 border-t px-3 py-1.5 text-xs", tone.head)}>
             {asking ? (
               <form
                 className="flex w-full items-center gap-1"
@@ -412,13 +425,10 @@ export function SectionChrome({
   onExplain: (anchor: Anchor, mode: CardMode, prompt: string) => void;
   onOpenItems: (tab: "notes" | "claims", section: string | null) => void;
 }) {
-  const [noting, setNoting] = useState(false);
-  const [noteTitle, setNoteTitle] = useState("");
   const terms = useMemo(() => termsIn(section.text, glossary), [section.text, glossary]);
   const openNotes = notes.filter((n) => n.status === "open" || n.status === "blocked");
   const weakClaims = claims.filter((c) => c.status === "assumed" || c.status === "stale");
   const anchor: Anchor = { section: section.heading?.title ?? null, line: section.heading?.line ?? section.startLine, quote: null };
-  const title = section.heading?.title ?? "this document";
   return (
     <div className="rfc-section-chrome -mb-1 mt-1 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground opacity-70 transition-opacity hover:opacity-100">
       {openNotes.length > 0 ? (
@@ -432,31 +442,6 @@ export function SectionChrome({
         </button>
       ) : null}
       {cards.length > 0 ? <span className="rounded bg-muted px-1.5 py-0.5">{cards.length} card{cards.length === 1 ? "" : "s"}</span> : null}
-      <span className="ml-auto flex items-center gap-0.5">
-        <button type="button" className={cn("rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground", noting && "bg-muted text-foreground")} onClick={() => setNoting((v) => !v)} title={`Add a note on ${title}`}>
-          + note
-        </button>
-      </span>
-      {noting ? (
-        <form
-          className="flex w-full items-center gap-1"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (noteTitle.trim() === "") return;
-            onAddNote(anchor, noteTitle.trim());
-            setNoteTitle("");
-            setNoting(false);
-          }}
-        >
-          <Input value={noteTitle} onChange={(e) => setNoteTitle(e.target.value)} autoFocus placeholder={`Note on ${title}: question, decision, or thing to keep in mind`} className="h-7 flex-1 text-xs" aria-label="Note title" />
-          <Button size="sm" type="submit" className="h-7 text-xs" disabled={noteTitle.trim() === ""}>
-            Add
-          </Button>
-          <Button size="sm" type="button" variant="outline" className="h-7 text-xs" onClick={() => setNoting(false)}>
-            Cancel
-          </Button>
-        </form>
-      ) : null}
       <div className="w-full">
         <TermChips terms={terms} expanded={termsExpanded} />
       </div>
@@ -556,21 +541,17 @@ export function useSelectionActions(containerRef: RefObject<HTMLElement | null>,
 
 export function SelectionToolbar({
   selection,
-  onNote,
   onExplain,
 }: {
   selection: SelectionState;
-  onNote: (anchor: Anchor, title: string) => void;
+  onNote?: (anchor: Anchor, title: string) => void;
   onExplain: (anchor: Anchor, mode: CardMode, prompt: string) => void;
 }) {
-  const [asking, setAsking] = useState(false);
   const [q, setQ] = useState("");
-  const [noting, setNoting] = useState(false);
-  const [noteTitle, setNoteTitle] = useState(selection.text.slice(0, 80));
   return (
     <div
       data-selection-toolbar=""
-      className="absolute z-20 flex max-w-[28rem] flex-wrap items-center gap-0.5 rounded-md border border-border bg-popover p-1 text-xs shadow-md"
+      className="absolute z-20 flex w-[26rem] max-w-[90%] items-center gap-1 rounded-md border border-border bg-popover p-1 text-xs shadow-md"
       style={{ left: selection.x, top: selection.y }}
       onMouseDown={(e) => {
         e.stopPropagation();
@@ -578,63 +559,20 @@ export function SelectionToolbar({
         if ((e.target as HTMLElement).closest("button") !== null) e.preventDefault();
       }}
     >
-      <button
-        type="button"
-        className={cn("rounded px-2 py-1 hover:bg-muted", noting && "bg-muted")}
-        onClick={() => {
-          setNoting((v) => !v);
-          setAsking(false);
+      <form
+        className="flex w-full items-center gap-1"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (q.trim() === "") return;
+          onExplain(selection.anchor, "question", `${q.trim()}\n\n(About: "${selection.text}")`);
         }}
       >
-        <Icon name="StickyNote" className="mr-1 inline size-3.5 align-text-bottom" />
-        Note
-      </button>
-      <span className="mx-0.5 h-4 w-px bg-border" />
-      <button type="button" className="rounded px-2 py-1 hover:bg-muted" onClick={() => onExplain(selection.anchor, "concept", selection.text)} title="Explain this passage: what it means, why it is here, what it depends on">
-        <Icon name={modeIcon.concept} className="mr-1 inline size-3.5 align-text-bottom" />
-        Explain
-      </button>
-      <button
-        type="button"
-        className={cn("rounded px-2 py-1 hover:bg-muted", asking && "bg-muted")}
-        onClick={() => {
-          setAsking((v) => !v);
-          setNoting(false);
-        }}
-      >
-        <Icon name="MessageCircleQuestion" className="mr-1 inline size-3.5 align-text-bottom" />
-        Ask
-      </button>
-      {noting ? (
-        <form
-          className="flex w-full items-center gap-1 pt-1"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (noteTitle.trim() === "") return;
-            onNote(selection.anchor, noteTitle.trim());
-          }}
-        >
-          <Input value={noteTitle} onChange={(e) => setNoteTitle(e.target.value)} autoFocus placeholder="Note title" className="h-7 flex-1 text-xs" aria-label="Note title" />
-          <Button size="sm" type="submit" className="h-7 text-xs" disabled={noteTitle.trim() === ""}>
-            Add note
-          </Button>
-        </form>
-      ) : null}
-      {asking ? (
-        <form
-          className="flex w-full items-center gap-1 pt-1"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (q.trim() === "") return;
-            onExplain(selection.anchor, "question", `${q.trim()}\n\n(About: "${selection.text}")`);
-          }}
-        >
-          <Input value={q} onChange={(e) => setQ(e.target.value)} autoFocus placeholder="Your question about the selection" className="h-7 flex-1 text-xs" aria-label="Question" />
-          <Button size="sm" type="submit" className="h-7 text-xs" disabled={q.trim() === ""}>
-            Ask
-          </Button>
-        </form>
-      ) : null}
+        <Icon name="MessageCircleQuestion" className="ml-1 size-3.5 shrink-0 text-muted-foreground" />
+        <Input value={q} onChange={(e) => setQ(e.target.value)} autoFocus placeholder="Ask about this selection… (explain it, where is the code, why, …)" className="h-7 flex-1 text-xs" aria-label="Question" />
+        <Button size="sm" type="submit" className="h-7 text-xs" disabled={q.trim() === ""}>
+          Ask
+        </Button>
+      </form>
     </div>
   );
 }
