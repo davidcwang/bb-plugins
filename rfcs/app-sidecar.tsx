@@ -472,8 +472,10 @@ interface SelectionState {
 const HIGHLIGHT_NAME = "rfcs-selection";
 function pinHighlight(range: Range | null) {
   if (typeof Highlight === "undefined" || !("highlights" in CSS)) return;
-  if (range === null) CSS.highlights.delete(HIGHLIGHT_NAME);
-  else CSS.highlights.set(HIGHLIGHT_NAME, new Highlight(range));
+  // The bundled DOM lib predates set/delete on HighlightRegistry.
+  const registry = CSS.highlights as unknown as { set(name: string, h: Highlight): void; delete(name: string): void };
+  if (range === null) registry.delete(HIGHLIGHT_NAME);
+  else registry.set(HIGHLIGHT_NAME, new Highlight(range));
 }
 
 /**
