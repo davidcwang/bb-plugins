@@ -1892,6 +1892,39 @@ function RfcPanel({
     const t = window.setTimeout(performJump, 120);
     return () => window.clearTimeout(t);
   });
+  /** Scroll to a card by id (opening it first); retries while cards are still mounting. */
+  const jumpToCard = (cardId: string) => {
+    if (view !== "preview" && view !== "split") setView("split");
+    remember(`card:${cardId}`, "open");
+    window.dispatchEvent(new CustomEvent("rfcs:open-card", { detail: cardId }));
+    let tries = 0;
+    const attempt = () => {
+      const el = document.querySelector<HTMLElement>(`[data-card-id="${cardId}"]`);
+      if (el === null) {
+        if (tries++ < 20) window.setTimeout(attempt, 150);
+        return;
+      }
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+      el.classList.add("rfc-jump-flash");
+      window.setTimeout(() => el.classList.remove("rfc-jump-flash"), 1600);
+    };
+    window.setTimeout(attempt, 50);
+  };
+  // Opened from a chat message's "Jump to card" action: find the card the message is about.
+  const locate = typeof params === "object" && params !== null && typeof (params as { locate?: unknown }).locate === "object" ? ((params as { locate: { text: string; seq: number } }).locate ?? null) : null;
+  const locatedSeq = useRef<number | null>(null);
+  useEffect(() => {
+    if (locate === null || locate.seq === locatedSeq.current || sidecar === null) return;
+    locatedSeq.current = locate.seq;
+    rpc.call("card_locate", { threadId, text: locate.text }).then(
+      (hit) => {
+        if (hit === null) toast.message("No card matches that message.");
+        else jumpToCard(hit.cardId);
+      },
+      (cause: unknown) => toast.error(describe(cause)),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locate?.seq, sidecar === null]);
   // A card or follow-up that just finished: offer to jump to it in the document.
   const cardStatuses = useRef<Map<string, string> | null>(null);
   useEffect(() => {
@@ -1906,7 +1939,7 @@ function RfcPanel({
     if (prev === null) return;
     for (const c of sidecar.cards) {
       const was = prev.get(c.id);
-      const show = { label: "Show", onClick: () => jumpTo(c.anchor) };
+      const show = { label: "Show", onClick: () => jumpToCard(c.id) };
       if (was === "pending" && c.status === "ready") toast.success(`Card ready: ${c.title}`, { action: show });
       for (const x of c.exchanges) {
         if (prev.get(`${c.id}/${x.id}`) === "pending" && x.status === "ready") toast.success(`Follow-up answered on “${c.title}”`, { action: show });
@@ -2608,6 +2641,16 @@ export default definePluginApp((app) => {
     icon: "FileText",
     layout: "flush",
     component: RfcPanel,
+  });
+  app.slots.messageAction({
+    id: "jump-to-card",
+    title: "Jump to card in RFC",
+    icon: "rfcs:MessageCircleQuestion",
+    run(ctx) {
+      // The panel resolves which card the message is about (it has the RPC client); this just opens it.
+      const ok = ctx.openPanel({ actionId: "rfc", title: "RFC", params: { view: "split", locate: { text: ctx.message.text.slice(0, 4000), seq: Date.now() } } });
+      if (!ok) toast.message("Open the thread in the main view to jump to its card.");
+    },
   });
   app.slots.fileOpener({
     id: "rfc-markdown",

@@ -228,6 +228,15 @@ export function CardView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [forceOpen?.seq]);
   const tone = askTone;
+  // "Jump to card" from elsewhere: open this card when asked by id.
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === card.id) setOpen(true);
+    };
+    window.addEventListener("rfcs:open-card", onOpen);
+    return () => window.removeEventListener("rfcs:open-card", onOpen);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [card.id]);
   const [asking, setAsking] = useState(false);
   const [question, setQuestion] = useState("");
   const [sending, setSending] = useState(false);
@@ -262,7 +271,7 @@ export function CardView({
     );
   };
   return (
-    <div className={cn("rfc-card my-2 overflow-hidden rounded-md border-2 text-sm shadow-sm", tone.border, card.status === "pending" ? "border-dashed" : "bg-card")}>
+    <div data-card-id={card.id} className={cn("rfc-card my-2 overflow-hidden rounded-md border-2 text-sm shadow-sm", tone.border, card.status === "pending" ? "border-dashed" : "bg-card")}>
       <button type="button" className={cn("flex w-full items-center gap-2 px-3 py-1.5 text-left", tone.head)} onClick={() => setOpen(!open)}>
         <span className={cn("flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide", tone.badge)}>
           <Icon name="MessageCircleQuestion" className="size-3" />

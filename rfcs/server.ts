@@ -242,6 +242,12 @@ export const rpcContract = defineRpcContract({
     input: z.object({ threadId: z.string(), id: z.string() }),
     output: z.object({ ok: z.literal(true) }),
   },
+  card_locate: {
+    // Which card a chat message is about: the thread's own card when it is an
+    // explainer thread, otherwise the card whose title/question best matches.
+    input: z.object({ threadId: z.string(), text: z.string().max(20_000) }),
+    output: z.object({ cardId: z.string(), title: z.string() }).nullable(),
+  },
   card_diagram_error: {
     // The panel is the only mermaid validator we have: when a card's diagram
     // fails to render, ask the card's thread to fix it (once per source).
@@ -599,9 +605,35 @@ export default async function plugin(bb: BbPluginApi) {
     doc: (threadId: string) => `doc:${threadId}`,
     review: (threadId: string) => `review:${threadId}`,
   };
+  // Hidden helper threads (explainers, discussions, review workers) have no
+  // doc of their own; they resolve to the RFC thread that spawned them, so the
+  // RFC panel works when one of them is open. Metadata is immutable: cache it.
+  const ownerCache = new Map<string, string | null>();
+  const ownerOf = async (threadId: string): Promise<string | null> => {
+    const hit = ownerCache.get(threadId);
+    if (hit !== undefined) return hit;
+    let owner: string | null = null;
+    try {
+      const meta = await bb.sdk.threads.getPluginMetadata({ threadId });
+      for (const k of ["explainFor", "noteFor", "discussFor", "reviewFor"] as const) {
+        if (typeof meta[k] === "string") {
+          owner = meta[k] as string;
+          break;
+        }
+      }
+    } catch {
+      owner = null;
+    }
+    ownerCache.set(threadId, owner);
+    return owner;
+  };
   const readDoc = async (threadId: string): Promise<DocRef | null> => {
     const parsed = docRefSchema.safeParse(await bb.storage.kv.get<unknown>(key.doc(threadId)));
-    return parsed.success ? parsed.data : null;
+    if (parsed.success) return parsed.data;
+    const owner = await ownerOf(threadId);
+    if (owner === null || owner === threadId) return null;
+    const ownerDoc = docRefSchema.safeParse(await bb.storage.kv.get<unknown>(key.doc(owner)));
+    return ownerDoc.success ? ownerDoc.data : null;
   };
   const writeDoc = async (threadId: string, doc: DocRef) => {
     await bb.storage.kv.set(key.doc(threadId), doc);
@@ -1523,6 +1555,34 @@ export default async function plugin(bb: BbPluginApi) {
         return { ok: true as const };
       }),
     card_followup: ({ threadId, cardId, question }) => askCard(threadId, cardId, question),
+    card_locate: async ({ threadId, text }) => {
+      const sidecar = await readSidecar(threadId);
+      if (sidecar === null || sidecar.cards.length === 0) return null;
+      try {
+        const meta = await bb.sdk.threads.getPluginMetadata({ threadId });
+        if (typeof meta.cardId === "string") {
+          const own = sidecar.cards.find((c) => c.id === meta.cardId);
+          if (own !== undefined) return { cardId: own.id, title: own.title };
+        }
+      } catch {
+        // not a helper thread
+      }
+      const words = (t: string) => new Set(t.toLowerCase().match(/[a-z0-9_]{4,}/g) ?? []);
+      const hay = text.toLowerCase();
+      const msg = words(text);
+      let best: { card: Card; score: number } | null = null;
+      for (const card of sidecar.cards) {
+        let score = 0;
+        const title = card.title.toLowerCase();
+        if (title.length >= 12 && hay.includes(title.slice(0, Math.min(60, title.length)))) score += 50;
+        const own = new Set<string>();
+        for (const w of words(`${card.title} ${card.prompt} ${card.exchanges.map((x) => x.question).join(" ")}`)) own.add(w);
+        for (const w of own) if (msg.has(w)) score += 1;
+        if (best === null || score > best.score) best = { card, score };
+      }
+      if (best === null || best.score < 4) return null;
+      return { cardId: best.card.id, title: best.card.title };
+    },
     card_diagram_error: async ({ threadId, cardId, exchangeId, lang, source, error }) => {
       const sidecar = await readSidecar(threadId);
       const card = sidecar?.cards.find((c) => c.id === cardId);
