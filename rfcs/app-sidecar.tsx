@@ -467,85 +467,90 @@ interface SelectionState {
   y: number;
 }
 
-/** Floating actions for text selected inside the preview container. */
+// CSS Custom Highlight API: keeps the selected passage marked even after focus
+// moves into the Ask box (which drops the native selection highlight).
+const HIGHLIGHT_NAME = "rfcs-selection";
+function pinHighlight(range: Range | null) {
+  if (typeof Highlight === "undefined" || !("highlights" in CSS)) return;
+  if (range === null) CSS.highlights.delete(HIGHLIGHT_NAME);
+  else CSS.highlights.set(HIGHLIGHT_NAME, new Highlight(range));
+}
+
+/**
+ * Right-click on selected text inside the document opens the Ask menu; the
+ * selection stays highlighted while you type. Left-click anywhere closes it.
+ */
 export function useSelectionActions(containerRef: RefObject<HTMLElement | null>, content: string) {
   const [sel, setSel] = useState<SelectionState | null>(null);
+  const clear = useCallback(() => {
+    pinHighlight(null);
+    setSel(null);
+  }, []);
   useEffect(() => {
     const el = containerRef.current;
     if (el === null) return;
-    const onUp = (event: MouseEvent) => {
-      // Clicks inside the toolbar (Ask/Note open a form) must not re-evaluate
-      // the selection, which the click itself has just collapsed.
-      if ((event.target as HTMLElement).closest("[data-selection-toolbar]") !== null) return;
-      window.setTimeout(() => {
-        const s = window.getSelection();
-        if (s === null || s.isCollapsed || s.rangeCount === 0) {
-          setSel(null);
-          return;
+    const onContextMenu = (event: MouseEvent) => {
+      const s = window.getSelection();
+      if (s === null || s.isCollapsed || s.rangeCount === 0) return; // native menu
+      const range = s.getRangeAt(0);
+      if (!el.contains(range.commonAncestorContainer)) return;
+      const text = s.toString().replace(/\s+/g, " ").trim();
+      if (text.length < 3) return;
+      event.preventDefault();
+      pinHighlight(range.cloneRange());
+      let node: Node | null = range.startContainer;
+      let sectionEl: HTMLElement | null = null;
+      while (node !== null && node !== el) {
+        if (node instanceof HTMLElement && node.dataset.section !== undefined) {
+          sectionEl = node;
+          break;
         }
-        const range = s.getRangeAt(0);
-        if (!el.contains(range.commonAncestorContainer)) {
-          setSel(null);
-          return;
-        }
-        const text = s.toString().replace(/\s+/g, " ").trim();
-        if (text.length < 3) {
-          setSel(null);
-          return;
-        }
-        let node: Node | null = range.startContainer;
-        let sectionEl: HTMLElement | null = null;
-        while (node !== null && node !== el) {
-          if (node instanceof HTMLElement && node.dataset.section !== undefined) {
-            sectionEl = node;
-            break;
-          }
-          node = node.parentNode;
-        }
-        if (sectionEl === null) {
-          // Inside the document editor: walk back from the selection's top-level block to the nearest heading.
-          let top: Node | null = range.startContainer;
-          while (top !== null && top.parentElement !== null && !top.parentElement.classList.contains("ProseMirror")) top = top.parentElement;
-          for (let cur = top instanceof HTMLElement ? top : null; cur !== null; cur = cur.previousElementSibling as HTMLElement | null) {
-            if (cur.dataset.section !== undefined) {
-              sectionEl = cur;
-              break;
-            }
-          }
-        }
-        const section = sectionEl?.dataset.section ?? null;
-        const sectionLine = Number(sectionEl?.dataset.sectionLine ?? "1");
-        const probe = text.slice(0, 40).toLowerCase();
-        const lines = content.split("\n");
-        let line: number | null = null;
-        for (let i = Math.max(0, sectionLine - 1); i < lines.length; i++) {
-          if (lines[i]!.toLowerCase().includes(probe)) {
-            line = i + 1;
+        node = node.parentNode;
+      }
+      if (sectionEl === null) {
+        // Inside the document editor: walk back from the selection's top-level block to the nearest heading.
+        let top: Node | null = range.startContainer;
+        while (top !== null && top.parentElement !== null && !top.parentElement.classList.contains("ProseMirror")) top = top.parentElement;
+        for (let cur = top instanceof HTMLElement ? top : null; cur !== null; cur = cur.previousElementSibling as HTMLElement | null) {
+          if (cur.dataset.section !== undefined) {
+            sectionEl = cur;
             break;
           }
         }
-        const rect = range.getBoundingClientRect();
-        const host = el.getBoundingClientRect();
-        setSel({
-          text: text.slice(0, 600),
-          anchor: { section: section === "" ? null : section, line, quote: text.slice(0, 600) },
-          x: Math.max(8, rect.left - host.left + el.scrollLeft),
-          y: rect.bottom - host.top + el.scrollTop + 6,
-        });
-      }, 0);
+      }
+      const section = sectionEl?.dataset.section ?? null;
+      const sectionLine = Number(sectionEl?.dataset.sectionLine ?? "1");
+      const probe = text.slice(0, 40).toLowerCase();
+      const lines = content.split("\n");
+      let line: number | null = null;
+      for (let i = Math.max(0, sectionLine - 1); i < lines.length; i++) {
+        if (lines[i]!.toLowerCase().includes(probe)) {
+          line = i + 1;
+          break;
+        }
+      }
+      const host = el.getBoundingClientRect();
+      setSel({
+        text: text.slice(0, 600),
+        anchor: { section: section === "" ? null : section, line, quote: text.slice(0, 600) },
+        x: Math.max(8, event.clientX - host.left + el.scrollLeft),
+        y: event.clientY - host.top + el.scrollTop + 4,
+      });
     };
     const onDown = (event: MouseEvent) => {
+      if (event.button !== 0) return;
       if ((event.target as HTMLElement).closest("[data-selection-toolbar]") !== null) return;
-      setSel(null);
+      clear();
     };
-    el.addEventListener("mouseup", onUp);
+    el.addEventListener("contextmenu", onContextMenu);
     el.addEventListener("mousedown", onDown);
     return () => {
-      el.removeEventListener("mouseup", onUp);
+      el.removeEventListener("contextmenu", onContextMenu);
       el.removeEventListener("mousedown", onDown);
     };
-  }, [containerRef, content]);
-  return { selection: sel, clear: () => setSel(null) };
+  }, [containerRef, content, clear]);
+  useEffect(() => () => pinHighlight(null), []);
+  return { selection: sel, clear };
 }
 
 export function SelectionToolbar({
@@ -556,32 +561,54 @@ export function SelectionToolbar({
   onNote?: (anchor: Anchor, title: string) => void;
   onExplain: (anchor: Anchor, mode: CardMode, prompt: string) => void;
 }) {
+  const [asking, setAsking] = useState(false);
   const [q, setQ] = useState("");
   return (
     <div
       data-selection-toolbar=""
-      className="absolute z-20 flex w-[26rem] max-w-[90%] items-center gap-1 rounded-md border border-border bg-popover p-1 text-xs shadow-md"
+      className={cn("absolute z-20 rounded-md border border-border bg-popover p-1 text-xs shadow-md", asking ? "w-[26rem] max-w-[90%]" : "min-w-[12rem]")}
       style={{ left: selection.x, top: selection.y }}
       onMouseDown={(e) => {
         e.stopPropagation();
         // Buttons must not steal focus (that collapses the selection); inputs may.
         if ((e.target as HTMLElement).closest("button") !== null) e.preventDefault();
       }}
+      onContextMenu={(e) => e.preventDefault()}
     >
-      <form
-        className="flex w-full items-center gap-1"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (q.trim() === "") return;
-          onExplain(selection.anchor, "question", `${q.trim()}\n\n(About: "${selection.text}")`);
-        }}
-      >
-        <Icon name="MessageCircleQuestion" className="ml-1 size-3.5 shrink-0 text-muted-foreground" />
-        <Input value={q} onChange={(e) => setQ(e.target.value)} autoFocus placeholder="Ask about this selection… (explain it, where is the code, why, …)" className="h-7 flex-1 text-xs" aria-label="Question" />
-        <Button size="sm" type="submit" className="h-7 text-xs" disabled={q.trim() === ""}>
-          Ask
-        </Button>
-      </form>
+      {asking ? (
+        <form
+          className="flex w-full items-center gap-1"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (q.trim() === "") return;
+            onExplain(selection.anchor, "question", `${q.trim()}\n\n(About: "${selection.text}")`);
+          }}
+        >
+          <Icon name="MessageCircleQuestion" className="ml-1 size-3.5 shrink-0 text-muted-foreground" />
+          <Input value={q} onChange={(e) => setQ(e.target.value)} autoFocus placeholder="Ask about this selection… (explain it, where is the code, why, …)" className="h-7 flex-1 text-xs" aria-label="Question" />
+          <Button size="sm" type="submit" className="h-7 text-xs" disabled={q.trim() === ""}>
+            Ask
+          </Button>
+        </form>
+      ) : (
+        <div className="flex flex-col">
+          <button type="button" className="flex items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-muted" onClick={() => setAsking(true)}>
+            <Icon name="MessageCircleQuestion" className="size-3.5 text-muted-foreground" />
+            Ask about this selection
+          </button>
+          <button
+            type="button"
+            className="flex items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-muted"
+            onClick={() => {
+              void navigator.clipboard.writeText(selection.text);
+              toast.message("Copied.");
+            }}
+          >
+            <Icon name="Code" className="size-3.5 text-muted-foreground" />
+            Copy text
+          </button>
+        </div>
+      )}
     </div>
   );
 }

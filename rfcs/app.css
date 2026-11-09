@@ -140,3 +140,6 @@ html.light .rfc-rich .hljs-tag { color: #116329; }
 /* Diagrams are measured at the body font size; keep them there regardless of
    the prose size around them, or labels drift off-centre in their boxes. */
 .rfc-diagram svg { font-size: 16px; line-height: normal; }
+
+/* The passage a card is being asked about stays marked while the Ask box has focus. */
+::highlight(rfcs-selection) { background-color: color-mix(in oklab, var(--primary) 32%, transparent); }
