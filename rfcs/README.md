@@ -98,7 +98,9 @@ beside the RFC (so git carries it):
   answer lands beneath it; each follow-up or the whole card can be deleted.
   Cards open by default and remember being collapsed; the toolbar at the top
   of the document expands or collapses all of them. The hidden thread itself
-  is never shown.
+  is never shown, but every chat message carries a **Jump to card in RFC**
+  action that opens the panel on the card the message is about (inside an
+  explainer thread, its own card).
 - **Glossary**: terms and IDs (S12, A2, OIDC) with one-line definitions.
   Each section lists the terms it mentions; hover or click for the
   definition, or expand them all. "Build from document" asks the agent to
