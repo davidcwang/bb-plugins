@@ -92,6 +92,19 @@ const RfcCodeBlock = CodeBlockLowlight.extend({
   },
 }).configure({ lowlight, defaultLanguage: null });
 
+// Tab / Shift-Tab nest and un-nest list items (Tiptap only binds Tab inside code blocks).
+const ListTabs = Extension.create({
+  name: "rfcsListTabs",
+  addKeyboardShortcuts() {
+    const inList = () => this.editor.isActive("listItem") || this.editor.isActive("taskItem");
+    const item = () => (this.editor.isActive("taskItem") ? "taskItem" : "listItem");
+    return {
+      Tab: () => (inList() ? this.editor.commands.sinkListItem(item()) || true : false),
+      "Shift-Tab": () => (inList() ? this.editor.commands.liftListItem(item()) || true : false),
+    };
+  },
+});
+
 // ---- section chrome as widget decorations ----------------------------------
 
 interface SectionData {
@@ -256,6 +269,7 @@ export function DocEditor({
       RfcCodeBlock,
       TableKit.configure({ table: { resizable: false } }),
       Markdown.configure({ indentation: { style: "space", size: 2 } }),
+      ListTabs,
       chromeExtension(registry, bump, (title) => (sectionDataRef.current.get(plainTitle(title))?.cards.length ?? 0) > 0),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
