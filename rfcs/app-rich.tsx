@@ -7,13 +7,13 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { EditorContent, NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer, useEditor, type NodeViewProps } from "@tiptap/react";
-import { Extension } from "@tiptap/core";
+import { Extension, type Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import { common, createLowlight } from "lowlight";
 import { Markdown } from "@tiptap/markdown";
 import { TableKit } from "@tiptap/extension-table";
-import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { Plugin, PluginKey, TextSelection } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { Node as PmNode } from "@tiptap/pm/model";
 import { toast } from "sonner";
@@ -93,14 +93,57 @@ const RfcCodeBlock = CodeBlockLowlight.extend({
 }).configure({ lowlight, defaultLanguage: null });
 
 // Tab / Shift-Tab nest and un-nest list items (Tiptap only binds Tab inside code blocks).
+const ITEM_TYPES = new Set(["listItem", "taskItem"]);
+const LIST_TYPES = new Set(["bulletList", "orderedList", "taskList"]);
+/**
+ * sinkListItem needs a previous sibling to nest under, so the first item of a
+ * list cannot be indented. When that list directly follows another list (the
+ * common case after a markdown round trip splits them), move the item into
+ * the previous list's last item as a nested list instead.
+ */
+function mergeIntoPreviousList(editor: Editor): boolean {
+  const { state, view } = editor;
+  const { $from } = state.selection;
+  let d = $from.depth;
+  while (d > 0 && !ITEM_TYPES.has($from.node(d).type.name)) d--;
+  if (d < 2) return false;
+  const item = $from.node(d);
+  const itemPos = $from.before(d);
+  const list = $from.node(d - 1);
+  const listPos = $from.before(d - 1);
+  if ($from.index(d - 1) !== 0) return false;
+  const parent = $from.node(d - 2);
+  const listIndex = $from.index(d - 2);
+  if (listIndex === 0) return false;
+  const prev = parent.child(listIndex - 1);
+  if (!LIST_TYPES.has(prev.type.name) || prev.lastChild === null) return false;
+  const prevPos = listPos - prev.nodeSize;
+  const insertPos = prevPos + prev.nodeSize - 2; // end of the previous list's last item
+  const tr = state.tr;
+  if (list.childCount === 1) tr.delete(listPos, listPos + list.nodeSize);
+  else tr.delete(itemPos, itemPos + item.nodeSize);
+  tr.insert(insertPos, list.type.create(list.attrs, item));
+  tr.setSelection(TextSelection.near(tr.doc.resolve(insertPos + 3)));
+  view.dispatch(tr.scrollIntoView());
+  return true;
+}
 const ListTabs = Extension.create({
   name: "rfcsListTabs",
   addKeyboardShortcuts() {
     const inList = () => this.editor.isActive("listItem") || this.editor.isActive("taskItem");
     const item = () => (this.editor.isActive("taskItem") ? "taskItem" : "listItem");
     return {
-      Tab: () => (inList() ? this.editor.commands.sinkListItem(item()) || true : false),
-      "Shift-Tab": () => (inList() ? this.editor.commands.liftListItem(item()) || true : false),
+      Tab: () => {
+        if (!inList()) return false;
+        if (this.editor.commands.sinkListItem(item())) return true;
+        mergeIntoPreviousList(this.editor);
+        return true; // never let Tab leave the editor while in a list
+      },
+      "Shift-Tab": () => {
+        if (!inList()) return false;
+        this.editor.commands.liftListItem(item());
+        return true;
+      },
     };
   },
 });
