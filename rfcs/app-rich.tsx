@@ -296,7 +296,7 @@ export function DocEditor({
         notes: sc === null ? [] : itemsForSection(sc.notes, section, next, headings),
         claims: sc === null ? [] : itemsForSection(sc.claims, section, next, headings),
         cards: sc === null ? [] : itemsForSection(sc.cards, section, next, headings),
-        comments: sc === null ? [] : itemsForSection(sc.comments, section, next, headings),
+        comments: sc === null ? [] : itemsForSection(sc.comments, section, next, headings).filter((c) => c.status !== "dismissed"),
       });
     });
     return map;

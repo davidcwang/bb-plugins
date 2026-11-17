@@ -643,11 +643,24 @@ function when(iso: string | null): string {
 
 /** A reviewer's comment thread from the Google Doc, with status, a drafted reply, and follow-up. */
 export function CommentCard({ rpc, threadId, comment, forceOpen, onJump }: { rpc: Rpc; threadId: string; comment: Comment; forceOpen?: { open: boolean; seq: number }; onJump?: (anchor: Anchor) => void }) {
-  const [open, setOpenState] = useState(() => recall(`comment:${comment.id}`) !== "closed");
+  const settled = comment.status === "answered" || comment.status === "dismissed";
+  const [open, setOpenState] = useState(() => {
+    const stored = recall(`comment:${comment.id}`);
+    return stored === null ? !settled : stored !== "closed";
+  });
   const setOpen = (v: boolean) => {
     setOpenState(v);
     remember(`comment:${comment.id}`, v ? "open" : "closed");
   };
+  // Answering or dismissing a comment closes its card; reopening (status "new") opens it again.
+  const prevStatus = useRef(comment.status);
+  useEffect(() => {
+    if (prevStatus.current === comment.status) return;
+    prevStatus.current = comment.status;
+    if (settled) setOpen(false);
+    else if (comment.status === "new") setOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [comment.status]);
   const lastSeq = useRef(forceOpen?.seq ?? 0);
   useEffect(() => {
     if (forceOpen === undefined || forceOpen.seq === lastSeq.current) return;

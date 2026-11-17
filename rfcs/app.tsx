@@ -823,7 +823,7 @@ export function RfcPreview({ rpc, content, className, annotate }: { rpc: Rpc; co
         const notes = sidecar === null ? [] : itemsForSection(sidecar.notes, section, next, headings);
         const claims = sidecar === null ? [] : itemsForSection(sidecar.claims, section, next, headings);
         const cards = sidecar === null ? [] : itemsForSection(sidecar.cards, section, next, headings);
-        const comments = sidecar === null ? [] : itemsForSection(sidecar.comments, section, next, headings);
+        const comments = sidecar === null ? [] : itemsForSection(sidecar.comments, section, next, headings).filter((c) => c.status !== "dismissed");
         const key = `s:${section.startLine}:${hashString(section.text)}`;
         return (
           <section key={key} data-section={section.heading?.title ?? ""} data-section-line={section.startLine} className="rfc-section">
