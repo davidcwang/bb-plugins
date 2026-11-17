@@ -101,6 +101,20 @@ beside the RFC (so git carries it):
   is never shown, but every chat message carries a **Jump to card in RFC**
   action that opens the panel on the card the message is about (inside an
   explainer thread, its own card).
+- **Reviewer comments from Google Docs**: review copies live in Google Docs,
+  so comments come back through a .docx export (File → Download → Microsoft
+  Word; save it next to the RFC). Items → Comments imports it: each comment
+  thread (author, date, replies) is matched to the markdown by its quoted
+  text, then by paragraph similarity, then by heading, and shows as a teal
+  card under its section. Re-importing a newer download updates threads by
+  fingerprint and keeps your statuses and drafts. Each card has a status
+  (new / answered / needs change / dismissed), a reply box you can write in
+  or have a hidden thread draft (with an optional steer), Copy to paste back
+  into the Doc, and Go to section. **Analyze as review round** turns the
+  comment set into findings in the Review tab, one per comment that needs a
+  change, so you triage and send them to the agent like any round. CLI:
+  `bb rfcs comments <file.docx> --thread <id>`. Replies cannot be posted to
+  the Doc without API access; the Copy button is the bridge.
 - **Glossary**: terms and IDs (S12, A2, OIDC) with one-line definitions.
   Each section lists the terms it mentions; hover or click for the
   definition, or expand them all. "Build from document" asks the agent to

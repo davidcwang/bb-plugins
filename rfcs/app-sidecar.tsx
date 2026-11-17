@@ -25,6 +25,10 @@ import {
   type Sidecar,
   type Term,
   type Walkthrough,
+  COMMENT_STATUSES,
+  COMMENT_STATUS_LABEL,
+  type Comment,
+  type CommentStatus,
 } from "./sidecar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -418,6 +422,7 @@ export function SectionChrome({
   notes,
   claims,
   cards,
+  comments = [],
   glossary,
   termsExpanded,
   onAddNote,
@@ -428,6 +433,7 @@ export function SectionChrome({
   notes: Note[];
   claims: Claim[];
   cards: Card[];
+  comments?: Comment[];
   glossary: Term[];
   termsExpanded: boolean;
   onAddNote: (anchor: Anchor, title: string) => void;
@@ -451,6 +457,11 @@ export function SectionChrome({
         </button>
       ) : null}
       {cards.length > 0 ? <span className="rounded bg-muted px-1.5 py-0.5">{cards.length} card{cards.length === 1 ? "" : "s"}</span> : null}
+      {comments.filter((c) => c.status === "new").length > 0 ? (
+        <span className={cn("rounded px-1.5 py-0.5", commentTone.new)}>
+          {comments.filter((c) => c.status === "new").length} new comment{comments.filter((c) => c.status === "new").length === 1 ? "" : "s"}
+        </span>
+      ) : null}
       <div className="w-full">
         <TermChips terms={terms} expanded={termsExpanded} />
       </div>
@@ -615,6 +626,258 @@ export function SelectionToolbar({
   );
 }
 
+// ---- reviewer comments (imported from .docx) ----------------------------------
+
+export const commentTone: Record<CommentStatus, string> = {
+  new: "bg-teal-500/15 text-teal-700 dark:text-teal-300",
+  answered: "bg-green-500/15 text-green-700 dark:text-green-400",
+  "needs-change": "bg-amber-500/15 text-amber-700 dark:text-amber-400",
+  dismissed: "bg-muted text-muted-foreground",
+};
+
+function when(iso: string | null): string {
+  if (iso === null) return "";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/** A reviewer's comment thread from the Google Doc, with status, a drafted reply, and follow-up. */
+export function CommentCard({ rpc, threadId, comment, forceOpen, onJump }: { rpc: Rpc; threadId: string; comment: Comment; forceOpen?: { open: boolean; seq: number }; onJump?: (anchor: Anchor) => void }) {
+  const [open, setOpenState] = useState(() => recall(`comment:${comment.id}`) !== "closed");
+  const setOpen = (v: boolean) => {
+    setOpenState(v);
+    remember(`comment:${comment.id}`, v ? "open" : "closed");
+  };
+  const lastSeq = useRef(forceOpen?.seq ?? 0);
+  useEffect(() => {
+    if (forceOpen === undefined || forceOpen.seq === lastSeq.current) return;
+    lastSeq.current = forceOpen.seq;
+    setOpen(forceOpen.open);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forceOpen?.seq]);
+  const [draft, setDraft] = useState(comment.draft ?? "");
+  useEffect(() => setDraft(comment.draft ?? ""), [comment.draft]);
+  const [guiding, setGuiding] = useState(false);
+  const [guidance, setGuidance] = useState("");
+  const [busy, setBusy] = useState(false);
+  const fail = (cause: unknown) => toast.error(describe(cause));
+  const run = (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    fn().catch(fail).finally(() => setBusy(false));
+  };
+  const askDraft = () => {
+    run(() => rpc.call("comment_draft", { threadId, id: comment.id, guidance }));
+    setGuiding(false);
+    setGuidance("");
+  };
+  const dirty = draft !== (comment.draft ?? "");
+  const tone = commentTone[comment.status];
+  return (
+    <div data-comment-id={comment.id} className={cn("rfc-card my-2 overflow-hidden rounded-md border-2 border-teal-500/70 text-sm shadow-sm", comment.status === "dismissed" && "opacity-70")}>
+      <button type="button" className="flex w-full items-center gap-2 bg-teal-500/10 px-3 py-1.5 text-left" onClick={() => setOpen(!open)}>
+        <span className="flex shrink-0 items-center gap-1 rounded bg-teal-500/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-teal-700 dark:text-teal-300">
+          <Icon name="MessagesSquare" className="size-3" />
+          Comment
+        </span>
+        <span className="min-w-0 flex-1 truncate">
+          <span className="font-medium">{comment.author}</span>
+          <span className="text-muted-foreground"> · {comment.text.slice(0, 100)}</span>
+        </span>
+        <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[10px] uppercase", tone)}>{COMMENT_STATUS_LABEL[comment.status]}</span>
+        {comment.replies.length > 0 ? <span className="text-[10px] text-muted-foreground">{comment.replies.length} repl{comment.replies.length === 1 ? "y" : "ies"}</span> : null}
+        <Icon name={open ? "ChevronDown" : "ChevronRight"} className="size-3.5 shrink-0 text-muted-foreground" />
+      </button>
+      {open ? (
+        <div className="px-3 py-2">
+          {comment.quoted !== "" ? (
+            <blockquote className="mb-2 border-l-2 border-teal-500/60 pl-2 text-xs italic text-muted-foreground">“{comment.quoted.length > 240 ? `${comment.quoted.slice(0, 240)}…` : comment.quoted}”</blockquote>
+          ) : comment.onImage ? (
+            <p className="mb-2 text-[11px] text-muted-foreground">On an image{comment.heading === null ? "" : ` under “${comment.heading}”`}.</p>
+          ) : null}
+          {comment.matched === "section" || comment.matched === "none" ? (
+            <p className="mb-2 text-[11px] text-amber-700 dark:text-amber-400">Could not find this passage in the markdown{comment.matched === "section" ? "; placed by heading" : ""}. The Doc copy may differ here.</p>
+          ) : null}
+          <div className="flex items-start gap-2">
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] text-muted-foreground">
+                <span className="font-medium text-foreground">{comment.author}</span> {when(comment.date)}
+              </p>
+              <div className="whitespace-pre-wrap text-[13px]">{comment.text}</div>
+            </div>
+          </div>
+          {comment.replies.map((r, i) => (
+            <div key={i} className="mt-2 border-l-2 border-border pl-2">
+              <p className="text-[11px] text-muted-foreground">
+                <span className="font-medium text-foreground">{r.author}</span> {when(r.date)}
+              </p>
+              <div className="whitespace-pre-wrap text-[13px]">{r.text}</div>
+            </div>
+          ))}
+
+          <div className="mt-3 rounded-md border border-dashed border-border p-2">
+            <div className="mb-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+              <span className="font-medium text-foreground">Your reply</span>
+              {comment.draftStatus === "pending" ? (
+                <span className="flex items-center gap-1">
+                  <Icon name="LoaderCircle" className="size-3 animate-spin" /> drafting…
+                </span>
+              ) : null}
+              {comment.draftStatus === "failed" ? <span className="text-destructive">The draft thread finished without a reply.</span> : null}
+              <span className="ml-auto flex items-center gap-1">
+                {comment.draft !== null && comment.draft !== "" ? (
+                  <button
+                    type="button"
+                    className="rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(draft);
+                      toast.message("Reply copied; paste it into the Doc comment.");
+                    }}
+                  >
+                    Copy
+                  </button>
+                ) : null}
+                <button type="button" className={cn("rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground", guiding && "bg-muted text-foreground")} onClick={() => setGuiding((v) => !v)} disabled={busy || comment.draftStatus === "pending"}>
+                  {comment.draft === null ? "Draft with agent" : "Redraft with agent"}
+                </button>
+              </span>
+            </div>
+            {guiding ? (
+              <form
+                className="mb-1 flex items-center gap-1"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  askDraft();
+                }}
+              >
+                <Input value={guidance} onChange={(e) => setGuidance(e.target.value)} autoFocus placeholder="Optional steer: agree / push back / point to §X… (Enter to start)" className="h-7 flex-1 text-xs" aria-label="Guidance for the draft" />
+                <Button size="sm" type="submit" className="h-7 text-xs">
+                  Draft
+                </Button>
+              </form>
+            ) : null}
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={() => {
+                if (dirty) run(() => rpc.call("comment_update", { threadId, id: comment.id, draft: draft.trim() === "" ? null : draft }));
+              }}
+              placeholder="Write a reply here, or let the agent draft one. Saved when you click away; copy it into the Google Doc."
+              rows={Math.min(10, Math.max(2, draft.split("\n").length + 1))}
+              className="w-full resize-y rounded bg-transparent px-1 py-0.5 text-[13px] leading-5 outline-none placeholder:text-muted-foreground/70"
+            />
+          </div>
+
+          <div className="-mx-3 -mb-2 mt-2 flex flex-wrap items-center gap-1 border-t bg-teal-500/10 px-3 py-1.5 text-xs">
+            {COMMENT_STATUSES.filter((st) => st !== comment.status).map((st) => (
+              <button key={st} type="button" className={cn("rounded px-1.5 py-0.5", commentTone[st])} disabled={busy} onClick={() => run(() => rpc.call("comment_update", { threadId, id: comment.id, status: st }))}>
+                {st === "new" ? "Reopen" : COMMENT_STATUS_LABEL[st]}
+              </button>
+            ))}
+            {onJump !== undefined ? (
+              <button type="button" className="rounded px-1.5 py-0.5 text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => onJump(comment.anchor)}>
+                Go to section
+              </button>
+            ) : null}
+            <button type="button" className="ml-auto text-muted-foreground hover:text-destructive" disabled={busy} onClick={() => run(() => rpc.call("comment_remove", { threadId, id: comment.id }))}>
+              Remove
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CommentsTab({ rpc, threadId, sidecar, section, onJump }: { rpc: Rpc; threadId: string; sidecar: Sidecar | null; section: string | null; onJump: (anchor: Anchor) => void }) {
+  const [filter, setFilter] = useState<CommentStatus | "all">("all");
+  const [files, setFiles] = useState<Array<{ path: string; name: string; modifiedAtMs: number | null }>>([]);
+  const [path, setPath] = useState("");
+  const [busy, setBusy] = useState(false);
+  const refreshFiles = useCallback(() => {
+    rpc.call("comments_files", { threadId }).then(
+      (r) => {
+        setFiles(r.files);
+        setPath((p) => (p === "" && r.files[0] !== undefined ? r.files[0].path : p));
+      },
+      () => undefined,
+    );
+  }, [rpc, threadId]);
+  useEffect(refreshFiles, [refreshFiles]);
+  const all = sidecar?.comments ?? [];
+  const shown = all.filter((c) => (filter === "all" || c.status === filter) && (section === null || sectionMatches(c.anchor.section, section)));
+  const counts = Object.fromEntries(COMMENT_STATUSES.map((st) => [st, all.filter((c) => c.status === st).length])) as Record<CommentStatus, number>;
+  const act = (label: string, fn: () => Promise<unknown>) => {
+    setBusy(true);
+    fn()
+      .catch((cause: unknown) => toast.error(`${label} failed: ${describe(cause)}`))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-1 border-b border-border px-2 py-1.5 text-[11px]">
+        {(["all", ...COMMENT_STATUSES] as Array<CommentStatus | "all">).map((st) => (
+          <button key={st} type="button" onClick={() => setFilter(st)} className={cn("rounded-full px-2 py-0.5 uppercase", st === "all" ? "bg-muted" : commentTone[st], filter === st && "ring-1 ring-primary")}>
+            {st === "all" ? `all ${all.length}` : `${COMMENT_STATUS_LABEL[st]} ${counts[st]}`}
+          </button>
+        ))}
+        <Button
+          size="sm"
+          variant="outline"
+          className="ml-auto h-7 text-xs"
+          disabled={busy || all.length === 0}
+          onClick={() =>
+            act("Analyze", async () => {
+              await rpc.call("comments_analyze", { threadId });
+              toast.success("Review round started from the comments. Watch the Review tab.");
+            })
+          }
+        >
+          Analyze as review round
+        </Button>
+      </div>
+      <form
+        className="flex flex-wrap items-center gap-1 border-b border-border px-2 py-1.5 text-xs"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (path.trim() === "") return;
+          act("Import", async () => {
+            const r = await rpc.call("comments_import", { threadId, path: path.trim() });
+            toast.success(`Imported ${r.total} comment thread${r.total === 1 ? "" : "s"}: ${r.added} new, ${r.updated} updated${r.unmatched > 0 ? `, ${r.unmatched} not matched to the text` : ""}.`);
+          });
+        }}
+      >
+        <span className="text-muted-foreground">Import from .docx</span>
+        {files.length > 0 ? (
+          <select value={files.some((f) => f.path === path) ? path : ""} onChange={(e) => setPath(e.target.value)} className="h-7 max-w-[18rem] rounded border border-border bg-background px-1 text-xs">
+            <option value="">(type a path)</option>
+            {files.map((f) => (
+              <option key={f.path} value={f.path}>
+                {f.name}
+              </option>
+            ))}
+          </select>
+        ) : null}
+        <Input value={path} onChange={(e) => setPath(e.target.value)} placeholder="Path to a .docx (File → Download → Word in Google Docs), absolute or inside the RFC folder" className="h-7 min-w-[16rem] flex-1 text-xs" aria-label="Path to .docx" />
+        <Button size="sm" type="submit" className="h-7 text-xs" disabled={busy || path.trim() === ""}>
+          Import
+        </Button>
+        <button type="button" className="rounded px-1.5 py-0.5 text-muted-foreground hover:text-foreground" onClick={refreshFiles} title="Rescan the RFC folder for .docx files">
+          <Icon name="RefreshCw" className="size-3.5" />
+        </button>
+      </form>
+      <div className="min-h-0 flex-1 overflow-auto px-2 py-2">
+        {shown.length === 0 ? (
+          <p className="p-2 text-sm text-muted-foreground">
+            {all.length === 0 ? "No comments imported yet. In Google Docs use File → Download → Microsoft Word, save the .docx next to the RFC, and import it here. Re-import any time to pick up new comments; existing ones keep their status and drafts." : "No comments match this filter."}
+          </p>
+        ) : (
+          shown.map((c) => <CommentCard key={c.id} rpc={rpc} threadId={threadId} comment={c} onJump={onJump} />)
+        )}
+      </div>
+    </>
+  );
+}
+
 // ---- notes ---------------------------------------------------------------
 
 function NoteCard({ rpc, threadId, note, onJump }: { rpc: Rpc; threadId: string; note: Note; onJump: (anchor: Anchor) => void }) {
@@ -737,7 +1000,7 @@ function NoteCard({ rpc, threadId, note, onJump }: { rpc: Rpc; threadId: string;
 
 // ---- items view ----------------------------------------------------------
 
-export type ItemsTab = "notes" | "claims" | "glossary";
+export type ItemsTab = "notes" | "claims" | "glossary" | "comments";
 
 export function ItemsView({
   rpc,
@@ -789,6 +1052,7 @@ export function ItemsView({
             ["notes", `Notes ${sidecar?.notes.length ?? 0}`],
             ["claims", `Claims ${sidecar?.claims.length ?? 0}`],
             ["glossary", `Glossary ${sidecar?.glossary.length ?? 0}`],
+            ["comments", `Comments ${sidecar?.comments.length ?? 0}`],
           ] as Array<[ItemsTab, string]>
         ).map(([id, label]) => (
           <button key={id} type="button" onClick={() => setTab(id)} className={cn("rounded px-2 py-1", tab === id ? "bg-muted font-medium" : "text-muted-foreground hover:text-foreground")}>
@@ -933,6 +1197,8 @@ export function ItemsView({
           </div>
         </>
       ) : null}
+
+      {tab === "comments" ? <CommentsTab rpc={rpc} threadId={threadId} sidecar={sidecar} section={section} onJump={onJump} /> : null}
 
       {tab === "glossary" ? (
         <>

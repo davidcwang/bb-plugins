@@ -14,7 +14,7 @@ import { toast } from "sonner";
 import type { Candidate, DocRead, DocRef, Finding, LibraryItem, ReviewState, rpcContract } from "./server";
 import { CHANGED, PRIORITIES, markdownBlocks, parseFrontmatter, splitSections, type ChangedPayload, type DocSection, type Priority } from "./shared";
 import type { Anchor, CardMode } from "./sidecar";
-import { CardView, ItemsView, SectionChrome, SelectionToolbar, WalkthroughView, itemsForSection, useSelectionActions, useSidecar, type DiagramRenderer, type ItemsTab } from "./app-sidecar";
+import { CardView, CommentCard, ItemsView, SectionChrome, SelectionToolbar, WalkthroughView, itemsForSection, useSelectionActions, useSidecar, type DiagramRenderer, type ItemsTab } from "./app-sidecar";
 import type { Sidecar } from "./sidecar";
 import { recall, remember } from "./memory";
 import "./app.css";
@@ -823,15 +823,17 @@ export function RfcPreview({ rpc, content, className, annotate }: { rpc: Rpc; co
         const notes = sidecar === null ? [] : itemsForSection(sidecar.notes, section, next, headings);
         const claims = sidecar === null ? [] : itemsForSection(sidecar.claims, section, next, headings);
         const cards = sidecar === null ? [] : itemsForSection(sidecar.cards, section, next, headings);
+        const comments = sidecar === null ? [] : itemsForSection(sidecar.comments, section, next, headings);
         const key = `s:${section.startLine}:${hashString(section.text)}`;
         return (
           <section key={key} data-section={section.heading?.title ?? ""} data-section-line={section.startLine} className="rfc-section">
-            {annotate !== undefined && (section.heading !== null || notes.length + claims.length + cards.length > 0) ? (
+            {annotate !== undefined && (section.heading !== null || notes.length + claims.length + cards.length + comments.length > 0) ? (
               <SectionChrome
                 section={section}
                 notes={notes}
                 claims={claims}
                 cards={cards}
+                comments={comments}
                 glossary={sidecar?.glossary ?? []}
                 termsExpanded={annotate.termsExpanded}
                 onAddNote={annotate.onAddNote}
@@ -850,8 +852,11 @@ export function RfcPreview({ rpc, content, className, annotate }: { rpc: Rpc; co
               if (segment.lang === "mermaid") return <MermaidBlock key={segKey} source={segment.text} startLine={segment.startLine} dark={dark} />;
               return <D2Block key={segKey} rpc={rpc} source={segment.text} startLine={segment.startLine} dark={dark} />;
             })}
-            {annotate !== undefined && cards.length > 0 ? (
+            {annotate !== undefined && cards.length + comments.length > 0 ? (
               <div className="rfc-cards mb-2">
+                {comments.map((c) => (
+                  <CommentCard key={c.id} rpc={rpc} threadId={annotate.threadId} comment={c} forceOpen={annotate.cardsOpen} />
+                ))}
                 {cards.map((card) => (
                   <CardView key={card.id} rpc={rpc} threadId={annotate.threadId} card={card} environmentId={annotate.environmentId} Diagram={DiagramForCards} defaultOpen={card.status === "pending"} forceOpen={annotate.cardsOpen} />
                 ))}
@@ -1971,7 +1976,7 @@ function RfcPanel({
   };
   const [cardsOpen, setCardsOpen] = useState<{ open: boolean; seq: number }>({ open: true, seq: 0 });
   const toggleAllCards = (open: boolean) => setCardsOpen((c) => ({ open, seq: c.seq + 1 }));
-  const cardCount = sidecar?.cards.length ?? 0;
+  const cardCount = (sidecar?.cards.length ?? 0) + (sidecar?.comments.length ?? 0);
   const annotate: PreviewAnnotations = {
     threadId,
     sidecar,

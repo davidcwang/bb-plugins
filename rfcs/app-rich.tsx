@@ -19,8 +19,8 @@ import type { Node as PmNode } from "@tiptap/pm/model";
 import { toast } from "sonner";
 import type { DocRead, rpcContract } from "./server";
 import { markdownBlocks, parseFrontmatter, splitSections, type DocSection } from "./shared";
-import { plainTitle, type Anchor, type Card, type CardMode, type Claim, type Note, type Sidecar } from "./sidecar";
-import { CardView, SectionChrome, SelectionToolbar, itemsForSection, useSelectionActions, type DiagramRenderer, type ItemsTab } from "./app-sidecar";
+import { plainTitle, type Anchor, type Card, type CardMode, type Claim, type Comment, type Note, type Sidecar } from "./sidecar";
+import { CardView, CommentCard, SectionChrome, SelectionToolbar, itemsForSection, useSelectionActions, type DiagramRenderer, type ItemsTab } from "./app-sidecar";
 import { useRpc } from "@get-bb/plugin-sdk/app";
 import { cn } from "@/lib/utils";
 
@@ -155,6 +155,7 @@ interface SectionData {
   notes: Note[];
   claims: Claim[];
   cards: Card[];
+  comments: Comment[];
 }
 interface Widget {
   key: string;
@@ -295,6 +296,7 @@ export function DocEditor({
         notes: sc === null ? [] : itemsForSection(sc.notes, section, next, headings),
         claims: sc === null ? [] : itemsForSection(sc.claims, section, next, headings),
         cards: sc === null ? [] : itemsForSection(sc.cards, section, next, headings),
+        comments: sc === null ? [] : itemsForSection(sc.comments, section, next, headings),
       });
     });
     return map;
@@ -313,7 +315,10 @@ export function DocEditor({
       TableKit.configure({ table: { resizable: false } }),
       Markdown.configure({ indentation: { style: "space", size: 2 } }),
       ListTabs,
-      chromeExtension(registry, bump, (title) => (sectionDataRef.current.get(plainTitle(title))?.cards.length ?? 0) > 0),
+      chromeExtension(registry, bump, (title) => {
+        const d = sectionDataRef.current.get(plainTitle(title));
+        return d !== undefined && d.cards.length + d.comments.length > 0;
+      }),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -501,7 +506,7 @@ export function DocEditor({
     const hit = sectionData.get(plainTitle(w.title));
     if (hit !== undefined) return hit;
     const line = blockLines[w.blockIndex] ?? split.offset + 1;
-    return { section: { heading: { level: w.level, title: w.title, line }, startLine: line, text: "", segments: [] }, notes: [], claims: [], cards: [] };
+    return { section: { heading: { level: w.level, title: w.title, line }, startLine: line, text: "", segments: [] }, notes: [], claims: [], cards: [], comments: [] };
   };
 
   return (
@@ -532,6 +537,9 @@ export function DocEditor({
           if (w.kind === "cards") {
             return createPortal(
               <>
+                {data.comments.map((c) => (
+                  <CommentCard key={c.id} rpc={rpc} threadId={annotate.threadId} comment={c} forceOpen={annotate.cardsOpen} />
+                ))}
                 {data.cards.map((card) => (
                   <CardView key={card.id} rpc={rpc} threadId={annotate.threadId} card={card} environmentId={annotate.environmentId} Diagram={Diagram} defaultOpen={card.status === "pending"} forceOpen={annotate.cardsOpen} />
                 ))}
@@ -547,6 +555,7 @@ export function DocEditor({
                 notes={data.notes}
                 claims={data.claims}
                 cards={data.cards}
+                comments={data.comments}
                 glossary={annotate.sidecar?.glossary ?? []}
                 termsExpanded={annotate.termsExpanded}
                 onAddNote={annotate.onAddNote}

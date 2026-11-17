@@ -144,6 +144,48 @@ export const walkthroughSchema = z.object({
 });
 export type Walkthrough = z.infer<typeof walkthroughSchema>;
 
+export const COMMENT_STATUSES = ["new", "answered", "needs-change", "dismissed"] as const;
+export type CommentStatus = (typeof COMMENT_STATUSES)[number];
+export const COMMENT_STATUS_LABEL: Record<CommentStatus, string> = { new: "New", answered: "Answered", "needs-change": "Needs change", dismissed: "Dismissed" };
+
+export const commentReplySchema = z.object({
+  author: z.string().max(200),
+  date: z.string().nullable().default(null),
+  text: z.string().max(20_000),
+});
+
+/** A reviewer comment imported from a .docx export of the Google Doc review copy. */
+export const commentSchema = z.object({
+  id: z.string(),
+  /** sha256(author|date|text): stable across re-exports, which renumber comment ids. */
+  fingerprint: z.string(),
+  source: z.literal("docx"),
+  author: z.string().max(200),
+  date: z.string().nullable().default(null),
+  text: z.string().max(20_000),
+  replies: z.array(commentReplySchema).default([]),
+  resolved: z.boolean().default(false),
+  anchor: anchorSchema,
+  /** The text the comment was made on, as exported. */
+  quoted: z.string().max(2000).default(""),
+  /** Paragraph around the anchor in the Doc, for fuzzy matching and display. */
+  context: z.string().max(4000).default(""),
+  /** Heading above the anchor in the Doc. */
+  heading: z.string().max(300).nullable().default(null),
+  onImage: z.boolean().default(false),
+  /** How the anchor was found in the markdown. */
+  matched: z.enum(["exact", "fuzzy", "section", "none"]).default("none"),
+  status: z.enum(COMMENT_STATUSES).default("new"),
+  /** Reply drafted in BB (by you or the agent), to paste back into the Doc. */
+  draft: z.string().max(20_000).nullable().default(null),
+  draftStatus: z.enum(["idle", "pending", "ready", "failed"]).default("idle"),
+  threadId: z.string().nullable().default(null),
+  importedFrom: z.string().max(500).nullable().default(null),
+  importedAt: z.string(),
+  updatedAt: z.string(),
+});
+export type Comment = z.infer<typeof commentSchema>;
+
 export const sidecarSchema = z.object({
   version: z.literal(1),
   notes: z.array(noteSchema).default([]),
@@ -151,10 +193,11 @@ export const sidecarSchema = z.object({
   glossary: z.array(termSchema).default([]),
   claims: z.array(claimSchema).default([]),
   walkthroughs: z.array(walkthroughSchema).default([]),
+  comments: z.array(commentSchema).default([]),
 });
 export type Sidecar = z.infer<typeof sidecarSchema>;
 
-export const emptySidecar = (): Sidecar => ({ version: 1, notes: [], cards: [], glossary: [], claims: [], walkthroughs: [] });
+export const emptySidecar = (): Sidecar => ({ version: 1, notes: [], cards: [], glossary: [], claims: [], walkthroughs: [], comments: [] });
 
 /**
  * A heading as the reader sees it: inline markdown (`code`, *emphasis*,

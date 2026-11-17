@@ -26,6 +26,7 @@
     "@tiptap/pm": "^3.32.2",
     "@tiptap/react": "^3.32.2",
     "@tiptap/starter-kit": "^3.32.2",
+    "fflate": "^0.8.3",
     "lowlight": "^3.3.0",
     "mermaid": "^12.2.0",
     "zod": "^4.6.5"

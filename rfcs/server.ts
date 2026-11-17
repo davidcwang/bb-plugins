@@ -21,8 +21,9 @@ import {
   type BbPluginApi,
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { CHANGED, PRIORITIES, SEVERITIES, outline, parseFrontmatter, type Priority, type Severity } from "./shared";
+import { CHANGED, PRIORITIES, SEVERITIES, markdownBlocks, outline, parseFrontmatter, type Priority, type Severity } from "./shared";
 import { darkenFills } from "./d2colors";
+import { parseDocxComments } from "./docx";
 import {
   CARD_MODES,
   CARD_MODE_LABEL,
@@ -40,7 +41,11 @@ import {
   termSchema,
   walkthroughSchema,
   walkthroughStepSchema,
+  COMMENT_STATUSES,
+  commentSchema,
+  sectionMatches,
   type Card,
+  type Comment,
   type Exchange,
   type CardMode,
   type Claim,
@@ -242,6 +247,38 @@ export const rpcContract = defineRpcContract({
     input: z.object({ threadId: z.string(), id: z.string() }),
     output: z.object({ ok: z.literal(true) }),
   },
+  comments_files: {
+    // .docx files in the RFC directory, for the import picker.
+    input: z.object({ threadId: z.string() }),
+    output: z.object({ files: z.array(z.object({ path: z.string(), name: z.string(), modifiedAtMs: z.number().nullable() })) }),
+  },
+  comments_import: {
+    input: z.object({ threadId: z.string(), path: z.string().min(1).max(1000) }),
+    output: z.object({ added: z.number(), updated: z.number(), unmatched: z.number(), total: z.number() }),
+  },
+  comment_update: {
+    input: z.object({
+      threadId: z.string(),
+      id: z.string(),
+      status: z.enum(COMMENT_STATUSES).optional(),
+      draft: z.string().max(20_000).nullable().optional(),
+    }),
+    output: commentSchema,
+  },
+  comment_remove: {
+    input: z.object({ threadId: z.string(), id: z.string() }),
+    output: z.object({ ok: z.literal(true) }),
+  },
+  comment_draft: {
+    // Ask a hidden thread to draft a reply to the comment.
+    input: z.object({ threadId: z.string(), id: z.string(), guidance: z.string().max(2000).default("") }),
+    output: commentSchema,
+  },
+  comments_analyze: {
+    // Run the imported comments through a review round: findings per comment that needs a doc change.
+    input: z.object({ threadId: z.string() }),
+    output: z.object({ started: z.boolean(), reviewThreadId: z.string().nullable() }),
+  },
   card_locate: {
     // Which card a chat message is about: the thread's own card when it is an
     // explainer thread, otherwise the card whose title/question best matches.
@@ -414,6 +451,7 @@ const MERMAID_RULES =
   "Mermaid rules (the panel renders mermaid 12 and cannot pre-check it): flowchart edge text is `A -- text --> B`, `A -->|text| B`, or dotted `A -. text .-> B` (never `-- text -.->`); quote any label containing punctuation and avoid `+`, `(`, `)`, `;` inside edge text; erDiagram attributes are `type name PK \"comment\"` with keys written `PK, FK` or `UK` (never `PK_FK`), types without spaces or parentheses, comments as a quoted string; sequenceDiagram participants need `participant X as Label` for labels with spaces; no HTML except `<br/>` in flowchart labels.";
 
 const isAbsolute = (p: string) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
+const dirname = (p: string) => p.replace(/[\\/][^\\/]*$/, "") || p;
 function joinPath(base: string, rel: string): string {
   const sep = base.includes("\\") && !base.includes("/") ? "\\" : "/";
   return `${base.replace(/[\\/]+$/, "")}${sep}${rel.replace(/^[\\/]+/, "")}`;
@@ -615,7 +653,7 @@ export default async function plugin(bb: BbPluginApi) {
     let owner: string | null = null;
     try {
       const meta = await bb.sdk.threads.getPluginMetadata({ threadId });
-      for (const k of ["explainFor", "noteFor", "discussFor", "reviewFor"] as const) {
+      for (const k of ["explainFor", "noteFor", "discussFor", "reviewFor", "commentFor"] as const) {
         if (typeof meta[k] === "string") {
           owner = meta[k] as string;
           break;
@@ -759,6 +797,16 @@ export default async function plugin(bb: BbPluginApi) {
       const content =
         file.contentEncoding === "base64" ? Buffer.from(file.content, "base64").toString("utf8") : file.content;
       return { path, content, sha256: file.sha256, modifiedAtMs: file.modifiedAtMs ?? null };
+    } catch (cause) {
+      if (/ENOENT|not found|no such file|does not exist|\b404\b/i.test(describe(cause))) return null;
+      throw cause;
+    }
+  }
+
+  async function readBinaryAt(path: string, hostId: string | null): Promise<Uint8Array | null> {
+    try {
+      const file = await bb.sdk.files.read({ path, ...fileArgs(hostId) });
+      return file.contentEncoding === "base64" ? new Uint8Array(Buffer.from(file.content, "base64")) : new Uint8Array(Buffer.from(file.content, "utf8"));
     } catch (cause) {
       if (/ENOENT|not found|no such file|does not exist|\b404\b/i.test(describe(cause))) return null;
       throw cause;
@@ -1403,6 +1451,187 @@ export default async function plugin(bb: BbPluginApi) {
     });
   }
 
+  // ---- reviewer comments (from a .docx export of the Google Doc review copy) ----
+  const normText = (t: string) =>
+    t
+      .toLowerCase()
+      .replace(/[`*_~>#|\[\]()"'“”‘’]/g, "")
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const wordSet = (t: string) => new Set(normText(t).split(" ").filter((w) => w.length >= 3));
+  const jaccard = (a: Set<string>, b: Set<string>) => {
+    if (a.size === 0 || b.size === 0) return 0;
+    let inter = 0;
+    for (const w of a) if (b.has(w)) inter++;
+    return inter / (a.size + b.size - inter);
+  };
+  /** Find where a Doc comment belongs in the markdown: exact quote, fuzzy paragraph, or just the heading. */
+  function locateComment(content: string, c: { quoted: string; context: string; heading: string | null }): { anchor: Comment["anchor"]; matched: Comment["matched"] } {
+    const lines = content.split("\n");
+    const heads = outline(content);
+    const sectionFor = (line: number) => {
+      let best: { title: string; line: number } | null = null;
+      for (const h of heads) if (h.line <= line && (best === null || h.line > best.line)) best = { title: h.title, line: h.line };
+      return best?.title ?? null;
+    };
+    const tryExact = (needle: string): number | null => {
+      const n = normText(needle);
+      if (n.length < 12) return null;
+      const probe = n.slice(0, 80);
+      for (let i = 0; i < lines.length; i++) if (normText(lines[i]!).includes(probe)) return i + 1;
+      // The export may run table cells together: try the first ~6 words.
+      const words = n.split(" ").slice(0, 6).join(" ");
+      if (words.length >= 12) for (let i = 0; i < lines.length; i++) if (normText(lines[i]!).includes(words)) return i + 1;
+      return null;
+    };
+    const exact = tryExact(c.quoted) ?? tryExact(c.context);
+    if (exact !== null) return { anchor: { section: sectionFor(exact), line: exact, quote: c.quoted.slice(0, 600) || null }, matched: "exact" };
+    // Fuzzy: best paragraph by word overlap, within the matching heading when we know it.
+    const headingTitle = c.heading === null ? null : heads.find((h) => sectionMatches(c.heading, h.title))?.title ?? null;
+    const range = (() => {
+      if (headingTitle === null) return [1, lines.length] as const;
+      const h = heads.find((x) => x.title === headingTitle)!;
+      const next = heads.find((x) => x.line > h.line && x.level <= h.level);
+      return [h.line, next === undefined ? lines.length : next.line - 1] as const;
+    })();
+    const target = wordSet(`${c.quoted} ${c.context}`);
+    let best: { line: number; score: number } | null = null;
+    for (const b of markdownBlocks(lines.slice(range[0] - 1, range[1]).join("\n"))) {
+      const line = b.line + range[0] - 1;
+      const endLine = Math.min(range[1], line + 12);
+      const score = jaccard(target, wordSet(lines.slice(line - 1, endLine).join(" ")));
+      if (best === null || score > best.score) best = { line, score };
+    }
+    if (best !== null && best.score >= 0.3) return { anchor: { section: sectionFor(best.line), line: best.line, quote: c.quoted.slice(0, 600) || null }, matched: "fuzzy" };
+    if (headingTitle !== null) return { anchor: { section: headingTitle, line: null, quote: c.quoted.slice(0, 600) || null }, matched: "section" };
+    return { anchor: { section: null, line: null, quote: c.quoted.slice(0, 600) || null }, matched: "none" };
+  }
+
+  async function importComments(threadId: string, input: string) {
+    const { doc, hostId, rfcDir } = await (async () => {
+      const ctx = await threadContext(threadId);
+      if (ctx.doc === null) throw new Error("No RFC is open on this thread.");
+      return { doc: ctx.doc, hostId: ctx.hostId, rfcDir: ctx.rfcDir };
+    })();
+    const trimmed = input.trim();
+    const path = isAbsolute(trimmed) ? normalize(trimmed) : normalize(joinPath(rfcDir ?? dirname(doc.path), trimmed));
+    const bytes = await readBinaryAt(path, hostId);
+    if (bytes === null) throw new Error(`No file at ${path}.`);
+    const parsed = parseDocxComments(bytes);
+    const file = await readFileAt(doc.path, doc.hostId);
+    const content = file?.content ?? "";
+    const nowIso = now();
+    let added = 0;
+    let updated = 0;
+    let unmatched = 0;
+    await mutateSidecar(threadId, (d) => {
+      for (const pc of parsed) {
+        const fingerprint = sha256(`${pc.author}|${pc.date ?? ""}|${pc.text}`);
+        const where = locateComment(content, pc);
+        if (where.matched === "none") unmatched++;
+        const existing = d.comments.find((x) => x.fingerprint === fingerprint);
+        const replies = pc.replies.map((r) => ({ author: r.author, date: r.date, text: r.text }));
+        if (existing !== undefined) {
+          Object.assign(existing, { replies, quoted: pc.quoted, context: pc.context, heading: pc.heading, onImage: pc.onImage, anchor: where.anchor, matched: where.matched, importedFrom: path, updatedAt: nowIso });
+          updated++;
+          continue;
+        }
+        d.comments.push({
+          id: newId("cmt"),
+          fingerprint,
+          source: "docx",
+          author: pc.author,
+          date: pc.date,
+          text: pc.text,
+          replies,
+          resolved: false,
+          anchor: where.anchor,
+          quoted: pc.quoted,
+          context: pc.context,
+          heading: pc.heading,
+          onImage: pc.onImage,
+          matched: where.matched,
+          status: "new",
+          draft: null,
+          draftStatus: "idle",
+          threadId: null,
+          importedFrom: path,
+          importedAt: nowIso,
+          updatedAt: nowIso,
+        });
+        added++;
+      }
+    });
+    return { added, updated, unmatched, total: parsed.length };
+  }
+
+  async function draftCommentReply(threadId: string, id: string, guidance: string): Promise<Comment> {
+    const { doc } = await sidecarFor(threadId);
+    const sidecar = await readSidecar(threadId);
+    const c = sidecar?.comments.find((x) => x.id === id);
+    if (c === undefined) throw new Error("Comment not found.");
+    await mutateSidecar(threadId, (d) => {
+      const x = d.comments.find((y) => y.id === id);
+      if (x !== undefined) Object.assign(x, { draftStatus: "pending", updatedAt: now() });
+    });
+    const thread = [`${c.author}${c.date === null ? "" : ` (${c.date})`}: ${c.text}`, ...c.replies.map((r) => `${r.author}${r.date === null ? "" : ` (${r.date})`}: ${r.text}`)].join("\n\n");
+    const prompt = [
+      `You are drafting the author's reply to a reviewer comment on the RFC at ${JSON.stringify(doc.path)}. Read the RFC, at least the section involved, and check the workspace where the comment is about code or behaviour.`,
+      `Where: ${c.heading ?? c.anchor.section ?? "unknown section"}${c.anchor.line === null ? "" : ` (around line ${c.anchor.line})`}${c.quoted === "" ? "" : `\nCommented text: """${c.quoted}"""`}`,
+      `Comment thread:\n${thread}`,
+      guidance.trim() === "" ? null : `Guidance from the author: ${guidance.trim()}`,
+      `Write the reply in the author's voice: direct, specific, two to six sentences, no preamble. If the comment is right and the RFC should change, say what will change and where; if it is a question the RFC already answers, point to the exact text; if you disagree, say why with evidence from the code or the spike. Publish it with rfc_comment_draft using commentId ${JSON.stringify(c.id)}, then reply with one line and stop. The user reads the draft in the RFC panel, not this chat.`,
+    ]
+      .filter((x): x is string => x !== null)
+      .join("\n\n");
+    const hidden = await spawnHidden(threadId, `Reply: ${c.text.slice(0, 60)}`, prompt, { commentFor: threadId, commentId: c.id });
+    return mutateSidecar(threadId, (d) => {
+      const x = d.comments.find((y) => y.id === id);
+      if (x === undefined) throw new Error("Comment not found.");
+      x.threadId = hidden;
+      return x;
+    });
+  }
+
+  /** A draft thread finished without publishing: take its final output as the draft. */
+  async function settleCommentThread(hiddenId: string) {
+    const meta = await bb.sdk.threads.getPluginMetadata({ threadId: hiddenId }).catch(() => null);
+    if (meta === null || typeof meta.commentFor !== "string" || typeof meta.commentId !== "string") return;
+    const owner = meta.commentFor;
+    const id = meta.commentId;
+    const sidecar = await readSidecar(owner);
+    const c = sidecar?.comments.find((x) => x.id === id);
+    if (c === undefined || c.draftStatus !== "pending") return;
+    const text = ((await bb.sdk.threads.output({ threadId: hiddenId }).catch(() => ({ output: null }))).output ?? "").trim();
+    await mutateSidecar(owner, (d) => {
+      const x = d.comments.find((y) => y.id === id);
+      if (x === undefined || x.draftStatus !== "pending") return;
+      Object.assign(x, text === "" ? { draftStatus: "failed" } : { draftStatus: "ready", draft: text }, { updatedAt: now() });
+    });
+  }
+
+  function commentsAsReviewInstructions(comments: Comment[], content: string): string {
+    const lines = content.split("\n");
+    const items = comments
+      .filter((c) => c.status !== "dismissed")
+      .map((c, i) => {
+        const where = c.anchor.line === null ? (c.anchor.section ?? "unknown section") : `${c.anchor.section ?? ""} line ${c.anchor.line}: ${lines[c.anchor.line - 1]?.trim().slice(0, 120) ?? ""}`;
+        const thread = [c.text, ...c.replies.map((r) => `↳ ${r.author}: ${r.text}`)].join("\n   ");
+        return `${i + 1}. [${c.author}] at ${where}\n   ${thread}${c.draft === null ? "" : `\n   Author's draft reply: ${c.draft}`}`;
+      });
+    return [
+      "Reviewer comments were imported from the Google Doc review copy of this RFC. Treat them as the review input for this round:",
+      "- For every comment that calls for a change to the RFC, report one finding anchored to that section: what to change, the comment author's point in the body, and a concrete rewrite suggestion.",
+      "- For comments that are questions the RFC already answers, report a low-severity finding suggesting where to make that answer more visible.",
+      "- For comments you believe are wrong, report a finding that says so with the evidence (RFC text, code, spike log) so the author can reply.",
+      "- Where several comments point at one problem, merge them into one finding and list the authors.",
+      "Do not invent findings beyond the comments in this round.",
+      "",
+      items.join("\n"),
+    ].join("\n");
+  }
+
   async function askRfcThread(threadId: string, text: string) {
     await bb.sdk.threads.send({ threadId, mode: "auto", input: [{ type: "text", text, mentions: [] }] });
   }
@@ -1555,6 +1784,48 @@ export default async function plugin(bb: BbPluginApi) {
         return { ok: true as const };
       }),
     card_followup: ({ threadId, cardId, question }) => askCard(threadId, cardId, question),
+    comments_files: async ({ threadId }) => {
+      const { rfcDir, hostId, doc } = await threadContext(threadId);
+      const dir = rfcDir ?? (doc === null ? null : dirname(doc.path));
+      if (dir === null) return { files: [] };
+      try {
+        const listed = await bb.sdk.files.listPaths({ path: dir, includeFiles: true, includeDirectories: false, includeHidden: false, limit: 500, ...fileArgs(hostId) });
+        const files = (listed.paths as Array<{ path: string; modifiedAtMs?: number | null }>)
+          .filter((f) => /\.docx$/i.test(f.path))
+          .map((f) => ({ path: f.path, name: f.path.split("/").pop() ?? f.path, modifiedAtMs: f.modifiedAtMs ?? null }))
+          .sort((a, b) => (b.modifiedAtMs ?? 0) - (a.modifiedAtMs ?? 0));
+        return { files };
+      } catch {
+        return { files: [] };
+      }
+    },
+    comments_import: ({ threadId, path }) => importComments(threadId, path),
+    comment_update: ({ threadId, id, status, draft }) =>
+      mutateSidecar(threadId, (d) => {
+        const c = d.comments.find((x) => x.id === id);
+        if (c === undefined) throw new Error("Comment not found.");
+        if (status !== undefined) c.status = status;
+        if (draft !== undefined) {
+          c.draft = draft;
+          c.draftStatus = draft === null ? "idle" : "ready";
+        }
+        c.updatedAt = now();
+        return c;
+      }),
+    comment_remove: ({ threadId, id }) =>
+      mutateSidecar(threadId, (d) => {
+        d.comments = d.comments.filter((x) => x.id !== id);
+        return { ok: true as const };
+      }),
+    comment_draft: ({ threadId, id, guidance }) => draftCommentReply(threadId, id, guidance),
+    comments_analyze: async ({ threadId }) => {
+      const sidecar = await readSidecar(threadId);
+      const doc = await readDoc(threadId);
+      if (sidecar === null || doc === null || sidecar.comments.length === 0) throw new Error("No imported comments to analyze.");
+      const file = await readFileAt(doc.path, doc.hostId);
+      const result = await startReview(threadId, commentsAsReviewInstructions(sidecar.comments, file?.content ?? ""));
+      return { started: result.started, reviewThreadId: result.reviewThreadId ?? null };
+    },
     card_locate: async ({ threadId, text }) => {
       const sidecar = await readSidecar(threadId);
       if (sidecar === null || sidecar.cards.length === 0) return null;
@@ -1950,7 +2221,7 @@ export default async function plugin(bb: BbPluginApi) {
   /** Which RFC thread a hidden helper thread belongs to; itself otherwise. */
   async function ownerThread(threadId: string): Promise<string> {
     const meta = await bb.sdk.threads.getPluginMetadata({ threadId });
-    for (const k of ["explainFor", "noteFor", "discussFor", "reviewFor"] as const) {
+    for (const k of ["explainFor", "noteFor", "discussFor", "reviewFor", "commentFor"] as const) {
       if (typeof meta[k] === "string") return meta[k] as string;
     }
     return threadId;
@@ -2110,6 +2381,27 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.agents.registerTool({
+    name: "rfc_comment_draft",
+    description: "Publish the drafted reply to a reviewer comment (the commentId is given in your prompt). The author reads it in the RFC panel and pastes it into the Google Doc.",
+    presentation: { label: { pending: "Drafting reply", completed: "Drafted reply" } },
+    parameters: z.object({ commentId: z.string(), draft: z.string().min(1).max(20_000) }),
+    async execute({ commentId, draft }, { threadId }) {
+      try {
+        const owner = await ownerThread(threadId);
+        const ok = await mutateSidecar(owner, (d) => {
+          const c = d.comments.find((x) => x.id === commentId);
+          if (c === undefined) return false;
+          Object.assign(c, { draft, draftStatus: "ready", updatedAt: now() });
+          return true;
+        });
+        return ok ? "Draft published under the comment." : toolError(`No comment ${commentId} on this RFC.`);
+      } catch (cause) {
+        return toolError(describe(cause));
+      }
+    },
+  });
+
+  bb.agents.registerTool({
     name: "rfc_define_term",
     description:
       "Add or update a glossary entry for the RFC: an acronym, vendor term, internal shorthand, or requirement/assumption ID (S12, A2, Q13, P20). The panel shows definitions beside each section that uses the term. Call it whenever you introduce such a term in the document.",
@@ -2216,7 +2508,15 @@ export default async function plugin(bb: BbPluginApi) {
   void walkthroughSchema;
 
   bb.agents.configure((context) => {
-    const { reviewFor, discussFor, explainFor, noteFor } = context.pluginMetadata;
+    const { reviewFor, discussFor, explainFor, noteFor, commentFor } = context.pluginMetadata;
+    if (typeof commentFor === "string") {
+      return {
+        tools: ["rfc_comment_draft", "rfc_check_diagram"],
+        skills: [],
+        instructions:
+          "You are drafting the RFC author's reply to one reviewer comment. Read the RFC and the workspace as needed, then publish the reply with rfc_comment_draft using the commentId from your prompt. Never edit files.",
+      };
+    }
     if (typeof explainFor === "string") {
       return {
         tools: ["rfc_publish_card", "rfc_card_reply", "rfc_check_diagram"],
@@ -2290,6 +2590,8 @@ export default async function plugin(bb: BbPluginApi) {
   };
   bb.events.on("thread.idle", publishThread);
   bb.events.on("thread.idle", ({ thread }) => void settleCardThread(thread.id).catch((cause: unknown) => bb.log.warn(`settle card thread: ${describe(cause)}`)));
+  bb.events.on("thread.idle", ({ thread }) => void settleCommentThread(thread.id).catch(() => undefined));
+  bb.events.on("thread.failed", ({ thread }) => void settleCommentThread(thread.id).catch(() => undefined));
   bb.events.on("thread.failed", ({ thread }) => void settleCardThread(thread.id).catch(() => undefined));
   bb.events.on("thread.active", publishThread);
   bb.events.on("thread.failed", publishThread);
@@ -2472,6 +2774,25 @@ export default async function plugin(bb: BbPluginApi) {
               (i) => `${(i.status ?? "-").padEnd(9)} ${(i.projectName ?? "-").padEnd(12)} ${i.title.slice(0, 48).padEnd(48)} ${i.path}${i.threads.length > 0 ? `  [${i.threads.length} thread(s)]` : ""}`,
             );
             return { exitCode: 0, stdout: [...lines, ...notes.map((n) => `note: ${n}`)].join("\n") || "No RFCs found." };
+          },
+        }),
+        comments: cliCommand({
+          summary: "Import reviewer comments from a .docx export of the Google Doc review copy into this thread's RFC",
+          positionals: [{ name: "path", description: "Path to the .docx (absolute, or relative to the RFC directory)", required: true }],
+          options: { ...threadOpt, json: { type: "boolean", description: "Emit machine-readable JSON" } },
+          async run(input, ctx) {
+            try {
+              const threadId = needThread(input.options.thread ?? ctx.threadId);
+              const result = await importComments(threadId, input.positionals.path);
+              const sidecar = await readSidecar(threadId);
+              const lines = (sidecar?.comments ?? []).map((c) => `${c.matched.padEnd(7)} ${c.status.padEnd(12)} ${(c.anchor.section ?? "?").slice(0, 36).padEnd(36)} L${String(c.anchor.line ?? "-").padEnd(4)} ${c.author}: ${c.text.slice(0, 70).replace(/\n/g, " ")}`);
+              return {
+                exitCode: 0,
+                stdout: input.options.json ? JSON.stringify({ ...result, comments: sidecar?.comments ?? [] }) : [`${result.total} thread(s): ${result.added} new, ${result.updated} updated, ${result.unmatched} unmatched`, ...lines].join("\n"),
+              };
+            } catch (cause) {
+              throw cliError(cause);
+            }
           },
         }),
         "check-d2": cliCommand({
