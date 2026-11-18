@@ -283,6 +283,11 @@ export const rpcContract = defineRpcContract({
     input: z.object({ threadId: z.string(), id: z.string(), exchangeId: z.string() }),
     output: z.object({ ok: z.literal(true) }),
   },
+  comments_assess_all: {
+    // Fire the default "assess this comment" question on every comment without an assessment, a few at a time.
+    input: z.object({ threadId: z.string() }),
+    output: z.object({ queued: z.number() }),
+  },
   comments_analyze: {
     // Run the imported comments through a review round: findings per comment that needs a doc change.
     input: z.object({ threadId: z.string() }),
@@ -1650,12 +1655,36 @@ export default async function plugin(bb: BbPluginApi) {
     return c;
   }
 
+  // "Assess all": one hidden thread per comment, at most ASSESS_PARALLEL running per RFC.
+  const ASSESS_QUESTION = "Assess this comment: is the reviewer right? What in the RFC or the code supports or contradicts it, and what, if anything, should change?";
+  const ASSESS_PARALLEL = 3;
+  const assessQueue = new Map<string, string[]>();
+  const assessActive = new Map<string, Set<string>>();
+  async function pumpAssess(owner: string) {
+    const queue = assessQueue.get(owner) ?? [];
+    const active = assessActive.get(owner) ?? new Set<string>();
+    assessActive.set(owner, active);
+    while (queue.length > 0 && active.size < ASSESS_PARALLEL) {
+      const id = queue.shift()!;
+      active.add(id);
+      try {
+        await askComment(owner, id, ASSESS_QUESTION);
+      } catch (cause) {
+        active.delete(id);
+        bb.log.warn(`assess ${id}: ${describe(cause)}`);
+      }
+    }
+    assessQueue.set(owner, queue);
+  }
+
   /** A draft thread finished without publishing: take its final output as the draft (or the pending answer). */
   async function settleCommentThread(hiddenId: string) {
     const meta = await bb.sdk.threads.getPluginMetadata({ threadId: hiddenId }).catch(() => null);
     if (meta === null || typeof meta.commentFor !== "string" || typeof meta.commentId !== "string") return;
     const owner = meta.commentFor;
     const id = meta.commentId;
+    assessActive.get(owner)?.delete(id);
+    void pumpAssess(owner).catch(() => undefined);
     const sidecar = await readSidecar(owner);
     const c = sidecar?.comments.find((x) => x.id === id);
     if (c === undefined) return;
@@ -1889,6 +1918,15 @@ export default async function plugin(bb: BbPluginApi) {
         if (c !== undefined) c.exchanges = c.exchanges.filter((e) => e.id !== exchangeId);
         return { ok: true as const };
       }),
+    comments_assess_all: async ({ threadId }) => {
+      const sidecar = await readSidecar(threadId);
+      if (sidecar === null) return { queued: 0 };
+      const todo = sidecar.comments.filter((c) => c.status !== "dismissed" && c.exchanges.length === 0 && !(assessQueue.get(threadId) ?? []).includes(c.id)).map((c) => c.id);
+      if (todo.length === 0) return { queued: 0 };
+      assessQueue.set(threadId, [...(assessQueue.get(threadId) ?? []), ...todo]);
+      await pumpAssess(threadId);
+      return { queued: todo.length };
+    },
     comments_analyze: async ({ threadId }) => {
       const sidecar = await readSidecar(threadId);
       const doc = await readDoc(threadId);

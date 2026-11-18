@@ -911,6 +911,20 @@ function CommentsTab({ rpc, threadId, sidecar, section, onJump }: { rpc: Rpc; th
           size="sm"
           variant="outline"
           className="ml-auto h-7 text-xs"
+          disabled={busy || all.every((c) => c.exchanges.length > 0 || c.status === "dismissed")}
+          onClick={() =>
+            act("Assess all", async () => {
+              const r = await rpc.call("comments_assess_all", { threadId });
+              toast.success(r.queued === 0 ? "Every comment already has an assessment." : `Assessing ${r.queued} comment${r.queued === 1 ? "" : "s"}, three at a time. Answers appear under each comment.`);
+            })
+          }
+        >
+          Assess all
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs"
           disabled={busy || all.length === 0}
           onClick={() =>
             act("Analyze", async () => {
