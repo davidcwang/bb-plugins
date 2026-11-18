@@ -593,14 +593,14 @@ export function SelectionToolbar({
           className="flex w-full items-center gap-1"
           onSubmit={(e) => {
             e.preventDefault();
-            if (q.trim() === "") return;
-            onExplain(selection.anchor, "question", `${q.trim()}\n\n(About: "${selection.text}")`);
+            const question = q.trim() === "" ? "Explain this passage: what it means, why it is here, and what it depends on." : q.trim();
+            onExplain(selection.anchor, "question", `${question}\n\n(About: "${selection.text}")`);
           }}
         >
           <Icon name="MessageCircleQuestion" className="ml-1 size-3.5 shrink-0 text-muted-foreground" />
-          <Input value={q} onChange={(e) => setQ(e.target.value)} autoFocus placeholder="Ask about this selection… (explain it, where is the code, why, …)" className="h-7 flex-1 text-xs" aria-label="Question" />
-          <Button size="sm" type="submit" className="h-7 text-xs" disabled={q.trim() === ""}>
-            Ask
+          <Input value={q} onChange={(e) => setQ(e.target.value)} autoFocus placeholder="Ask about this selection, or press Enter to just explain it" className="h-7 flex-1 text-xs" aria-label="Question" />
+          <Button size="sm" type="submit" className="h-7 text-xs">
+            {q.trim() === "" ? "Explain" : "Ask"}
           </Button>
         </form>
       ) : (
@@ -688,8 +688,7 @@ export function CommentCard({ rpc, threadId, comment, forceOpen, onJump }: { rpc
   const [asking, setAsking] = useState(false);
   const [question, setQuestion] = useState("");
   const ask = () => {
-    const q = question.trim();
-    if (q === "") return;
+    const q = question.trim() === "" ? "Assess this comment: is the reviewer right? What in the RFC or the code supports or contradicts it, and what, if anything, should change?" : question.trim();
     run(async () => {
       await rpc.call("comment_ask", { threadId, id: comment.id, question: q });
       setQuestion("");
@@ -780,7 +779,7 @@ export function CommentCard({ rpc, threadId, comment, forceOpen, onJump }: { rpc
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
                   autoFocus
-                  placeholder="Ask about this comment… (is Sean right? what does the code do here? Esc to cancel)"
+                  placeholder="Ask about this comment, or press Enter to have it assessed (Esc to cancel)"
                   className="h-7 flex-1 text-xs"
                   aria-label="Question about the comment"
                   onKeyDown={(e) => {
@@ -790,8 +789,8 @@ export function CommentCard({ rpc, threadId, comment, forceOpen, onJump }: { rpc
                     }
                   }}
                 />
-                <Button size="sm" type="submit" className="h-7 text-xs" disabled={question.trim() === "" || busy}>
-                  Ask
+                <Button size="sm" type="submit" className="h-7 text-xs" disabled={busy}>
+                  {question.trim() === "" ? "Assess" : "Ask"}
                 </Button>
               </form>
             ) : (
