@@ -301,6 +301,7 @@ export function CardView({
           {fixing.card === true && card.diagram !== null ? <p className="text-[11px] text-muted-foreground">Asked the explainer to fix this diagram…</p> : null}
           {card.files.length > 0 ? (
             <div className="mt-2 flex flex-col gap-1.5">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">References</p>
               {card.files.map((f, i) => (
                 <CodeRefView key={`${f.path}:${i}`} file={f} environmentId={environmentId} />
               ))}
@@ -330,6 +331,7 @@ export function CardView({
               {fixing[x.id] === true && x.diagram !== null ? <p className="text-[11px] text-muted-foreground">Asked the explainer to fix this diagram…</p> : null}
               {x.files.length > 0 ? (
                 <div className="mt-2 flex flex-col gap-1.5">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">References</p>
                   {x.files.map((f, i) => (
                     <CodeRefView key={`${f.path}:${i}`} file={f} environmentId={environmentId} />
                   ))}
@@ -759,6 +761,7 @@ export function CommentCard({ rpc, threadId, comment, forceOpen, onJump }: { rpc
               {x.status === "failed" ? <p className="text-xs text-destructive">{x.answer}</p> : x.answer !== "" ? <Markdown content={x.answer} /> : null}
               {x.files.length > 0 ? (
                 <div className="mt-2 flex flex-col gap-1.5">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">References</p>
                   {x.files.map((f, i) => (
                     <CodeRefView key={`${f.path}:${i}`} file={f} environmentId={null} />
                   ))}
@@ -1030,6 +1033,7 @@ function NoteCard({ rpc, threadId, note, onJump }: { rpc: Rpc; threadId: string;
       {note.anchor.quote !== null ? <blockquote className="mt-1 border-l-2 border-border pl-2 text-xs italic text-muted-foreground">“{note.anchor.quote}”</blockquote> : null}
       {editing ? (
         <div className="mt-2 flex flex-col gap-1.5">
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">References</p>
           <textarea value={body} onChange={(e) => setBody(e.target.value)} className="min-h-20 w-full rounded border border-border bg-background p-2 text-xs" aria-label="Note body" placeholder="Why this matters, options, what would settle it" />
           <textarea value={resolution} onChange={(e) => setResolution(e.target.value)} className="min-h-14 w-full rounded border border-border bg-background p-2 text-xs" aria-label="Resolution" placeholder="Resolution: what was decided and why (fill when decided)" />
           <div className="flex gap-2">
