@@ -274,6 +274,15 @@ export const rpcContract = defineRpcContract({
     input: z.object({ threadId: z.string(), id: z.string(), guidance: z.string().max(2000).default("") }),
     output: commentSchema,
   },
+  comment_ask: {
+    // A question about a comment, answered by the comment's hidden thread under the card.
+    input: z.object({ threadId: z.string(), id: z.string(), question: z.string().min(1).max(4000) }),
+    output: commentSchema,
+  },
+  comment_exchange_remove: {
+    input: z.object({ threadId: z.string(), id: z.string(), exchangeId: z.string() }),
+    output: z.object({ ok: z.literal(true) }),
+  },
   comments_analyze: {
     // Run the imported comments through a review round: findings per comment that needs a doc change.
     input: z.object({ threadId: z.string() }),
@@ -1556,6 +1565,7 @@ export default async function plugin(bb: BbPluginApi) {
           draft: null,
           draftStatus: "idle",
           threadId: null,
+          exchanges: [],
           importedFrom: path,
           importedAt: nowIso,
           updatedAt: nowIso,
@@ -1594,7 +1604,53 @@ export default async function plugin(bb: BbPluginApi) {
     });
   }
 
-  /** A draft thread finished without publishing: take its final output as the draft. */
+  function commentThreadText(c: Comment): string {
+    return [`${c.author}${c.date === null ? "" : ` (${c.date})`}: ${c.text}`, ...c.replies.map((r) => `${r.author}${r.date === null ? "" : ` (${r.date})`}: ${r.text}`)].join("\n\n");
+  }
+
+  /** A question about a reviewer comment: pending exchange, answered by the comment's hidden thread. */
+  async function askComment(threadId: string, id: string, question: string): Promise<Comment> {
+    const { doc } = await sidecarFor(threadId);
+    const nowIso = now();
+    const exchange: Exchange = { id: newId("x"), question, answer: "", diagram: null, files: [], status: "pending", createdAt: nowIso, updatedAt: nowIso };
+    const c = await mutateSidecar(threadId, (d) => {
+      const x = d.comments.find((y) => y.id === id);
+      if (x === undefined) throw new Error("Comment not found.");
+      x.exchanges.push(exchange);
+      x.updatedAt = nowIso;
+      return x;
+    });
+    const ask = [
+      `Question from the author about this reviewer comment (exchange ${JSON.stringify(exchange.id)}):`,
+      `"""${question}"""`,
+      `Answer by calling rfc_comment_answer with exchangeId ${JSON.stringify(exchange.id)}: a markdown body under ~300 words, with file references for any code you cite. The author reads it under the comment in the RFC panel, not here; after the tool call reply with one line and stop.`,
+    ].join("\n\n");
+    if (c.threadId === null) {
+      const prompt = [
+        `You are helping the author of the RFC at ${JSON.stringify(doc.path)} work through one reviewer comment. Read the RFC (at least the section involved) and the workspace where the comment is about code or behaviour.`,
+        `Where: ${c.heading ?? c.anchor.section ?? "unknown section"}${c.anchor.line === null ? "" : ` (around line ${c.anchor.line})`}${c.quoted === "" ? "" : `\nCommented text: """${c.quoted}"""`}`,
+        `Comment thread:\n${commentThreadText(c)}`,
+        ask,
+      ].join("\n\n");
+      const hidden = await spawnHidden(threadId, `Comment: ${c.text.slice(0, 60)}`, prompt, { commentFor: threadId, commentId: c.id });
+      return mutateSidecar(threadId, (d) => {
+        const x = d.comments.find((y) => y.id === id);
+        if (x !== undefined) x.threadId = hidden;
+        return x ?? c;
+      });
+    }
+    try {
+      await askRfcThread(c.threadId, ask);
+    } catch (cause) {
+      await mutateSidecar(threadId, (d) => {
+        const e = d.comments.find((y) => y.id === id)?.exchanges.find((y) => y.id === exchange.id);
+        if (e !== undefined) Object.assign(e, { status: "failed", answer: `Could not reach the comment's thread: ${describe(cause)}`, updatedAt: now() });
+      });
+    }
+    return c;
+  }
+
+  /** A draft thread finished without publishing: take its final output as the draft (or the pending answer). */
   async function settleCommentThread(hiddenId: string) {
     const meta = await bb.sdk.threads.getPluginMetadata({ threadId: hiddenId }).catch(() => null);
     if (meta === null || typeof meta.commentFor !== "string" || typeof meta.commentId !== "string") return;
@@ -1602,12 +1658,20 @@ export default async function plugin(bb: BbPluginApi) {
     const id = meta.commentId;
     const sidecar = await readSidecar(owner);
     const c = sidecar?.comments.find((x) => x.id === id);
-    if (c === undefined || c.draftStatus !== "pending") return;
+    if (c === undefined) return;
+    const pendingExchange = [...c.exchanges].reverse().find((e) => e.status === "pending");
+    if (c.draftStatus !== "pending" && pendingExchange === undefined) return;
     const text = ((await bb.sdk.threads.output({ threadId: hiddenId }).catch(() => ({ output: null }))).output ?? "").trim();
     await mutateSidecar(owner, (d) => {
       const x = d.comments.find((y) => y.id === id);
-      if (x === undefined || x.draftStatus !== "pending") return;
-      Object.assign(x, text === "" ? { draftStatus: "failed" } : { draftStatus: "ready", draft: text }, { updatedAt: now() });
+      if (x === undefined) return;
+      const nowIso = now();
+      if (pendingExchange !== undefined) {
+        const e = x.exchanges.find((y) => y.id === pendingExchange.id);
+        if (e !== undefined && e.status === "pending") Object.assign(e, text === "" ? { status: "failed", answer: "The thread finished without publishing an answer. Delete this and ask again." } : { status: "ready", answer: text }, { updatedAt: nowIso });
+      } else if (x.draftStatus === "pending") {
+        Object.assign(x, text === "" ? { draftStatus: "failed" } : { draftStatus: "ready", draft: text }, { updatedAt: nowIso });
+      }
     });
   }
 
@@ -1818,6 +1882,13 @@ export default async function plugin(bb: BbPluginApi) {
         return { ok: true as const };
       }),
     comment_draft: ({ threadId, id, guidance }) => draftCommentReply(threadId, id, guidance),
+    comment_ask: ({ threadId, id, question }) => askComment(threadId, id, question),
+    comment_exchange_remove: ({ threadId, id, exchangeId }) =>
+      mutateSidecar(threadId, (d) => {
+        const c = d.comments.find((x) => x.id === id);
+        if (c !== undefined) c.exchanges = c.exchanges.filter((e) => e.id !== exchangeId);
+        return { ok: true as const };
+      }),
     comments_analyze: async ({ threadId }) => {
       const sidecar = await readSidecar(threadId);
       const doc = await readDoc(threadId);
@@ -2402,6 +2473,30 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.agents.registerTool({
+    name: "rfc_comment_answer",
+    description: "Answer the author's question about a reviewer comment. Use the exchangeId given in the question; the answer is rolled out under the comment in the RFC panel.",
+    presentation: { label: { pending: "Answering question", completed: "Answered question" } },
+    parameters: z.object({ exchangeId: z.string(), body: z.string().min(1).max(20_000), files: z.array(codeRefSchema).max(20).default([]) }),
+    async execute({ exchangeId, body, files }, { threadId }) {
+      try {
+        const meta = await bb.sdk.threads.getPluginMetadata({ threadId });
+        const owner = await ownerThread(threadId);
+        const id = typeof meta.commentId === "string" ? meta.commentId : null;
+        if (id === null) return toolError("This thread is not attached to a comment.");
+        const ok = await mutateSidecar(owner, (d) => {
+          const e = d.comments.find((c) => c.id === id)?.exchanges.find((x) => x.id === exchangeId);
+          if (e === undefined) return false;
+          Object.assign(e, { answer: body, files, status: "ready", updatedAt: now() });
+          return true;
+        });
+        return ok ? "Answer published under the comment." : toolError(`No exchange ${exchangeId} on this comment; use the id from the question.`);
+      } catch (cause) {
+        return toolError(describe(cause));
+      }
+    },
+  });
+
+  bb.agents.registerTool({
     name: "rfc_define_term",
     description:
       "Add or update a glossary entry for the RFC: an acronym, vendor term, internal shorthand, or requirement/assumption ID (S12, A2, Q13, P20). The panel shows definitions beside each section that uses the term. Call it whenever you introduce such a term in the document.",
@@ -2511,10 +2606,10 @@ export default async function plugin(bb: BbPluginApi) {
     const { reviewFor, discussFor, explainFor, noteFor, commentFor } = context.pluginMetadata;
     if (typeof commentFor === "string") {
       return {
-        tools: ["rfc_comment_draft", "rfc_check_diagram"],
+        tools: ["rfc_comment_draft", "rfc_comment_answer", "rfc_check_diagram"],
         skills: [],
         instructions:
-          "You are drafting the RFC author's reply to one reviewer comment. Read the RFC and the workspace as needed, then publish the reply with rfc_comment_draft using the commentId from your prompt. Never edit files.",
+          "You are helping the RFC author with one reviewer comment. Publish a drafted reply with rfc_comment_draft (commentId from your prompt); answer the author's own questions with rfc_comment_answer using the exchangeId given. The author reads everything in the RFC panel, not this chat. Read the RFC and the workspace as needed; never edit files.",
       };
     }
     if (typeof explainFor === "string") {

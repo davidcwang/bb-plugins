@@ -685,6 +685,17 @@ export function CommentCard({ rpc, threadId, comment, forceOpen, onJump }: { rpc
   };
   const dirty = draft !== (comment.draft ?? "");
   const tone = commentTone[comment.status];
+  const [asking, setAsking] = useState(false);
+  const [question, setQuestion] = useState("");
+  const ask = () => {
+    const q = question.trim();
+    if (q === "") return;
+    run(async () => {
+      await rpc.call("comment_ask", { threadId, id: comment.id, question: q });
+      setQuestion("");
+      setAsking(false);
+    });
+  };
   return (
     <div data-comment-id={comment.id} className={cn("rfc-card my-2 overflow-hidden rounded-md border-2 border-teal-500/70 text-sm shadow-sm", comment.status === "dismissed" && "opacity-70")}>
       <button type="button" className="flex w-full items-center gap-2 bg-teal-500/10 px-3 py-1.5 text-left" onClick={() => setOpen(!open)}>
@@ -726,6 +737,70 @@ export function CommentCard({ rpc, threadId, comment, forceOpen, onJump }: { rpc
               <div className="whitespace-pre-wrap text-[13px]">{r.text}</div>
             </div>
           ))}
+
+          {comment.exchanges.map((x) => (
+            <div key={x.id} className="group/x relative mt-3 border-t border-dashed border-border pt-2">
+              <div className="mb-1.5 flex items-start gap-2">
+                <Icon name="MessageCircleQuestion" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                <p className="min-w-0 flex-1 whitespace-pre-wrap text-[13px] font-medium">{x.question}</p>
+                <button
+                  type="button"
+                  className="shrink-0 rounded px-1 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover/x:opacity-100"
+                  title="Delete this question"
+                  onClick={() => run(() => rpc.call("comment_exchange_remove", { threadId, id: comment.id, exchangeId: x.id }))}
+                >
+                  delete
+                </button>
+              </div>
+              {x.status === "pending" ? (
+                <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <Icon name="LoaderCircle" className="size-3 animate-spin" /> answering…
+                </p>
+              ) : null}
+              {x.status === "failed" ? <p className="text-xs text-destructive">{x.answer}</p> : x.answer !== "" ? <Markdown content={x.answer} /> : null}
+              {x.files.length > 0 ? (
+                <div className="mt-2 flex flex-col gap-1.5">
+                  {x.files.map((f, i) => (
+                    <CodeRefView key={`${f.path}:${i}`} file={f} environmentId={null} />
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ))}
+          <div className="mt-2">
+            {asking ? (
+              <form
+                className="flex w-full items-center gap-1"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  ask();
+                }}
+              >
+                <Input
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  autoFocus
+                  placeholder="Ask about this comment… (is Sean right? what does the code do here? Esc to cancel)"
+                  className="h-7 flex-1 text-xs"
+                  aria-label="Question about the comment"
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      setAsking(false);
+                      setQuestion("");
+                    }
+                  }}
+                />
+                <Button size="sm" type="submit" className="h-7 text-xs" disabled={question.trim() === "" || busy}>
+                  Ask
+                </Button>
+              </form>
+            ) : (
+              <Button size="sm" variant="outline" className="h-6 text-xs" onClick={() => setAsking(true)} disabled={busy}>
+                <Icon name="MessageCircleQuestion" className="size-3.5" />
+                Ask about this comment
+              </Button>
+            )}
+          </div>
 
           <div className="mt-3 rounded-md border border-dashed border-border p-2">
             <div className="mb-1 flex items-center gap-2 text-[11px] text-muted-foreground">

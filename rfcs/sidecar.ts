@@ -180,6 +180,8 @@ export const commentSchema = z.object({
   draft: z.string().max(20_000).nullable().default(null),
   draftStatus: z.enum(["idle", "pending", "ready", "failed"]).default("idle"),
   threadId: z.string().nullable().default(null),
+  /** Your questions about the comment and the agent's answers, rolled out under it. */
+  exchanges: z.array(exchangeSchema).default([]),
   importedFrom: z.string().max(500).nullable().default(null),
   importedAt: z.string(),
   updatedAt: z.string(),
