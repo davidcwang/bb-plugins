@@ -727,7 +727,7 @@ export default async function plugin(bb: BbPluginApi) {
     description:
       "Save a Jira ticket as a draft on the Jira page's Drafts tab for the user to review, edit, and create. Nothing is sent to Jira.",
     instructions:
-      "Prefer this over jira_create_issue when the user wants a ticket written but has not asked for it to be filed yet.",
+      "Prefer this over jira_create_issue when the user wants a ticket written but has not asked for it to be filed yet. Express dependencies with `links` (draftId or key), not in the description: no \"Needs ticket N\" lines and no ticket numbers, which mean nothing once the drafts are Jira issues.",
     parameters: z.object({
       project: projectKeySchema.optional(),
       issueType: z.string().trim().min(1).max(100).optional().describe("Issue type name, e.g. Task or Story. Needs a project."),
