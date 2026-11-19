@@ -11,16 +11,23 @@ project the account can see.
 
 ## UI
 
-The **Jira** sidebar page has four tabs:
+The **Jira** sidebar page has five tabs:
 
 - **My issues** — assigned to you, open or finished in the last 7 days.
 - **Project** — every issue in the source projects (with no projects set, issues
   updated in the last 90 days, since Jira refuses unbounded searches). Search
   by text or key.
+- **Drafts** — tickets written in BB that are not in Jira yet. A Draft column
+  on the left; click one to edit it on the right: summary, project, type
+  (sub-tasks included), description, assignee, reporter, labels, parent, and
+  linked issues (blocks, is blocked by, and the site's other link types).
+  Edits autosave locally. **Create in Jira** files it, adds the links, and
+  removes the draft; a link that fails is reported and the issue is kept.
+  Fields not on the project's create screen are disabled with a note.
 - **Create** — project, issue type, summary, plain-text description, and
   "Assign to me" (on by default).
 - **Source** — site, email, API token (write-only; leave empty to keep it),
-  projects (add by key or look up by name), and the Kanban sync toggle.
+  projects (add by key, a pasted board or issue URL, or look up by name), and the Kanban sync toggle.
   Save tests the connection.
 
 Click a row to see its description; **Open in Jira** opens the issue.
@@ -49,6 +56,8 @@ not transition the Jira issue.
 ## Agent tools
 
 - `jira_search` — read-only; scope `mine` or `project`, optional text.
+- `jira_draft` — saves a draft on the Drafts tab; nothing goes to Jira. Prefer
+  it when the user wants a ticket written but has not asked to file it.
 - `jira_create_issue` — creates a real issue visible to the team. Only use it
   when the user asked for a ticket, and confirm summary and project first
   unless the user already gave both.

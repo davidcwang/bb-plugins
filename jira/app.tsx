@@ -15,6 +15,8 @@ import {
   useSettings,
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
+import { DraftsBoard } from "./drafts";
+import { BRAND, ago, buttonClass, inputClass, message, primaryClass, useOpen } from "./ui";
 import { Avatar, IssueTypeIcon, PriorityIcon, TicketGlyph, hashColor } from "./icons";
 import type { Issue, IssueDetail, JiraConfig, Scope, SyncState, rpcContract } from "./server";
 
@@ -22,32 +24,15 @@ const CHANGED = "jira-changed";
 const PANEL = "issues";
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
-type Tab = "mine" | "project" | "create" | "source";
+type Tab = "mine" | "project" | "drafts" | "create" | "source";
 
 const TABS: Array<{ id: Tab; title: string; icon: string }> = [
   { id: "mine", title: "My issues", icon: "UserRound" },
   { id: "project", title: "Project", icon: "ListTodo" },
+  { id: "drafts", title: "Drafts", icon: "Layers" },
   { id: "create", title: "Create", icon: "Plus" },
   { id: "source", title: "Source", icon: "Settings" },
 ];
-
-const message = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
-
-/**
- * Opens an issue. BB's in-app browser is usually not signed in to Jira, so by
- * default a `_blank` window hands the URL to the system browser instead.
- */
-function useOpen(): (url: string) => void {
-  const { values } = useSettings();
-  const navigate = useBbNavigate();
-  const external = values?.openInBrowser !== false;
-  return useCallback(
-    (url: string) => {
-      if (!external || window.open(url, "_blank", "noopener,noreferrer") === null) navigate.openUrl(url);
-    },
-    [external, navigate],
-  );
-}
 
 function useConfig(): { config: JiraConfig | null; refetch: () => void } {
   const rpc = useRpc<typeof rpcContract>();
@@ -73,25 +58,6 @@ function useSync(): SyncState | null {
 
 const connected = (config: JiraConfig) =>
   config.siteUrl !== null && config.email !== null && config.hasToken;
-
-function ago(iso: string | null): string {
-  if (iso === null) return "never";
-  const minutes = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60_000));
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  return hours < 24 ? `${hours}h ago` : `${Math.round(hours / 24)}d ago`;
-}
-
-/** Jira's blue, used for the plugin's accents. */
-const BRAND = "#1d7afc";
-
-const inputClass =
-  "w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none transition-colors focus:border-[#1d7afc] focus:ring-2 focus:ring-[#1d7afc]/25";
-const buttonClass =
-  "inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground transition-colors hover:border-[#1d7afc]/60 hover:bg-[#1d7afc]/10 disabled:opacity-50";
-const primaryClass =
-  "inline-flex items-center gap-1.5 rounded-md bg-[#1d7afc] px-3 py-1.5 text-sm font-medium text-white shadow-sm transition hover:bg-[#0c66e4] disabled:opacity-50";
 
 /** Jira's status-category colors: gray to do, blue in progress, green done. */
 const CATEGORY: Record<Issue["category"], { label: string; color: string }> = {
@@ -761,7 +727,7 @@ function SourceForm({ config, onSaved }: { config: JiraConfig; onSaved: () => vo
 
 function tabFor(subPath: string, config: JiraConfig): Tab {
   const head = subPath.split("/")[0];
-  if (head === "project" || head === "create" || head === "source") return head;
+  if (head === "project" || head === "drafts" || head === "create" || head === "source") return head;
   return connected(config) ? "mine" : "source";
 }
 
@@ -774,7 +740,9 @@ function JiraPage({ subPath }: { subPath: string }) {
 
   return (
     <div className="h-full overflow-auto">
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4 md:p-5">
+      <div
+        className={`mx-auto flex w-full flex-col gap-4 p-4 md:p-5 ${tab === "drafts" ? "max-w-6xl" : "max-w-3xl"}`}
+      >
         <header
           className="flex flex-wrap items-center gap-3 rounded-xl px-4 py-3 text-white shadow-sm"
           style={{ background: `linear-gradient(120deg, ${BRAND} 0%, #0055cc 55%, #6e5dc6 100%)` }}
@@ -829,6 +797,12 @@ function JiraPage({ subPath }: { subPath: string }) {
             </button>{" "}
             tab first.
           </p>
+        ) : tab === "drafts" ? (
+          <DraftsBoard
+            config={config}
+            selectedId={subPath.split("/")[1] || null}
+            onSelect={(id) => navigate.toPluginPanel(PANEL, { subPath: id === null ? "drafts" : `drafts/${id}` })}
+          />
         ) : tab === "create" ? (
           <CreateForm config={config} onCreated={() => go("mine")} />
         ) : (

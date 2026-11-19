@@ -19,6 +19,8 @@
     "server.ts",
     "app.tsx",
     "jira.ts",
-    "icons.tsx"
+    "icons.tsx",
+    "ui.ts",
+    "drafts.tsx"
   ]
 }

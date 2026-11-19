@@ -21,10 +21,12 @@ import {
   projectKeySchema,
   type Issue,
   type IssueDetail,
+  type LinkType,
   type Scope,
+  type User,
 } from "./jira";
 
-export type { Issue, IssueDetail, Scope };
+export type { Issue, IssueDetail, LinkType, Scope, User };
 
 const scopeSchema = z.enum(["mine", "project"]);
 
@@ -45,6 +47,40 @@ const syncStateSchema = z.object({
   assigned: z.number().nullable(),
 });
 export type SyncState = z.infer<typeof syncStateSchema>;
+
+const userSchema = z.object({ accountId: z.string().max(128), displayName: z.string().max(200) });
+
+/** Jira labels cannot contain spaces. */
+const labelSchema = z.string().trim().min(1).max(255).regex(/^\S+$/, "Labels cannot contain spaces");
+
+const draftLinkSchema = z.object({
+  /** Link type name, e.g. "Blocks". */
+  type: z.string().min(1).max(100),
+  /** "outward" reads "<this> blocks <key>"; "inward" reads "<this> is blocked by <key>". */
+  direction: z.enum(["outward", "inward"]),
+  key: issueKeySchema,
+});
+
+/** The editable part of a draft. Everything is optional until it is created. */
+const draftFieldsSchema = z.object({
+  project: projectKeySchema.nullable(),
+  typeId: z.string().regex(/^\d+$/).nullable(),
+  summary: z.string().max(255),
+  description: z.string().max(20_000),
+  assignee: userSchema.nullable(),
+  reporter: userSchema.nullable(),
+  labels: z.array(labelSchema).max(50),
+  parent: issueKeySchema.nullable(),
+  links: z.array(draftLinkSchema).max(50),
+});
+
+const draftSchema = draftFieldsSchema.extend({
+  id: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type Draft = z.infer<typeof draftSchema>;
+export type DraftFields = z.infer<typeof draftFieldsSchema>;
 
 const issueOut = z.custom<Issue>();
 const detailOut = z.custom<IssueDetail>();
@@ -81,8 +117,34 @@ export const rpcContract = defineRpcContract({
   },
   issue_get: { input: z.object({ key: issueKeySchema }), output: detailOut },
   issue_types: {
-    input: z.object({ project: projectKeySchema }),
-    output: z.array(z.object({ id: z.string(), name: z.string() })),
+    input: z.object({ project: projectKeySchema, subtasks: z.boolean().default(false) }),
+    output: z.array(z.object({ id: z.string(), name: z.string(), subtask: z.boolean() })),
+  },
+  create_fields: {
+    input: z.object({ project: projectKeySchema, typeId: z.string().regex(/^\d+$/) }),
+    output: z.array(z.string()),
+  },
+  users_search: {
+    input: z.object({
+      query: z.string().max(100),
+      project: projectKeySchema.nullable(),
+      /** Assignees must be assignable in the project; reporters can be anyone. */
+      assignable: z.boolean(),
+    }),
+    output: z.array(userSchema),
+  },
+  link_types: { input: z.null(), output: z.array(z.custom<LinkType>()) },
+  me_get: { input: z.null(), output: userSchema },
+  drafts_list: { input: z.null(), output: z.array(draftSchema) },
+  draft_save: {
+    input: z.object({ id: z.string().regex(/^d_[a-z0-9]+$/).optional(), fields: draftFieldsSchema }),
+    output: draftSchema,
+  },
+  draft_delete: { input: z.object({ id: z.string() }), output: z.object({ ok: z.literal(true) }) },
+  /** Create the Jira issue, add its links, and drop the draft. */
+  draft_submit: {
+    input: z.object({ id: z.string() }),
+    output: z.object({ key: z.string(), url: z.string(), warnings: z.array(z.string()) }),
   },
   issue_create: {
     input: z.object({
@@ -100,6 +162,9 @@ export const rpcContract = defineRpcContract({
 
 export const CHANGED = "jira-changed";
 const SYNC_KEY = "sync";
+/** One kv row per draft, so a long description cannot push a list past the row limit. */
+const DRAFT_PREFIX = "draft:";
+const MAX_DRAFTS = 200;
 const KANBAN_PLUGIN_ID = "kanban";
 /** The kanban plugin caps one sync at 500 cards. */
 const MAX_SYNC = 500;
@@ -304,6 +369,100 @@ export default async function plugin(bb: BbPluginApi) {
     return created;
   }
 
+  // ---- drafts ------------------------------------------------------------
+
+  const emptyDraft: DraftFields = {
+    project: null,
+    typeId: null,
+    summary: "",
+    description: "",
+    assignee: null,
+    reporter: null,
+    labels: [],
+    parent: null,
+    links: [],
+  };
+
+  async function listDrafts(): Promise<Draft[]> {
+    const drafts: Draft[] = [];
+    for (const key of await bb.storage.kv.list(DRAFT_PREFIX)) {
+      const parsed = draftSchema.safeParse(await bb.storage.kv.get(key));
+      if (parsed.success) drafts.push(parsed.data);
+    }
+    return drafts.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  async function getDraft(id: string): Promise<Draft> {
+    const parsed = draftSchema.safeParse(await bb.storage.kv.get(`${DRAFT_PREFIX}${id}`));
+    if (!parsed.success) throw new Error(`No draft ${id}; it may have been created or deleted.`);
+    return parsed.data;
+  }
+
+  async function saveDraft(id: string | undefined, fields: DraftFields): Promise<Draft> {
+    const at = new Date().toISOString();
+    let draft: Draft;
+    if (id === undefined) {
+      if ((await bb.storage.kv.list(DRAFT_PREFIX)).length >= MAX_DRAFTS) {
+        throw new Error(`At most ${MAX_DRAFTS} drafts; create or delete some first.`);
+      }
+      const newId = `d_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+      draft = { ...fields, id: newId, createdAt: at, updatedAt: at };
+    } else {
+      draft = { ...(await getDraft(id)), ...fields, updatedAt: at };
+    }
+    await bb.storage.kv.set(`${DRAFT_PREFIX}${draft.id}`, draft);
+    bb.realtime.publish(CHANGED, { draft: draft.id });
+    return draft;
+  }
+
+  async function deleteDraft(id: string): Promise<void> {
+    await bb.storage.kv.delete(`${DRAFT_PREFIX}${id}`);
+    bb.realtime.publish(CHANGED, { draft: id });
+  }
+
+  // One submit per draft at a time, so a double click cannot create two issues.
+  const submitting = new Set<string>();
+
+  async function submitDraft(id: string): Promise<{ key: string; url: string; warnings: string[] }> {
+    if (submitting.has(id)) throw new Error("This draft is already being created.");
+    submitting.add(id);
+    try {
+      const draft = await getDraft(id);
+      if (draft.project === null) throw new Error("Pick a project first.");
+      if (draft.typeId === null) throw new Error("Pick an issue type first.");
+      if (draft.summary.trim() === "") throw new Error("Add a summary first.");
+      const { jira } = await client();
+      const created = await jira.create({
+        project: draft.project,
+        typeId: draft.typeId,
+        summary: draft.summary.trim(),
+        description: draft.description,
+        assigneeId: draft.assignee?.accountId ?? null,
+        reporterId: draft.reporter?.accountId ?? null,
+        labels: draft.labels,
+        parent: draft.parent,
+      });
+      bb.log.info(`created ${created.key} from draft ${id}`);
+      // The issue exists now: drop the draft even if a link fails, and report it.
+      await deleteDraft(id);
+      const warnings: string[] = [];
+      for (const link of draft.links) {
+        try {
+          await jira.link(created.key, link, link.key);
+        } catch (cause) {
+          warnings.push(`Could not link ${link.type} ${link.key}: ${cause instanceof Error ? cause.message : String(cause)}`);
+        }
+      }
+      bb.realtime.publish(CHANGED, { created: created.key });
+      void readConfig().then((config) => {
+        if (config.syncToKanban && draft.assignee !== null) void syncKanban();
+      });
+      return { ...created, warnings };
+    } finally {
+      submitting.delete(id);
+    }
+  }
+
   // ---- RPC ---------------------------------------------------------------
 
   bb.rpc.register(rpcContract, {
@@ -331,7 +490,22 @@ export default async function plugin(bb: BbPluginApi) {
     projects_search: async ({ query }) => (await client()).jira.projects(query),
     issues_list: (input) => listIssues(input),
     issue_get: async ({ key }) => (await client()).jira.issue(key),
-    issue_types: async ({ project }) => (await client()).jira.issueTypes(project),
+    issue_types: async ({ project, subtasks }) => (await client()).jira.issueTypes(project, { subtasks }),
+    create_fields: async ({ project, typeId }) => (await client()).jira.createFields(project, typeId),
+    users_search: async (input) => (await client()).jira.users(input),
+    link_types: async () => (await client()).jira.linkTypes(),
+    me_get: async () => {
+      const { jira, config } = await client();
+      const { accountId, displayName } = await myself(jira, config.email!);
+      return { accountId, displayName };
+    },
+    drafts_list: () => listDrafts(),
+    draft_save: ({ id, fields }) => saveDraft(id, fields),
+    draft_delete: async ({ id }) => {
+      await deleteDraft(id);
+      return { ok: true as const };
+    },
+    draft_submit: ({ id }) => submitDraft(id),
     issue_create: (input) => createIssue(input),
     sync_get: () => readSync(),
     sync_now: () => syncKanban(),
@@ -526,7 +700,38 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  bb.agents.configure(() => ({ tools: ["jira_search", "jira_create_issue"], skills: ["jira"] }));
+  bb.agents.registerTool({
+    name: "jira_draft",
+    description:
+      "Save a Jira ticket as a draft on the Jira page's Drafts tab for the user to review, edit, and create. Nothing is sent to Jira.",
+    instructions:
+      "Prefer this over jira_create_issue when the user wants a ticket written but has not asked for it to be filed yet.",
+    parameters: z.object({
+      project: projectKeySchema.optional(),
+      summary: z.string().trim().min(1).max(255),
+      description: z.string().max(20_000).default(""),
+      labels: z.array(labelSchema).max(50).default([]),
+      parent: issueKeySchema.optional(),
+    }),
+    async execute({ project, summary, description, labels, parent }) {
+      try {
+        const { projects } = await readConfig();
+        const draft = await saveDraft(undefined, {
+          ...emptyDraft,
+          project: project ?? (projects.length === 1 ? projects[0]! : null),
+          summary,
+          description,
+          labels,
+          parent: parent ?? null,
+        });
+        return `Saved draft ${draft.id} (${draft.project ?? "no project yet"}). The user can open it on the Jira page's Drafts tab.`;
+      } catch (cause) {
+        return toolError(cause);
+      }
+    },
+  });
+
+  bb.agents.configure(() => ({ tools: ["jira_search", "jira_create_issue", "jira_draft"], skills: ["jira"] }));
 
   bb.log.info("loaded");
 }
