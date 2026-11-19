@@ -1,6 +1,7 @@
 // Jira Cloud REST v3 client and the pieces of it that are pure enough to test:
 // site URL parsing, JQL building, and Atlassian Document Format conversion.
 import { z } from "zod";
+import { markdownToAdf } from "./markdown";
 
 /** A Jira project key as it appears in issue keys (ABC in ABC-123). */
 export const projectKeySchema = z
@@ -89,26 +90,6 @@ type AdfNode = {
   attrs?: Record<string, unknown>;
   content?: AdfNode[];
 };
-
-/** Plain text → ADF: blank lines separate paragraphs, single newlines break lines. */
-export function textToAdf(text: string): AdfNode {
-  const paragraphs = text
-    .replaceAll("\r\n", "\n")
-    .split(/\n{2,}/)
-    .map((p) => p.trim())
-    .filter((p) => p !== "");
-  return {
-    version: 1,
-    type: "doc",
-    content: paragraphs.map((p) => ({
-      type: "paragraph",
-      content: p.split("\n").flatMap((line, i): AdfNode[] => [
-        ...(i === 0 ? [] : [{ type: "hardBreak" }]),
-        ...(line === "" ? [] : [{ type: "text", text: line }]),
-      ]),
-    })),
-  };
-}
 
 const BLOCKS = new Set([
   "paragraph",
@@ -517,7 +498,7 @@ export class JiraClient {
           project: { key: input.project },
           issuetype: { id: input.typeId },
           summary: input.summary,
-          ...(input.description.trim() === "" ? {} : { description: textToAdf(input.description) }),
+          ...(input.description.trim() === "" ? {} : { description: markdownToAdf(input.description) }),
           ...(input.assigneeId === null ? {} : { assignee: { accountId: input.assigneeId } }),
           ...(input.reporterId == null ? {} : { reporter: { accountId: input.reporterId } }),
           ...(input.labels === undefined || input.labels.length === 0 ? {} : { labels: input.labels }),

@@ -21,6 +21,7 @@
     "jira.ts",
     "icons.tsx",
     "ui.ts",
-    "drafts.tsx"
+    "drafts.tsx",
+    "markdown.ts"
   ]
 }

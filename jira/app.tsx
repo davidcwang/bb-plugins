@@ -425,7 +425,7 @@ function CreateForm({ config, onCreated }: { config: JiraConfig; onCreated: () =
           value={description}
           onChange={(event) => setDescription(event.target.value)}
           rows={8}
-          placeholder="Plain text. Blank lines separate paragraphs."
+          placeholder="Markdown: headings, lists, code blocks, tables, and links become Jira formatting."
           className={inputClass}
         />
       </label>

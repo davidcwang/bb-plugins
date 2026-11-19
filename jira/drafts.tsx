@@ -371,7 +371,7 @@ function DraftEditor({
           value={fields.description}
           onChange={(event) => update({ description: event.target.value })}
           rows={36}
-          placeholder="Plain text. Blank lines separate paragraphs."
+          placeholder="Markdown: headings, lists, code blocks, tables, and links become Jira formatting."
           className={`${inputClass} min-h-[48rem] resize-y leading-relaxed`}
         />
       </Field>

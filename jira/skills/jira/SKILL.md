@@ -24,7 +24,11 @@ The **Jira** sidebar page has five tabs:
   Edits autosave locally. **Create in Jira** files it, adds the links, and
   removes the draft; a link that fails is reported and the issue is kept.
   Fields not on the project's create screen are disabled with a note.
-- **Create** — project, issue type, summary, plain-text description, and
+  Descriptions are Markdown (here and on the Create tab): headings, nested
+  lists, fenced code, pipe tables, links and bare URLs, bold, italic and
+  inline code are converted to Jira's ADF on create. A single newline is a
+  line break; `snake_case` stays literal.
+- **Create** — project, issue type, summary, Markdown description, and
   "Assign to me" (on by default).
 - **Source** — site, email, API token (write-only; leave empty to keep it),
   projects (add by key, a pasted board or issue URL, or look up by name), and the Kanban sync toggle.
