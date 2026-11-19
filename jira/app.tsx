@@ -484,6 +484,20 @@ function CreateForm({ config, onCreated }: { config: JiraConfig; onCreated: () =
 
 // ---- source ------------------------------------------------------------------
 
+/**
+ * A project key from what the user typed: a bare key ("hss"), an issue key
+ * ("HSS-12"), or a Jira URL such as .../jira/software/projects/HSS/boards/591
+ * or .../browse/HSS-12.
+ */
+function projectKeyFrom(raw: string): string | null {
+  const text = raw.trim();
+  const fromUrl =
+    /\/projects\/([A-Za-z][A-Za-z0-9_]{0,19})(?:[/?#]|$)/.exec(text)?.[1] ??
+    /\/browse\/([A-Za-z][A-Za-z0-9_]{0,19})-\d+/.exec(text)?.[1];
+  const candidate = (fromUrl ?? text.replace(/-\d+$/, "")).toUpperCase();
+  return /^[A-Z][A-Z0-9_]{0,19}$/.test(candidate) ? candidate : null;
+}
+
 function SourceForm({ config, onSaved }: { config: JiraConfig; onSaved: () => void }) {
   const rpc = useRpc<typeof rpcContract>();
   const sync = useSync();
@@ -525,10 +539,21 @@ function SourceForm({ config, onSaved }: { config: JiraConfig; onSaved: () => vo
       return `Saved. Connected as ${test.user}.`;
     });
 
-  const addProject = (key: string) => {
-    const upper = key.trim().toUpperCase();
-    if (/^[A-Z][A-Z0-9_]{0,19}$/.test(upper) && !projects.includes(upper)) setProjects([...projects, upper]);
+  /** Add a key, or the key in a pasted board, issue, or project URL. */
+  const addProject = (raw: string): boolean => {
+    const key = projectKeyFrom(raw);
+    if (key === null) {
+      setStatus({
+        ok: false,
+        text: `"${raw.trim()}" is not a project key or Jira project URL. Use Look up to find a project by name.`,
+      });
+      return false;
+    }
+    setStatus(null);
+    if (!projects.includes(key)) setProjects([...projects, key]);
+    return true;
   };
+  const projectsChanged = projects.join(",") !== config.projects.join(",");
 
   return (
     <div className="flex flex-col gap-5">
@@ -603,11 +628,10 @@ function SourceForm({ config, onSaved }: { config: JiraConfig; onSaved: () => vo
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   event.preventDefault();
-                  addProject(projectText);
-                  setProjectText("");
+                  if (addProject(projectText)) setProjectText("");
                 }
               }}
-              placeholder="Project key, or a name to look up"
+              placeholder="Project key, Jira board URL, or a name to look up"
               className={`${inputClass} min-w-48 flex-1`}
             />
             <button
@@ -615,8 +639,7 @@ function SourceForm({ config, onSaved }: { config: JiraConfig; onSaved: () => vo
               className={buttonClass}
               disabled={projectText.trim() === ""}
               onClick={() => {
-                addProject(projectText);
-                setProjectText("");
+                if (addProject(projectText)) setProjectText("");
               }}
             >
               Add
@@ -628,7 +651,9 @@ function SourceForm({ config, onSaved }: { config: JiraConfig; onSaved: () => vo
               title={connected(config) ? undefined : "Save the site, email, and token first"}
               onClick={() =>
                 void run("find", async () => {
-                  const list = await rpc.call("projects_search", { query: projectText });
+                  const list = await rpc.call("projects_search", {
+                    query: projectKeyFrom(projectText) ?? projectText.trim(),
+                  });
                   setFound(list);
                   return `${list.length} project(s) found.`;
                 })
@@ -674,6 +699,9 @@ function SourceForm({ config, onSaved }: { config: JiraConfig; onSaved: () => vo
           >
             {busy === "save" ? "Saving…" : "Save"}
           </button>
+          {projectsChanged ? (
+            <span className="text-xs font-medium text-[#e2a03f]">Projects changed; Save to apply</span>
+          ) : null}
           <button
             type="button"
             className={buttonClass}
