@@ -19,19 +19,18 @@ import type { rpcContract } from "./server";
 import { FEED_CHANNEL, NOTIFY_CHANNEL, eventSchema, type Feed, type NotifyEvent } from "./shared";
 
 /**
- * Opens a notification. BB's in-app browser is usually not signed in to
- * GitHub, which shows private repos as 404, so by default a `_blank` window
- * hands the URL to the system browser instead.
+ * Opens a notification through BB, which follows Settings → General → Links.
+ * BB's in-app browser is usually not signed in to GitHub (private repos show
+ * 404 there), so turn "Open links in the in-app browser" off to use the
+ * system browser.
  */
 function useOpen(): (url: string) => void {
-  const { values } = useSettings();
   const navigate = useBbNavigate();
-  const external = values?.openInBrowser !== false;
   return useCallback(
     (url: string) => {
-      if (!external || window.open(url, "_blank", "noopener,noreferrer") === null) navigate.openUrl(url);
+      if (!navigate.openUrl(url)) window.open(url, "_blank", "noopener,noreferrer");
     },
-    [external, navigate],
+    [navigate],
   );
 }
 

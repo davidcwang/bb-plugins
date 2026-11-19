@@ -52,14 +52,16 @@ nothing is marked read on GitHub). **Clear** empties the list.
   `state_change`, `ci_activity`, `subscribed`, `manual` alert on any update
   GitHub files under them, unchecked.
 - `ignoreBots` — skip comments and reviews from `*[bot]` accounts (default on).
-- `openInBrowser` — open notifications in the system browser (default on).
-  BB's in-app browser is usually not signed in to GitHub, so private repos
-  show 404 there.
 - `includeIssues` — also alert on issues (default PRs only).
 - `desktop` — system notification in addition to the toast (default on).
 - `enabled` — pause polling.
 
 ## Behaviour
+
+- Notifications open through BB, which follows Settings → General → Links →
+  "Open links in the in-app browser". BB's in-app browser is usually not
+  signed in to GitHub (private repos show 404), so turn that off to use the
+  default browser.
 
 - Poll interval follows GitHub's `X-Poll-Interval` (60 s minimum). Requests
   send `If-Modified-Since`, so an unchanged feed is a 304 that does not

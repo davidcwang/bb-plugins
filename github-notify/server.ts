@@ -223,13 +223,6 @@ export default async function plugin(bb: BbPluginApi) {
       description: "Show a system notification as well as the in-app toast.",
       default: true,
     },
-    openInBrowser: {
-      type: "boolean",
-      label: "Open in system browser",
-      description:
-        "Open notifications in your default browser, where you are signed in to GitHub. Off follows BB's browser preference.",
-      default: true,
-    },
   });
 
   async function githubToken(): Promise<string | null> {
