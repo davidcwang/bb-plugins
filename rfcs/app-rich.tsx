@@ -22,7 +22,7 @@ import type { DocRead, rpcContract } from "./server";
 import { markdownBlocks, parseFrontmatter, splitSections, type DocSection } from "./shared";
 import { plainTitle, type Anchor, type Card, type CardMode, type Claim, type Comment, type Note, type Sidecar } from "./sidecar";
 import { CardView, CommentCard, SectionChrome, SelectionToolbar, itemsForSection, useSelectionActions, type DiagramRenderer, type ItemsTab } from "./app-sidecar";
-import { useRpc } from "@get-bb/plugin-sdk/app";
+import { useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
 import { cn } from "@/lib/utils";
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
@@ -331,6 +331,10 @@ export function DocEditor({
   const st = useRef({ baseSha: doc.sha256, baseline: null as string | null, dirty: false, saving: false });
   const [status, setStatus] = useState<SaveStatus>("saved");
   const saveRef = useRef<() => Promise<void>>(async () => undefined);
+  // useEditor captures handleClick once, so read the opener through a ref.
+  const navigate = useBbNavigate();
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
   const timer = useRef(0);
 
   const editor = useEditor({
@@ -350,7 +354,9 @@ export function DocEditor({
       handleClick: (_view, _pos, event) => {
         const a = (event.target as HTMLElement).closest("a[href]");
         if (a !== null && (event.metaKey || event.ctrlKey)) {
-          window.open((a as HTMLAnchorElement).href, "_blank", "noopener");
+          // BB's opener honors Settings → Links (in-app browser or the default browser).
+          const href = (a as HTMLAnchorElement).href;
+          if (!navigateRef.current.openUrl(href)) window.open(href, "_blank", "noopener");
           return true;
         }
         return false;
