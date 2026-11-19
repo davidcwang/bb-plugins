@@ -99,7 +99,8 @@ function useBoard() {
 function cardIcon(card: Card): string {
   if (card.kind === "task") return "SquareCheck";
   if (card.kind === "pr") return card.pr?.type === "issue" ? "CircleDot" : "GitPullRequest";
-  if (card.kind === "jira") return "Ticket";
+  // Registered by the jira plugin; BB has no built-in ticket icon.
+  if (card.kind === "jira") return "jira.ticket";
   return "MessageSquare";
 }
 
