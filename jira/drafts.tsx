@@ -370,9 +370,9 @@ function DraftEditor({
         <textarea
           value={fields.description}
           onChange={(event) => update({ description: event.target.value })}
-          rows={18}
+          rows={36}
           placeholder="Plain text. Blank lines separate paragraphs."
-          className={`${inputClass} min-h-[24rem] resize-y leading-relaxed`}
+          className={`${inputClass} min-h-[48rem] resize-y leading-relaxed`}
         />
       </Field>
 
