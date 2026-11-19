@@ -65,5 +65,8 @@ not transition the Jira issue.
 ## Settings (`bb plugin config jira`)
 
 `siteUrl`, `email`, `apiToken` (secret), `projects`, `syncToKanban`
-(default on), `openInBrowser` (default on; BB's in-app browser is usually not
-signed in to Jira). The Source tab edits the same values.
+(default on). The Source tab edits the same values.
+
+Links open through BB, so they follow Settings → General → Links → "Open
+links in the in-app browser". Turn it off to open them in the default browser,
+where you are signed in to Jira.

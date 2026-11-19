@@ -1,22 +1,20 @@
 // Styles and small helpers shared by the Jira page's tabs.
 import { useCallback } from "react";
-import { useBbNavigate, useSettings } from "@get-bb/plugin-sdk/app";
+import { useBbNavigate } from "@get-bb/plugin-sdk/app";
 
 export const message = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
 
 /**
- * Opens an issue. BB's in-app browser is usually not signed in to Jira, so by
- * default a `_blank` window hands the URL to the system browser instead.
+ * Opens an issue through BB, which follows Settings → General → Links: the
+ * in-app browser, or with that off, the system default browser.
  */
 export function useOpen(): (url: string) => void {
-  const { values } = useSettings();
   const navigate = useBbNavigate();
-  const external = values?.openInBrowser !== false;
   return useCallback(
     (url: string) => {
-      if (!external || window.open(url, "_blank", "noopener,noreferrer") === null) navigate.openUrl(url);
+      if (!navigate.openUrl(url)) window.open(url, "_blank", "noopener,noreferrer");
     },
-    [external, navigate],
+    [navigate],
   );
 }
 

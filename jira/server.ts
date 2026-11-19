@@ -211,12 +211,6 @@ export default async function plugin(bb: BbPluginApi) {
         "Every five minutes, put issues assigned to you on the Kanban board (needs the kanban plugin).",
       default: true,
     },
-    openInBrowser: {
-      type: "boolean",
-      label: "Open in system browser",
-      description: "Open issues in your browser instead of BB's, which is usually not signed in to Jira.",
-      default: true,
-    },
   });
 
   async function readConfig(): Promise<JiraConfig> {
