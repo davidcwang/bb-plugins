@@ -14,7 +14,9 @@ project the account can see.
 The **Jira** sidebar page has four tabs:
 
 - **My issues** — assigned to you, open or finished in the last 7 days.
-- **Project** — every issue in the source projects. Search by text or key.
+- **Project** — every issue in the source projects (with no projects set, issues
+  updated in the last 90 days, since Jira refuses unbounded searches). Search
+  by text or key.
 - **Create** — project, issue type, summary, plain-text description, and
   "Assign to me" (on by default).
 - **Source** — site, email, API token (write-only; leave empty to keep it),

@@ -52,6 +52,11 @@ export type Scope = "mine" | "project";
 
 /** Days a finished issue stays in "mine" results (and so on the Kanban board). */
 export const DONE_DAYS = 7;
+/**
+ * Jira Cloud rejects a search with no restriction at all, so a project-wide
+ * search over every project only covers recently updated issues.
+ */
+export const RECENT_DAYS = 90;
 
 export function buildJql(input: { scope: Scope; projects: string[]; text?: string }): string {
   const clauses: string[] = [];
@@ -61,6 +66,9 @@ export function buildJql(input: { scope: Scope; projects: string[]; text?: strin
     clauses.push(`(statusCategory != Done OR statusCategoryChangedDate >= -${DONE_DAYS}d)`);
   }
   const text = input.text?.trim() ?? "";
+  if (input.scope === "project" && input.projects.length === 0 && text === "") {
+    clauses.push(`updated >= -${RECENT_DAYS}d`);
+  }
   if (text !== "") {
     const key = issueKeySchema.safeParse(text);
     clauses.push(
