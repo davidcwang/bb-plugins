@@ -13,6 +13,7 @@ import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import { common, createLowlight } from "lowlight";
 import { Markdown } from "@tiptap/markdown";
 import { TableKit } from "@tiptap/extension-table";
+import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { Plugin, PluginKey, TextSelection } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import type { Node as PmNode } from "@tiptap/pm/model";
@@ -313,6 +314,8 @@ export function DocEditor({
       StarterKit.configure({ codeBlock: false, link: { openOnClick: false, autolink: true }, heading: { levels: [1, 2, 3, 4, 5, 6] } }),
       RfcCodeBlock,
       TableKit.configure({ table: { resizable: false } }),
+      TaskList,
+      TaskItem.configure({ nested: true }),
       Markdown.configure({ indentation: { style: "space", size: 2 } }),
       ListTabs,
       chromeExtension(registry, bump, (title) => {
