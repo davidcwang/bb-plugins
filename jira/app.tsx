@@ -741,7 +741,7 @@ function JiraPage({ subPath }: { subPath: string }) {
   return (
     <div className="h-full overflow-auto">
       <div
-        className={`mx-auto flex w-full flex-col gap-4 p-4 md:p-5 ${tab === "drafts" ? "max-w-6xl" : "max-w-3xl"}`}
+        className={`mx-auto flex w-full flex-col gap-4 ${tab === "drafts" ? "max-w-[1800px] p-3 md:p-4" : "max-w-3xl p-4 md:p-5"}`}
       >
         <header
           className="flex flex-wrap items-center gap-3 rounded-xl px-4 py-3 text-white shadow-sm"

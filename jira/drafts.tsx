@@ -119,6 +119,8 @@ export function DraftsBoard({
           draft={selected}
           config={config}
           rpc={rpc}
+          drafts={drafts ?? []}
+          onOpenDraft={onSelect}
           onClose={() => onSelect(null)}
           onSaved={(draft) => setDrafts((list) => list?.map((d) => (d.id === draft.id ? draft : d)) ?? null)}
         />
@@ -169,12 +171,17 @@ function DraftEditor({
   draft,
   config,
   rpc,
+  drafts,
+  onOpenDraft,
   onClose,
   onSaved,
 }: {
   draft: Draft;
   config: JiraConfig;
   rpc: Rpc;
+  /** Every draft, so links to other drafts can show their current summary. */
+  drafts: Draft[];
+  onOpenDraft: (id: string) => void;
   onClose: () => void;
   onSaved: (draft: Draft) => void;
 }) {
@@ -363,9 +370,9 @@ function DraftEditor({
         <textarea
           value={fields.description}
           onChange={(event) => update({ description: event.target.value })}
-          rows={8}
+          rows={18}
           placeholder="Plain text. Blank lines separate paragraphs."
-          className={inputClass}
+          className={`${inputClass} min-h-[24rem] resize-y leading-relaxed`}
         />
       </Field>
 
@@ -417,7 +424,13 @@ function DraftEditor({
       </Field>
 
       <Field label="Linked issues" note={offScreen("issuelinks") ? "Added after the issue is created" : undefined}>
-        <LinksEditor rpc={rpc} value={fields.links} onChange={(links) => update({ links })} />
+        <LinksEditor
+          rpc={rpc}
+          value={fields.links}
+          onChange={(links) => update({ links })}
+          drafts={drafts}
+          onOpenDraft={onOpenDraft}
+        />
       </Field>
 
       {error === null ? null : (
@@ -695,14 +708,60 @@ function IssueKeyInput({
   );
 }
 
+/**
+ * A link to another draft. It becomes a real Jira link once both drafts are
+ * created, whichever goes first, so show which draft it is by its summary.
+ */
+function DraftLinkTarget({
+  link,
+  drafts,
+  onOpen,
+}: {
+  link: DraftFields["links"][number];
+  drafts: Draft[];
+  onOpen: (id: string) => void;
+}) {
+  const other = drafts.find((d) => d.id === link.draftId);
+  const summary = other?.summary.trim() || link.draftSummary?.trim() || "";
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1.5 text-xs">
+      <span
+        className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+        style={{ color: "#e2a03f", backgroundColor: "#e2a03f24" }}
+        title="Not in Jira yet. The link is added when both tickets are created."
+      >
+        Draft
+      </span>
+      {other === undefined ? (
+        <span className="truncate text-muted-foreground">
+          {/* Gone from the list: created (the link then resolves to its key) or deleted. */}
+          {summary === "" ? "A draft that was created or deleted" : `${summary} (created or deleted)`}
+        </span>
+      ) : (
+        <button
+          type="button"
+          onClick={() => onOpen(other.id)}
+          className="truncate font-semibold text-foreground underline-offset-2 hover:underline"
+        >
+          {summary === "" ? "Untitled draft" : summary}
+        </button>
+      )}
+    </span>
+  );
+}
+
 function LinksEditor({
   rpc,
   value,
   onChange,
+  drafts,
+  onOpenDraft,
 }: {
   rpc: Rpc;
   value: DraftFields["links"];
   onChange: (links: DraftFields["links"]) => void;
+  drafts: Draft[];
+  onOpenDraft: (id: string) => void;
 }) {
   const [types, setTypes] = useState<LinkType[]>([]);
   const [relation, setRelation] = useState("");
@@ -762,9 +821,7 @@ function LinksEditor({
               {link.key !== undefined ? (
                 <span className="font-mono text-xs font-semibold">{link.key}</span>
               ) : (
-                <span className="text-xs">
-                  draft: <span className="font-semibold">{link.draftSummary ?? link.draftId}</span>
-                </span>
+                <DraftLinkTarget link={link} drafts={drafts} onOpen={onOpenDraft} />
               )}
               <button
                 type="button"
