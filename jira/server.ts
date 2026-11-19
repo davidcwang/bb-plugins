@@ -435,22 +435,63 @@ export default async function plugin(bb: BbPluginApi) {
       if (draft.project === null) throw new Error("Pick a project first.");
       if (draft.typeId === null) throw new Error("Pick an issue type first.");
       if (draft.summary.trim() === "") throw new Error("Add a summary first.");
-      const { jira } = await client();
+      const { jira, config } = await client();
+      // Jira rejects the whole create if it sets a field the project's create
+      // screen doesn't show. Those fields are left out of the create and set
+      // with an edit afterwards, which the edit screen often allows.
+      let screen: Set<string> | null = null;
+      try {
+        screen = new Set(await jira.createFields(draft.project, draft.typeId));
+      } catch (cause) {
+        bb.log.warn(`could not read the create screen: ${cause instanceof Error ? cause.message : String(cause)}`);
+      }
+      const onScreen = (field: string) => screen === null || screen.has(field);
+      const later: { reporterId?: string; labels?: string[]; parent?: string; assigneeId?: string } = {};
+      const laterNames: string[] = [];
+      if (draft.reporter !== null && !onScreen("reporter")) {
+        // The creator becomes the reporter anyway, so a reporter of "me" needs nothing.
+        const me = await myself(jira, config.email!);
+        if (draft.reporter.accountId !== me.accountId) {
+          later.reporterId = draft.reporter.accountId;
+          laterNames.push(`reporter ${draft.reporter.displayName}`);
+        }
+      }
+      if (draft.labels.length > 0 && !onScreen("labels")) {
+        later.labels = draft.labels;
+        laterNames.push("labels");
+      }
+      if (draft.parent !== null && !onScreen("parent")) {
+        later.parent = draft.parent;
+        laterNames.push(`parent ${draft.parent}`);
+      }
+      if (draft.assignee !== null && !onScreen("assignee")) {
+        later.assigneeId = draft.assignee.accountId;
+        laterNames.push(`assignee ${draft.assignee.displayName}`);
+      }
       const created = await jira.create({
         project: draft.project,
         typeId: draft.typeId,
         summary: draft.summary.trim(),
         description: draft.description,
-        assigneeId: draft.assignee?.accountId ?? null,
-        reporterId: draft.reporter?.accountId ?? null,
-        labels: draft.labels,
-        parent: draft.parent,
+        assigneeId: onScreen("assignee") ? (draft.assignee?.accountId ?? null) : null,
+        reporterId: onScreen("reporter") ? (draft.reporter?.accountId ?? null) : null,
+        labels: onScreen("labels") ? draft.labels : [],
+        parent: onScreen("parent") ? draft.parent : null,
       });
       bb.log.info(`created ${created.key} from draft ${id}`);
       // The issue exists now: drop the draft even if a link fails, and report it.
       await bb.storage.kv.set(`${CREATED_PREFIX}${id}`, created.key);
       await deleteDraft(id);
       const warnings: string[] = [];
+      if (laterNames.length > 0) {
+        try {
+          await jira.update(created.key, later);
+        } catch (cause) {
+          warnings.push(
+            `${created.key} was created without ${laterNames.join(", ")}: not on the create screen, and the edit failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          );
+        }
+      }
       for (const link of draft.links) {
         let to = link.key;
         if (to === undefined && link.draftId !== undefined) {

@@ -255,7 +255,7 @@ export class JiraClient {
   }
 
   private async request(
-    method: "GET" | "POST" | "DELETE",
+    method: "GET" | "POST" | "PUT" | "DELETE",
     path: string,
     body?: unknown,
     signal?: AbortSignal,
@@ -480,6 +480,21 @@ export class JiraClient {
     if (found === undefined || found.direction === link.direction) return;
     await this.request("DELETE", `/rest/api/3/issueLink/${encodeURIComponent(found.id)}`);
     await this.request("POST", "/rest/api/3/issueLink", body(wanted));
+  }
+
+  /** Set fields on an existing issue (its edit screen decides which are allowed). */
+  async update(
+    key: string,
+    fields: { reporterId?: string; labels?: string[]; parent?: string; assigneeId?: string },
+  ): Promise<void> {
+    await this.request("PUT", `/rest/api/3/issue/${encodeURIComponent(key)}`, {
+      fields: {
+        ...(fields.reporterId === undefined ? {} : { reporter: { accountId: fields.reporterId } }),
+        ...(fields.labels === undefined ? {} : { labels: fields.labels }),
+        ...(fields.parent === undefined ? {} : { parent: { key: fields.parent } }),
+        ...(fields.assigneeId === undefined ? {} : { assignee: { accountId: fields.assigneeId } }),
+      },
+    });
   }
 
   async create(input: {
