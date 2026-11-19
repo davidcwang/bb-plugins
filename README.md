@@ -22,6 +22,7 @@ Nothing upgrades on its own.
 | github-notify | Desktop notifications and toasts for comments, reviews, and assignments on your GitHub PRs, from your own notifications feed |
 | sidebar-rail | Collapsing the left sidebar (⌘\\) leaves an icon-only rail instead of hiding it |
 | reuse-checkout | New threads default to reusing the project's existing checkout environment |
+| jira | Jira Cloud source: browse and create issues from a sidebar page; issues assigned to you sync onto the Kanban board |
 
 ## Conventions for new plugins
 
