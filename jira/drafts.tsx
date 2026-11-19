@@ -65,7 +65,7 @@ export function DraftsBoard({
           links: [],
         },
       });
-      setDrafts((list) => [draft, ...(list ?? [])]);
+      setDrafts((list) => [...(list ?? []), draft]);
       onSelect(draft.id);
     } catch (cause) {
       setError(message(cause));

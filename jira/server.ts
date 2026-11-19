@@ -392,7 +392,8 @@ export default async function plugin(bb: BbPluginApi) {
       const parsed = draftSchema.safeParse(await bb.storage.kv.get(key));
       if (parsed.success) drafts.push(parsed.data);
     }
-    return drafts.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    // Oldest first, so a set of drafts written in order stays in that order while edited.
+    return drafts.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   }
 
   async function getDraft(id: string): Promise<Draft> {

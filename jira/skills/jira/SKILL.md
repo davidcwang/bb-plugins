@@ -18,7 +18,7 @@ The **Jira** sidebar page has five tabs:
   updated in the last 90 days, since Jira refuses unbounded searches). Search
   by text or key.
 - **Drafts** — tickets written in BB that are not in Jira yet. A Draft column
-  on the left; click one to edit it on the right: summary, project, type
+  on the left, oldest first; click one to edit it on the right: summary, project, type
   (sub-tasks included), description, assignee, reporter, labels, parent, and
   linked issues (blocks, is blocked by, and the site's other link types).
   Edits autosave locally. **Create in Jira** files it, adds the links, and
