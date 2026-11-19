@@ -5,7 +5,7 @@
 // columns (or use its column picker); open a card for its details, phase
 // controls, and thread actions. The "kanban-changed" realtime signal keeps
 // every open board current.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   definePluginApp,
   useBbNavigate,
@@ -27,13 +27,48 @@ import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
-const COLUMNS: Array<{ id: Column; title: string; hint: string }> = [
-  { id: "backlog", title: "To do", hint: "Tasks you create" },
-  { id: "in_progress", title: "In progress", hint: "Cards whose thread is working" },
-  { id: "in_review", title: "In review", hint: "Your work awaiting others" },
-  { id: "to_review", title: "To review", hint: "Review requests and mentions" },
-  { id: "done", title: "Done", hint: "" },
+const COLUMNS: Array<{ id: Column; title: string; hint: string; color: string }> = [
+  { id: "backlog", title: "To do", hint: "Tasks you create", color: "#8590a2" },
+  { id: "in_progress", title: "In progress", hint: "Cards whose thread is working", color: "#1d7afc" },
+  { id: "in_review", title: "In review", hint: "Your work awaiting others", color: "#8f7ee7" },
+  { id: "to_review", title: "To review", hint: "Review requests and mentions", color: "#e2a03f" },
+  { id: "done", title: "Done", hint: "", color: "#22a06b" },
 ];
+
+/** Accent per card kind: the left edge and icon of each card. */
+function kindColor(card: Card): string {
+  switch (card.kind) {
+    case "task":
+      return "#00b8d9";
+    case "pr":
+      return card.pr?.type === "issue" ? "#36b37e" : "#8f7ee7";
+    case "jira":
+      return "#1d7afc";
+    default:
+      return "#8590a2";
+  }
+}
+
+const PHASE_COLOR: Record<Phase, string> = {
+  research: "#00b8d9",
+  plan: "#e2a03f",
+  implement: "#1d7afc",
+  review: "#8f7ee7",
+};
+
+const JIRA_COLOR = { new: "#8590a2", indeterminate: "#1d7afc", done: "#22a06b" } as const;
+
+/** A small tinted label in one color. */
+function Pill({ color, children, className }: { color: string; children: ReactNode; className?: string }) {
+  return (
+    <span
+      className={cn("rounded px-1.5 py-0.5 text-[11px] font-medium", className)}
+      style={{ color, backgroundColor: `${color}24` }}
+    >
+      {children}
+    </span>
+  );
+}
 
 /** Every status a card can be moved to; Archived is not a board column. */
 const MOVE_OPTIONS: Array<{ id: Column; title: string }> = [
@@ -97,7 +132,7 @@ function useBoard() {
 }
 
 function cardIcon(card: Card): string {
-  if (card.kind === "task") return "SquareCheck";
+  if (card.kind === "task") return "CircleCheck";
   if (card.kind === "pr") return card.pr?.type === "issue" ? "CircleDot" : "GitPullRequest";
   // Registered by the jira plugin; BB has no built-in ticket icon.
   if (card.kind === "jira") return "jira.ticket";
@@ -122,7 +157,8 @@ function CardView({
         event.dataTransfer.setData("text/plain", card.id);
         event.dataTransfer.effectAllowed = "move";
       }}
-      className="cursor-grab rounded-lg border border-border bg-card p-3 text-sm shadow-sm active:cursor-grabbing"
+      className="cursor-grab rounded-lg border border-border border-l-[3px] bg-card p-3 text-sm shadow-sm transition hover:-translate-y-px hover:shadow-md active:cursor-grabbing"
+      style={{ borderLeftColor: kindColor(card) }}
     >
       <button
         type="button"
@@ -131,18 +167,22 @@ function CardView({
       >
         <Icon
           name={cardIcon(card)}
-          className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+          className="mt-0.5 size-4 shrink-0"
+          style={{ color: kindColor(card) }}
         />
-        <span className="min-w-0 flex-1 break-words">{card.title}</span>
+        <span className="min-w-0 flex-1 break-words font-medium">{card.title}</span>
       </button>
       <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
         {card.phase === null ? null : (
-          <span className="rounded bg-muted px-1.5 py-0.5 capitalize text-foreground">
+          <Pill color={PHASE_COLOR[card.phase]} className="capitalize">
             {card.phase}
-          </span>
+          </Pill>
         )}
         {card.threadId !== undefined && card.threadStatus === "active" ? (
-          <span className="text-foreground">● running</span>
+          <span className="inline-flex items-center gap-1 font-medium" style={{ color: "#22a06b" }}>
+            <span className="size-1.5 animate-pulse rounded-full" style={{ backgroundColor: "#22a06b" }} />
+            running
+          </span>
         ) : null}
         {card.kind === "task" && card.threadId !== undefined && card.threadStatus !== "active" ? (
           <span>thread linked</span>
@@ -152,21 +192,25 @@ function CardView({
             <span className="font-mono">
               {gh.repo}#{gh.number}
             </span>
-            {gh.draft ? <span>draft</span> : null}
-            {gh.closed ? <span>closed</span> : null}
+            {gh.draft ? <Pill color="#8590a2">draft</Pill> : null}
+            {gh.closed ? <Pill color="#e5493a">closed</Pill> : null}
             {gh.source === "review-requested" ? (
-              <span className="text-foreground">review requested · {gh.author}</span>
+              <Pill color="#e2a03f">review requested · {gh.author}</Pill>
             ) : gh.source === "mentioned" ? (
-              <span className="text-foreground">mentioned you · {gh.author}</span>
+              <Pill color="#e2a03f">mentioned you · {gh.author}</Pill>
             ) : gh.source === "assigned" ? (
-              <span>assigned</span>
+              <Pill color="#00b8d9">assigned</Pill>
             ) : null}
           </>
         )}
         {jira === undefined ? null : (
           <>
-            <span className="font-mono">{jira.key}</span>
-            <span>{jira.status}</span>
+            <span className="font-mono font-semibold" style={{ color: "#1d7afc" }}>
+              {jira.key}
+            </span>
+            <Pill color={JIRA_COLOR[jira.category]} className="uppercase tracking-wide">
+              {jira.status}
+            </Pill>
           </>
         )}
         <select
@@ -826,7 +870,7 @@ function BoardPage() {
               : `GitHub synced ${new Date(lastSync).toLocaleTimeString()}.`}
         </p>
         <Button variant="ghost" size="sm" disabled={syncing} onClick={sync}>
-          <Icon name="RefreshCw" className={cn("size-4", syncing && "animate-spin")} />
+          <Icon name="RotateCcw" className={cn("size-4", syncing && "animate-spin")} />
           Sync
         </Button>
         <Button variant="ghost" size="sm" onClick={() => setArchiveOpen(true)}>
@@ -864,16 +908,26 @@ function BoardPage() {
                 const id = event.dataTransfer.getData("text/plain");
                 if (id !== "") move(id, column.id);
               }}
-              className={cn(
-                "flex min-h-40 min-w-0 flex-col rounded-lg border border-border bg-muted/30 p-2",
-                dragOver === column.id && "border-primary bg-muted/60",
-              )}
+              className="flex min-h-40 min-w-0 flex-col rounded-lg border border-t-[3px] p-2 transition-colors"
+              style={{
+                borderColor: dragOver === column.id ? column.color : `${column.color}40`,
+                borderTopColor: column.color,
+                backgroundColor: dragOver === column.id ? `${column.color}24` : `${column.color}0d`,
+              }}
             >
               <h2
                 title={column.hint}
-                className="px-1 pb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                className="flex items-center gap-2 px-1 pb-2 text-xs font-semibold uppercase tracking-wide"
+                style={{ color: column.color }}
               >
-                {column.title} · {items.length}
+                <span className="size-2 rounded-full" style={{ backgroundColor: column.color }} />
+                {column.title}
+                <span
+                  className="ml-auto rounded-full px-1.5 text-[11px] font-medium"
+                  style={{ backgroundColor: `${column.color}24` }}
+                >
+                  {items.length}
+                </span>
               </h2>
               <ul className="flex flex-1 flex-col gap-2 overflow-y-auto">
                 {items.map((card) => (
