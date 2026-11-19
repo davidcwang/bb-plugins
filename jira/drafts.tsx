@@ -753,13 +753,19 @@ function LinksEditor({
         <ul className="flex flex-col gap-1">
           {value.map((link) => (
             <li
-              key={`${link.type}:${link.direction}:${link.key}`}
+              key={`${link.type}:${link.direction}:${link.key ?? link.draftId}`}
               className="flex items-center gap-2 rounded-md border border-border px-2 py-1 text-sm"
             >
               <span className="rounded px-1.5 py-0.5 text-xs font-medium" style={{ color: BRAND, backgroundColor: `${BRAND}1f` }}>
                 {label(link)}
               </span>
-              <span className="font-mono text-xs font-semibold">{link.key}</span>
+              {link.key !== undefined ? (
+                <span className="font-mono text-xs font-semibold">{link.key}</span>
+              ) : (
+                <span className="text-xs">
+                  draft: <span className="font-semibold">{link.draftSummary ?? link.draftId}</span>
+                </span>
+              )}
               <button
                 type="button"
                 aria-label="Remove link"

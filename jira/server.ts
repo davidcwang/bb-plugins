@@ -53,13 +53,20 @@ const userSchema = z.object({ accountId: z.string().max(128), displayName: z.str
 /** Jira labels cannot contain spaces. */
 const labelSchema = z.string().trim().min(1).max(255).regex(/^\S+$/, "Labels cannot contain spaces");
 
-const draftLinkSchema = z.object({
-  /** Link type name, e.g. "Blocks". */
-  type: z.string().min(1).max(100),
-  /** "outward" reads "<this> blocks <key>"; "inward" reads "<this> is blocked by <key>". */
-  direction: z.enum(["outward", "inward"]),
-  key: issueKeySchema,
-});
+const draftLinkSchema = z
+  .object({
+    /** Link type name, e.g. "Blocks". */
+    type: z.string().min(1).max(100),
+    /** "outward" reads "<this> blocks <key>"; "inward" reads "<this> is blocked by <key>". */
+    direction: z.enum(["outward", "inward"]),
+    /** An existing issue. Exactly one of `key` and `draftId` is set. */
+    key: issueKeySchema.optional(),
+    /** Another draft, linked once both exist in Jira. */
+    draftId: z.string().min(1).max(64).optional(),
+    /** The other draft's summary when the link was made, for display. */
+    draftSummary: z.string().max(255).optional(),
+  })
+  .refine((l) => (l.key === undefined) !== (l.draftId === undefined), "A link needs an issue key or a draft, not both");
 
 /** The editable part of a draft. Everything is optional until it is created. */
 const draftFieldsSchema = z.object({
@@ -164,6 +171,8 @@ export const CHANGED = "jira-changed";
 const SYNC_KEY = "sync";
 /** One kv row per draft, so a long description cannot push a list past the row limit. */
 const DRAFT_PREFIX = "draft:";
+/** Issue key each submitted draft became, so links to it from other drafts still resolve. */
+const CREATED_PREFIX = "created:";
 const MAX_DRAFTS = 200;
 const KANBAN_PLUGIN_ID = "kanban";
 /** The kanban plugin caps one sync at 500 cards. */
@@ -438,13 +447,32 @@ export default async function plugin(bb: BbPluginApi) {
       });
       bb.log.info(`created ${created.key} from draft ${id}`);
       // The issue exists now: drop the draft even if a link fails, and report it.
+      await bb.storage.kv.set(`${CREATED_PREFIX}${id}`, created.key);
       await deleteDraft(id);
       const warnings: string[] = [];
       for (const link of draft.links) {
+        let to = link.key;
+        if (to === undefined && link.draftId !== undefined) {
+          to = (await bb.storage.kv.get<string>(`${CREATED_PREFIX}${link.draftId}`)) ?? undefined;
+          if (to === undefined) {
+            // The other draft isn't in Jira yet: hand it the reverse link, which
+            // gets added when that draft is created.
+            const other = draftSchema.safeParse(await bb.storage.kv.get(`${DRAFT_PREFIX}${link.draftId}`));
+            if (other.success) {
+              const reverse = { type: link.type, direction: link.direction === "outward" ? ("inward" as const) : ("outward" as const), key: created.key };
+              const { id: otherId, createdAt: _c, updatedAt: _u, ...fields } = other.data;
+              await saveDraft(otherId, { ...fields, links: [...fields.links.filter((l) => l.draftId !== id), reverse] });
+            } else {
+              warnings.push(`Could not link ${link.type} draft "${link.draftSummary ?? link.draftId}": it was deleted`);
+            }
+            continue;
+          }
+        }
+        if (to === undefined) continue;
         try {
-          await jira.link(created.key, link, link.key);
+          await jira.link(created.key, link, to);
         } catch (cause) {
-          warnings.push(`Could not link ${link.type} ${link.key}: ${cause instanceof Error ? cause.message : String(cause)}`);
+          warnings.push(`Could not link ${link.type} ${to}: ${cause instanceof Error ? cause.message : String(cause)}`);
         }
       }
       bb.realtime.publish(CHANGED, { created: created.key });
@@ -702,21 +730,65 @@ export default async function plugin(bb: BbPluginApi) {
       "Prefer this over jira_create_issue when the user wants a ticket written but has not asked for it to be filed yet.",
     parameters: z.object({
       project: projectKeySchema.optional(),
+      issueType: z.string().trim().min(1).max(100).optional().describe("Issue type name, e.g. Task or Story. Needs a project."),
       summary: z.string().trim().min(1).max(255),
       description: z.string().max(20_000).default(""),
       labels: z.array(labelSchema).max(50).default([]),
       parent: issueKeySchema.optional(),
+      reporterMe: z.boolean().default(false).describe("Set the reporter to the connected user."),
+      assigneeMe: z.boolean().default(false).describe("Assign to the connected user."),
+      links: z
+        .array(
+          z.object({
+            type: z.string().min(1).max(100).default("Blocks"),
+            direction: z.enum(["outward", "inward"]).describe('"outward": this blocks the other. "inward": this is blocked by the other.'),
+            key: issueKeySchema.optional().describe("An existing issue key."),
+            draftId: z.string().min(1).max(64).optional().describe("Another draft's id, as returned by this tool."),
+          }),
+        )
+        .max(50)
+        .default([]),
     }),
-    async execute({ project, summary, description, labels, parent }) {
+    async execute({ project, issueType, summary, description, labels, parent, reporterMe, assigneeMe, links }) {
       try {
         const { projects } = await readConfig();
+        const proj = project ?? (projects.length === 1 ? projects[0]! : null);
+        let typeId: string | null = null;
+        let me: { accountId: string; displayName: string } | null = null;
+        if (issueType !== undefined || reporterMe || assigneeMe) {
+          const { jira, config } = await client();
+          if (issueType !== undefined && proj !== null) {
+            const types = await jira.issueTypes(proj);
+            const t = types.find((x) => x.name.toLowerCase() === issueType.toLowerCase());
+            if (t === undefined) return toolError(new Error(`No issue type "${issueType}" in ${proj}: ${types.map((x) => x.name).join(", ")}`));
+            typeId = t.id;
+          }
+          if (reporterMe || assigneeMe) {
+            const m = await myself(jira, config.email!);
+            me = { accountId: m.accountId, displayName: m.displayName };
+          }
+        }
+        const resolved = [];
+        for (const l of links) {
+          if ((l.key === undefined) === (l.draftId === undefined)) return toolError(new Error("Each link needs exactly one of key or draftId."));
+          if (l.draftId !== undefined) {
+            const other = await getDraft(l.draftId);
+            resolved.push({ type: l.type, direction: l.direction, draftId: l.draftId, draftSummary: other.summary });
+          } else {
+            resolved.push({ type: l.type, direction: l.direction, key: l.key });
+          }
+        }
         const draft = await saveDraft(undefined, {
           ...emptyDraft,
-          project: project ?? (projects.length === 1 ? projects[0]! : null),
+          project: proj,
+          typeId,
           summary,
           description,
           labels,
           parent: parent ?? null,
+          reporter: reporterMe ? me : null,
+          assignee: assigneeMe ? me : null,
+          links: resolved,
         });
         return `Saved draft ${draft.id} (${draft.project ?? "no project yet"}). The user can open it on the Jira page's Drafts tab.`;
       } catch (cause) {
