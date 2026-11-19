@@ -128,6 +128,33 @@ function mergeIntoPreviousList(editor: Editor): boolean {
   view.dispatch(tr.scrollIntoView());
   return true;
 }
+/** Clicking a ☐ or ☑ character toggles it, so tables can carry checkbox columns
+ * (markdown task lists can't live inside table cells). */
+const BoxToggle = Extension.create({
+  name: "boxToggle",
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: new PluginKey("boxToggle"),
+        props: {
+          handleClick(view, pos) {
+            const doc = view.state.doc;
+            for (const at of [pos, pos - 1]) {
+              if (at < 0 || at + 1 > doc.content.size) continue;
+              const ch = doc.textBetween(at, at + 1, "", "");
+              if (ch === "\u2610" || ch === "\u2611") {
+                view.dispatch(view.state.tr.insertText(ch === "\u2610" ? "\u2611" : "\u2610", at, at + 1));
+                return true;
+              }
+            }
+            return false;
+          },
+        },
+      }),
+    ];
+  },
+});
+
 const ListTabs = Extension.create({
   name: "rfcsListTabs",
   addKeyboardShortcuts() {
@@ -318,6 +345,7 @@ export function DocEditor({
       TaskItem.configure({ nested: true }),
       Markdown.configure({ indentation: { style: "space", size: 2 } }),
       ListTabs,
+      BoxToggle,
       chromeExtension(registry, bump, (title) => {
         const d = sectionDataRef.current.get(plainTitle(title));
         return d !== undefined && d.cards.length + d.comments.length > 0;
