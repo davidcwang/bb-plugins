@@ -1,8 +1,9 @@
 // bb-plugin-kanban — backend entry.
 //
 // Cards are tasks you create, threads, and GitHub items (PRs you authored,
-// PRs requesting your review by name, PRs that mention you). Cards live in bb.storage.kv; every write publishes a realtime
-// signal so open boards refetch.
+// PRs requesting your review by name, PRs that mention you), and Jira issues
+// assigned to you, pushed by the jira plugin through `jira_sync`. Cards live in
+// bb.storage.kv; every write publishes a realtime signal so open boards refetch.
 //
 // A task card can own a thread: start one from the card (the thread is
 // spawned with a phase prompt and tagged with the card id in plugin
@@ -50,9 +51,19 @@ const githubSchema = z.object({
 });
 export type GithubInfo = z.infer<typeof githubSchema>;
 
+const jiraSchema = z.object({
+  key: z.string().regex(/^[A-Z][A-Z0-9_]*-\d+$/),
+  url: z.string().url(),
+  status: z.string(),
+  /** Jira's status category: To Do, In Progress, or Done. */
+  category: z.enum(["new", "indeterminate", "done"]),
+  type: z.string(),
+});
+export type JiraInfo = z.infer<typeof jiraSchema>;
+
 const cardSchema = z.object({
   id: z.string(),
-  kind: z.enum(["task", "thread", "pr"]),
+  kind: z.enum(["task", "thread", "pr", "jira"]),
   title: z.string(),
   description: z.string().default(""),
   column: columnSchema,
@@ -67,6 +78,7 @@ const cardSchema = z.object({
   projectId: z.string().optional(),
   threadStatus: z.string().optional(),
   pr: githubSchema.optional(),
+  jira: jiraSchema.optional(),
   /** When the card was moved to "archived"; cleared when it leaves. */
   archivedAt: z.string().optional(),
   /** The column it was archived from, so Restore can put it back. */
@@ -174,6 +186,17 @@ export const rpcContract = defineRpcContract({
   sync_now: {
     input: z.null(),
     output: z.object({ items: z.number() }),
+  },
+  /**
+   * Called by the jira plugin with every Jira issue currently assigned to you.
+   * Replaces the board's Jira cards: new issues are added, issues no longer
+   * listed move to Done and are dropped after a week there.
+   */
+  jira_sync: {
+    input: z.object({
+      items: z.array(jiraSchema.extend({ title: z.string().min(1).max(300) })).max(500),
+    }),
+    output: z.object({ cards: z.number() }),
   },
   config_get: {
     input: z.null(),
@@ -843,6 +866,70 @@ export default async function plugin(bb: BbPluginApi) {
     return found.length;
   }
 
+  // ---- Jira sync (pushed by the jira plugin) ----------------------------
+
+  function jiraColumn(info: JiraInfo): Column {
+    switch (info.category) {
+      case "new":
+        return "backlog";
+      case "indeterminate":
+        return "in_progress";
+      case "done":
+        return "done";
+    }
+  }
+
+  function syncJira(items: Array<JiraInfo & { title: string }>): Promise<number> {
+    return mutate((cards) => {
+      const live = new Set<string>();
+      for (const item of items) {
+        const id = `jira:${item.key}`;
+        live.add(id);
+        const { title, ...info } = item;
+        const existing = cards.find((c) => c.id === id);
+        if (existing === undefined) {
+          cards.push({
+            id,
+            kind: "jira",
+            title,
+            // Thread prompts quote the description, so this is how a thread
+            // started from the card learns which issue it is working on.
+            description: `Jira ${info.key}: ${info.url}`,
+            column: jiraColumn(info),
+            pinned: false,
+            phase: null,
+            createdAt: now(),
+            updatedAt: now(),
+            jira: info,
+          });
+        } else {
+          existing.title = title;
+          existing.jira = info;
+          if (!existing.pinned && existing.column !== "archived") {
+            existing.column = jiraColumn(info);
+          }
+          existing.updatedAt = now();
+        }
+      }
+      // Unassigned, or done long enough ago to fall out of the jira plugin's
+      // query: same retention as GitHub items.
+      const cutoff = Date.now() - DONE_RETENTION_MS;
+      for (let i = cards.length - 1; i >= 0; i--) {
+        const card = cards[i]!;
+        if (card.kind !== "jira" || live.has(card.id) || card.column === "archived") continue;
+        if (!card.pinned && card.threadId === undefined && card.column !== "done") {
+          cards.splice(i, 1);
+        } else if (card.column !== "done") {
+          card.column = "done";
+          card.updatedAt = now();
+        } else if (Date.parse(card.updatedAt) < cutoff) {
+          cards.splice(i, 1);
+        }
+      }
+      return cards.filter((c) => c.kind === "jira").length;
+    });
+  }
+
   bb.background.schedule("sync-prs", "*/5 * * * *", async () => {
     await syncGithub();
   });
@@ -922,6 +1009,7 @@ export default async function plugin(bb: BbPluginApi) {
         .map((t) => ({ id: t.id, title: t.title ?? "Untitled thread", status: t.status }));
     },
     sync_now: async () => ({ items: await syncGithub() }),
+    jira_sync: async ({ items }) => ({ cards: await syncJira(items) }),
   });
 
   // ---- CLI + agent tools -------------------------------------------------
@@ -934,7 +1022,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.cli.register(
     defineCli({
       name: "kanban",
-      summary: "Manage cards on the Kanban board: tasks, threads, and GitHub items",
+      summary: "Manage cards on the Kanban board: tasks, threads, GitHub items, and Jira issues",
       commands: {
         list: cliCommand({
           summary: "List cards, optionally for one column (archived cards only with --column archived)",

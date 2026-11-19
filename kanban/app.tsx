@@ -1,6 +1,7 @@
 // bb-plugin-kanban — frontend entry: the board page.
 //
-// Cards are tasks, threads, and synced GitHub items. Drag a card between
+// Cards are tasks, threads, synced GitHub items, and Jira issues assigned to
+// you (pushed by the jira plugin). Drag a card between
 // columns (or use its column picker); open a card for its details, phase
 // controls, and thread actions. The "kanban-changed" realtime signal keeps
 // every open board current.
@@ -98,6 +99,7 @@ function useBoard() {
 function cardIcon(card: Card): string {
   if (card.kind === "task") return "SquareCheck";
   if (card.kind === "pr") return card.pr?.type === "issue" ? "CircleDot" : "GitPullRequest";
+  if (card.kind === "jira") return "Ticket";
   return "MessageSquare";
 }
 
@@ -111,6 +113,7 @@ function CardView({
   onOpen: () => void;
 }) {
   const gh = card.pr;
+  const jira = card.jira;
   return (
     <li
       draggable
@@ -159,6 +162,12 @@ function CardView({
             ) : null}
           </>
         )}
+        {jira === undefined ? null : (
+          <>
+            <span className="font-mono">{jira.key}</span>
+            <span>{jira.status}</span>
+          </>
+        )}
         <select
           aria-label={`Move "${card.title}"`}
           value={card.column}
@@ -200,6 +209,8 @@ function CardDialog({
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const isTask = card.kind === "task";
+  // Jira issues are your own work, so they start threads by phase like tasks.
+  const startsByPhase = isTask || card.kind === "jira";
   const dirty =
     title !== card.title ||
     description !== card.description ||
@@ -265,7 +276,13 @@ function CardDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Icon name={cardIcon(card)} className="size-4 text-muted-foreground" />
-            {isTask ? "Task" : card.kind === "pr" ? "GitHub item" : "Thread"}
+            {isTask
+              ? "Task"
+              : card.kind === "pr"
+                ? "GitHub item"
+                : card.kind === "jira"
+                  ? "Jira issue"
+                  : "Thread"}
           </DialogTitle>
           <DialogDescription className="font-mono text-xs">{card.id}</DialogDescription>
         </DialogHeader>
@@ -325,6 +342,13 @@ function CardDialog({
           </p>
         )}
 
+        {card.jira === undefined ? null : (
+          <p className="text-sm text-muted-foreground">
+            <span className="font-mono">{card.jira.key}</span> · {card.jira.type} ·{" "}
+            {card.jira.status}
+          </p>
+        )}
+
         <section className="rounded-md border border-border p-3">
           <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
             Thread
@@ -357,7 +381,7 @@ function CardDialog({
           ) : canOwnThread ? (
             <div className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center gap-2">
-                {isTask ? (
+                {startsByPhase ? (
                   <>
                     <span className="text-sm text-muted-foreground">Start a thread in phase</span>
                     {PHASES.map((phase) => (
@@ -371,6 +395,20 @@ function CardDialog({
                         {phase.title}
                       </Button>
                     ))}
+                    {isTask ? null : (
+                      <select
+                        aria-label="Project for the thread"
+                        value={projectId}
+                        onChange={(event) => setProjectId(event.target.value)}
+                        className="rounded border border-border bg-background px-2 py-1 text-sm"
+                      >
+                        {projects.map((project) => (
+                          <option key={project.id} value={project.id}>
+                            {project.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
                   </>
                 ) : (
                   <>
@@ -430,7 +468,7 @@ function CardDialog({
           )}
         </section>
 
-        {card.threadId === undefined && !isTask ? null : (
+        {card.threadId === undefined && !startsByPhase ? null : (
           <section className="rounded-md border border-border p-3">
             <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
               Phase
@@ -461,6 +499,12 @@ function CardDialog({
             <Button size="sm" variant="outline" onClick={() => navigate.openUrl(card.pr!.url)}>
               <Icon name="ExternalLink" className="size-4" />
               Open on GitHub
+            </Button>
+          )}
+          {card.jira === undefined ? null : (
+            <Button size="sm" variant="outline" onClick={() => navigate.openUrl(card.jira!.url)}>
+              <Icon name="ExternalLink" className="size-4" />
+              Open in Jira
             </Button>
           )}
           <Button
