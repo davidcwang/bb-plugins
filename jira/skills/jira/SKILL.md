@@ -34,7 +34,14 @@ The **Jira** sidebar page has five tabs:
   projects (add by key, a pasted board or issue URL, or look up by name), and the Kanban sync toggle.
   Save tests the connection.
 
-Click a row to see its description; **Open in Jira** opens the issue.
+On **My issues** and **Project**, click a row to open the issue in an editor
+on the right (same fields as a draft). Nothing is saved until **Update in
+Jira**, which sends only what changed and adds or removes links. Fields not on
+the issue's edit screen are disabled. The update is refused if the issue
+changed in Jira after it was opened (reload, then redo the edit). The
+description is shown as Markdown; if it holds content Markdown can't carry
+(images, panels, @mentions, colors) the editor says so, and that content is
+only lost if you edit the description. Status and issue type are read-only.
 
 ## Kanban
 

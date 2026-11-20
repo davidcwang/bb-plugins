@@ -5,7 +5,7 @@
 // Create, and Source (site, credentials, projects, Kanban sync). The sidebar
 // entry shows how many open issues are assigned to you as of the last sync.
 // The plugin's Settings page adds a connection check below the settings form.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   definePluginApp,
   experimental_Icon as Icon,
@@ -16,14 +16,14 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { DraftsBoard } from "./drafts";
+import { IssueEditor } from "./issue-editor";
 import { BRAND, ago, buttonClass, inputClass, message, primaryClass, useOpen } from "./ui";
 import { Avatar, IssueTypeIcon, PriorityIcon, TicketGlyph, hashColor } from "./icons";
-import type { Issue, IssueDetail, JiraConfig, Scope, SyncState, rpcContract } from "./server";
+import type { Issue, JiraConfig, Scope, SyncState, rpcContract } from "./server";
 
 const CHANGED = "jira-changed";
 const PANEL = "issues";
 
-type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
 type Tab = "mine" | "project" | "drafts" | "create" | "source";
 
 const TABS: Array<{ id: Tab; title: string; icon: string }> = [
@@ -80,26 +80,18 @@ function StatusPill({ issue }: { issue: Issue }) {
 
 // ---- issue lists -------------------------------------------------------------
 
-function IssueRow({ issue, rpc }: { issue: Issue; rpc: Rpc }) {
-  const openUrl = useOpen();
-  const [open, setOpen] = useState(false);
-  const [detail, setDetail] = useState<IssueDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!open || detail !== null) return;
-    rpc.call("issue_get", { key: issue.key }).then(setDetail, (cause) => setError(message(cause)));
-  }, [open, detail, issue.key, rpc]);
-
+function IssueRow({ issue, active, onOpen }: { issue: Issue; active: boolean; onOpen: () => void }) {
   return (
     <li
-      className="overflow-hidden rounded-lg border border-border border-l-[3px] bg-card text-sm shadow-sm transition hover:shadow-md"
+      className={`overflow-hidden rounded-lg border border-l-[3px] bg-card text-sm shadow-sm transition hover:shadow-md ${
+        active ? "border-[#1d7afc] ring-2 ring-[#1d7afc]/25" : "border-border"
+      }`}
       style={{ borderLeftColor: CATEGORY[issue.category].color }}
     >
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
+        onClick={onOpen}
+        aria-current={active ? "true" : undefined}
         className="flex w-full min-w-0 items-start gap-3 p-3 text-left transition-colors hover:bg-[#1d7afc]/5"
       >
         <IssueTypeIcon type={issue.type} className="mt-0.5 size-4" />
@@ -134,41 +126,34 @@ function IssueRow({ issue, rpc }: { issue: Issue; rpc: Rpc }) {
             </span>
           </span>
         </span>
-        <Icon
-          name={open ? "ChevronDown" : "ChevronRight"}
-          className="mt-0.5 size-4 shrink-0 text-muted-foreground"
-        />
+        <Icon name="ChevronRight" className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
       </button>
-      {open ? (
-        <div className="flex flex-col gap-3 border-t border-border bg-muted/30 p-3 pl-10">
-          {error !== null ? (
-            <p className="text-destructive">{error}</p>
-          ) : detail === null ? (
-            <p className="text-muted-foreground">Loading…</p>
-          ) : (
-            <>
-              <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Avatar name={detail.reporter} className="size-4 text-[8px]" />
-                Reported by {detail.reporter ?? "unknown"} · created {ago(detail.created)}
-              </p>
-              <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words font-sans text-sm text-foreground">
-                {detail.description === "" ? "No description." : detail.description}
-              </pre>
-            </>
-          )}
-          <div>
-            <button type="button" className={primaryClass} onClick={() => openUrl(issue.url)}>
-              <Icon name="ExternalLink" className="size-4" />
-              Open in Jira
-            </button>
-          </div>
-        </div>
-      ) : null}
     </li>
   );
 }
 
-function IssueList({ scope, config }: { scope: Scope; config: JiraConfig }) {
+function IssueList({
+  scope,
+  config,
+  selectedKey,
+  onSelect,
+}: {
+  scope: Scope;
+  config: JiraConfig;
+  /** The issue open in the editor on the right, if any. */
+  selectedKey: string | null;
+  onSelect: (key: string | null) => void;
+}) {
+  // Ask before leaving unsaved edits in the editor.
+  const dirty = useRef(false);
+  const onDirtyChange = useCallback((value: boolean) => {
+    dirty.current = value;
+  }, []);
+  const select = (key: string | null) => {
+    if (key === selectedKey) return;
+    if (dirty.current && !window.confirm(`Discard your unsaved changes to ${selectedKey}?`)) return;
+    onSelect(key);
+  };
   const rpc = useRpc<typeof rpcContract>();
   const [project, setProject] = useState("");
   const [text, setText] = useState("");
@@ -201,8 +186,8 @@ function IssueList({ scope, config }: { scope: Scope; config: JiraConfig }) {
 
   const shown = issues?.filter((issue) => only === null || issue.category === only) ?? null;
 
-  return (
-    <div className="flex flex-col gap-3">
+  const list = (
+    <div className="flex min-w-0 flex-col gap-3">
       {issues === null || issues.length === 0 ? null : (
         <div className="grid grid-cols-3 gap-2">
           {(Object.keys(CATEGORY) as Array<Issue["category"]>).map((cat) => {
@@ -292,10 +277,23 @@ function IssueList({ scope, config }: { scope: Scope; config: JiraConfig }) {
       ) : (
         <ul className="flex flex-col gap-2">
           {shown.map((issue) => (
-            <IssueRow key={issue.key} issue={issue} rpc={rpc} />
+            <IssueRow
+              key={issue.key}
+              issue={issue}
+              active={issue.key === selectedKey}
+              onOpen={() => select(issue.key)}
+            />
           ))}
         </ul>
       )}
+    </div>
+  );
+
+  if (selectedKey === null) return list;
+  return (
+    <div className="grid gap-4 md:grid-cols-[minmax(320px,440px)_1fr]">
+      {list}
+      <IssueEditor key={selectedKey} issueKey={selectedKey} onClose={() => select(null)} onDirtyChange={onDirtyChange} />
     </div>
   );
 }
@@ -727,7 +725,7 @@ function SourceForm({ config, onSaved }: { config: JiraConfig; onSaved: () => vo
 
 function tabFor(subPath: string, config: JiraConfig): Tab {
   const head = subPath.split("/")[0];
-  if (head === "project" || head === "drafts" || head === "create" || head === "source") return head;
+  if (head === "mine" || head === "project" || head === "drafts" || head === "create" || head === "source") return head;
   return connected(config) ? "mine" : "source";
 }
 
@@ -737,11 +735,17 @@ function JiraPage({ subPath }: { subPath: string }) {
   if (config === null) return <p className="p-6 text-sm text-muted-foreground">Loading…</p>;
   const tab = tabFor(subPath, config);
   const go = (next: Tab) => navigate.toPluginPanel(PANEL, { subPath: next === "mine" ? "" : next });
+  // My issues and Project open an issue at "<tab>/<KEY>"; the editor needs the wide layout.
+  const selectedKey =
+    (tab === "mine" || tab === "project") && /^[A-Z][A-Z0-9_]*-\d+$/.test(subPath.split("/")[1] ?? "")
+      ? subPath.split("/")[1]!
+      : null;
+  const wide = tab === "drafts" || selectedKey !== null;
 
   return (
     <div className="h-full overflow-auto">
       <div
-        className={`mx-auto flex w-full flex-col gap-4 ${tab === "drafts" ? "max-w-[1800px] p-3 md:p-4" : "max-w-3xl p-4 md:p-5"}`}
+        className={`mx-auto flex w-full flex-col gap-4 ${wide ? "max-w-[1800px] p-3 md:p-4" : "max-w-3xl p-4 md:p-5"}`}
       >
         <header
           className="flex flex-wrap items-center gap-3 rounded-xl px-4 py-3 text-white shadow-sm"
@@ -806,7 +810,15 @@ function JiraPage({ subPath }: { subPath: string }) {
         ) : tab === "create" ? (
           <CreateForm config={config} onCreated={() => go("mine")} />
         ) : (
-          <IssueList key={tab} scope={tab} config={config} />
+          <IssueList
+            key={tab}
+            scope={tab}
+            config={config}
+            selectedKey={selectedKey}
+            onSelect={(key) =>
+              navigate.toPluginPanel(PANEL, { subPath: key === null ? (tab === "mine" ? "" : tab) : `${tab}/${key}` })
+            }
+          />
         )}
       </div>
     </div>

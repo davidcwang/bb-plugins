@@ -465,7 +465,7 @@ function DraftEditor({
   );
 }
 
-function Field({
+export function Field({
   label,
   note,
   grow,
@@ -487,7 +487,7 @@ function Field({
 
 // ---- pickers -----------------------------------------------------------------
 
-function UserPicker({
+export function UserPicker({
   rpc,
   value,
   onChange,
@@ -588,7 +588,7 @@ function UserPicker({
   );
 }
 
-function LabelInput({
+export function LabelInput({
   value,
   onChange,
   disabled,
@@ -644,7 +644,7 @@ function LabelInput({
 }
 
 /** An issue key field that looks the issue up, so a typo shows before Create. */
-function IssueKeyInput({
+export function IssueKeyInput({
   rpc,
   value,
   onChange,
@@ -750,7 +750,7 @@ function DraftLinkTarget({
   );
 }
 
-function LinksEditor({
+export function LinksEditor({
   rpc,
   value,
   onChange,

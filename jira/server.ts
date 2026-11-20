@@ -19,6 +19,7 @@ import {
   parseProjects,
   parseSiteUrl,
   projectKeySchema,
+  type EditableIssue,
   type Issue,
   type IssueDetail,
   type LinkType,
@@ -26,7 +27,7 @@ import {
   type User,
 } from "./jira";
 
-export type { Issue, IssueDetail, LinkType, Scope, User };
+export type { EditableIssue, Issue, IssueDetail, LinkType, Scope, User };
 
 const scopeSchema = z.enum(["mine", "project"]);
 
@@ -152,6 +153,30 @@ export const rpcContract = defineRpcContract({
   draft_submit: {
     input: z.object({ id: z.string() }),
     output: z.object({ key: z.string(), url: z.string(), warnings: z.array(z.string()) }),
+  },
+  /** An existing issue for the editor: fields, Markdown description, and what its edit screen allows. */
+  issue_edit_get: { input: z.object({ key: issueKeySchema }), output: z.custom<EditableIssue>() },
+  /** Save edits to an existing issue. Only the fields present in `changes` are sent. */
+  issue_edit_save: {
+    input: z.object({
+      key: issueKeySchema,
+      /** The `updated` the editor loaded; refused if Jira's has moved since. */
+      baseUpdated: z.string(),
+      changes: z.object({
+        summary: z.string().trim().min(1).max(255).optional(),
+        description: z.string().max(30_000).optional(),
+        assignee: userSchema.nullable().optional(),
+        reporter: userSchema.optional(),
+        labels: z.array(labelSchema).max(50).optional(),
+        parent: issueKeySchema.nullable().optional(),
+      }),
+      addLinks: z
+        .array(z.object({ type: z.string().min(1).max(100), direction: z.enum(["outward", "inward"]), key: issueKeySchema }))
+        .max(50)
+        .default([]),
+      removeLinks: z.array(z.string().regex(/^\d+$/)).max(50).default([]),
+    }),
+    output: z.object({ issue: z.custom<EditableIssue>(), warnings: z.array(z.string()) }),
   },
   issue_create: {
     input: z.object({
@@ -527,6 +552,70 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
+  // ---- editing existing issues -------------------------------------------
+
+  type EditInput = z.infer<(typeof rpcContract)["issue_edit_save"]["input"]>;
+
+  const FIELD_IDS: Record<keyof EditInput["changes"], string> = {
+    summary: "summary",
+    description: "description",
+    assignee: "assignee",
+    reporter: "reporter",
+    labels: "labels",
+    parent: "parent",
+  };
+
+  async function saveIssue(input: EditInput): Promise<{ issue: EditableIssue; warnings: string[] }> {
+    const { jira, config } = await client();
+    const current = await jira.editable(input.key);
+    // Someone (or Jira automation) changed it after the editor loaded it:
+    // saving now would overwrite their change without anyone seeing it.
+    if (current.updated !== input.baseUpdated) {
+      throw new Error(
+        `${input.key} changed in Jira after you opened it. Reload it to see the changes, then make your edit again.`,
+      );
+    }
+    const changed = (Object.keys(input.changes) as Array<keyof EditInput["changes"]>).filter(
+      (k) => input.changes[k] !== undefined,
+    );
+    const blocked = changed.filter((k) => !current.editable.includes(FIELD_IDS[k]));
+    if (blocked.length > 0) {
+      throw new Error(`${input.key}'s edit screen does not allow changing: ${blocked.join(", ")}. Nothing was saved.`);
+    }
+    const c = input.changes;
+    if (changed.length > 0) {
+      await jira.update(input.key, {
+        ...(c.summary === undefined ? {} : { summary: c.summary }),
+        ...(c.description === undefined ? {} : { description: c.description }),
+        ...(c.assignee === undefined ? {} : { assigneeId: c.assignee?.accountId ?? null }),
+        ...(c.reporter === undefined ? {} : { reporterId: c.reporter.accountId }),
+        ...(c.labels === undefined ? {} : { labels: c.labels }),
+        ...(c.parent === undefined ? {} : { parent: c.parent }),
+      });
+    }
+    const warnings: string[] = [];
+    const own = new Set(current.links.map((l) => l.id));
+    for (const id of input.removeLinks) {
+      if (!own.has(id)) continue; // not this issue's link, or already gone
+      try {
+        await jira.unlink(id);
+      } catch (cause) {
+        warnings.push(`Could not remove a link: ${cause instanceof Error ? cause.message : String(cause)}`);
+      }
+    }
+    for (const link of input.addLinks) {
+      try {
+        await jira.link(input.key, link, link.key);
+      } catch (cause) {
+        warnings.push(`Could not link ${link.type} ${link.key}: ${cause instanceof Error ? cause.message : String(cause)}`);
+      }
+    }
+    bb.log.info(`updated ${input.key}: ${[...changed, ...(input.addLinks.length + input.removeLinks.length > 0 ? ["links"] : [])].join(", ")}`);
+    bb.realtime.publish(CHANGED, { updated: input.key });
+    if (config.syncToKanban) void syncKanban();
+    return { issue: await jira.editable(input.key), warnings };
+  }
+
   // ---- RPC ---------------------------------------------------------------
 
   bb.rpc.register(rpcContract, {
@@ -570,6 +659,8 @@ export default async function plugin(bb: BbPluginApi) {
       return { ok: true as const };
     },
     draft_submit: ({ id }) => submitDraft(id),
+    issue_edit_get: async ({ key }) => (await client()).jira.editable(key),
+    issue_edit_save: (input) => saveIssue(input),
     issue_create: (input) => createIssue(input),
     sync_get: () => readSync(),
     sync_now: () => syncKanban(),

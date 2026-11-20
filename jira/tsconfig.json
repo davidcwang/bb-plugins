@@ -22,6 +22,7 @@
     "icons.tsx",
     "ui.ts",
     "drafts.tsx",
-    "markdown.ts"
+    "markdown.ts",
+    "issue-editor.tsx"
   ]
 }

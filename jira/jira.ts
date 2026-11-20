@@ -1,7 +1,7 @@
 // Jira Cloud REST v3 client and the pieces of it that are pure enough to test:
 // site URL parsing, JQL building, and Atlassian Document Format conversion.
 import { z } from "zod";
-import { markdownToAdf } from "./markdown";
+import { adfToMarkdown, markdownToAdf } from "./markdown";
 
 /** A Jira project key as it appears in issue keys (ABC in ABC-123). */
 export const projectKeySchema = z
@@ -482,20 +482,108 @@ export class JiraClient {
     await this.request("POST", "/rest/api/3/issueLink", body(wanted));
   }
 
-  /** Set fields on an existing issue (its edit screen decides which are allowed). */
+  /**
+   * Set fields on an existing issue (its edit screen decides which are
+   * allowed). `null` clears assignee or parent; undefined leaves a field alone.
+   */
   async update(
     key: string,
-    fields: { reporterId?: string; labels?: string[]; parent?: string; assigneeId?: string },
+    fields: {
+      summary?: string;
+      description?: string;
+      reporterId?: string;
+      labels?: string[];
+      parent?: string | null;
+      assigneeId?: string | null;
+    },
   ): Promise<void> {
     await this.request("PUT", `/rest/api/3/issue/${encodeURIComponent(key)}`, {
       fields: {
+        ...(fields.summary === undefined ? {} : { summary: fields.summary }),
+        ...(fields.description === undefined
+          ? {}
+          : { description: fields.description.trim() === "" ? null : markdownToAdf(fields.description) }),
         ...(fields.reporterId === undefined ? {} : { reporter: { accountId: fields.reporterId } }),
         ...(fields.labels === undefined ? {} : { labels: fields.labels }),
-        ...(fields.parent === undefined ? {} : { parent: { key: fields.parent } }),
-        ...(fields.assigneeId === undefined ? {} : { assignee: { accountId: fields.assigneeId } }),
+        ...(fields.parent === undefined ? {} : { parent: fields.parent === null ? null : { key: fields.parent } }),
+        ...(fields.assigneeId === undefined
+          ? {}
+          : { assignee: fields.assigneeId === null ? null : { accountId: fields.assigneeId } }),
       },
     });
   }
+
+  async unlink(linkId: string): Promise<void> {
+    await this.request("DELETE", `/rest/api/3/issueLink/${encodeURIComponent(linkId)}`);
+  }
+
+  /** An issue's editable fields, with the description as Markdown and the edit screen's field ids. */
+  async editable(key: string, signal?: AbortSignal): Promise<EditableIssue> {
+    const person = z.object({ accountId: z.string(), displayName: z.string() }).nullable().optional();
+    const linked = z.object({ key: z.string() });
+    const raw = z
+      .object({
+        key: z.string(),
+        fields: z.object({
+          summary: z.string().default(""),
+          description: z.unknown().optional(),
+          assignee: person,
+          reporter: person,
+          labels: z.array(z.string()).default([]),
+          parent: z.object({ key: z.string() }).nullable().optional(),
+          issuetype: z.object({ name: z.string() }).optional(),
+          status: z.object({ name: z.string(), statusCategory: z.object({ key: z.string() }).optional() }).optional(),
+          project: z.object({ key: z.string() }).optional(),
+          updated: z.string(),
+          issuelinks: z
+            .array(
+              z.object({
+                id: z.string(),
+                type: z.object({ name: z.string() }),
+                inwardIssue: linked.optional(),
+                outwardIssue: linked.optional(),
+              }),
+            )
+            .default([]),
+        }),
+        editmeta: z.object({ fields: z.record(z.string(), z.unknown()) }).optional(),
+      })
+      .parse(
+        await this.request(
+          "GET",
+          `/rest/api/3/issue/${encodeURIComponent(key)}?expand=editmeta&fields=summary,description,assignee,reporter,labels,parent,issuetype,status,project,updated,issuelinks`,
+          undefined,
+          signal,
+        ),
+      );
+    const f = raw.fields;
+    const { markdown, lossy } = adfToMarkdown(f.description ?? null);
+    return {
+      key: raw.key,
+      url: `${this.site}/browse/${raw.key}`,
+      project: f.project?.key ?? raw.key.split("-")[0]!,
+      type: f.issuetype?.name ?? "Issue",
+      status: f.status?.name ?? "Unknown",
+      category: category(f.status?.statusCategory?.key),
+      updated: f.updated,
+      summary: f.summary,
+      description: markdown,
+      lossy,
+      assignee: f.assignee ?? null,
+      reporter: f.reporter ?? null,
+      labels: f.labels,
+      parent: f.parent?.key ?? null,
+      links: f.issuelinks.flatMap((link): EditableIssue["links"] =>
+        link.outwardIssue !== undefined
+          ? [{ id: link.id, type: link.type.name, direction: "outward", key: link.outwardIssue.key }]
+          : link.inwardIssue !== undefined
+            ? [{ id: link.id, type: link.type.name, direction: "inward", key: link.inwardIssue.key }]
+            : [],
+      ),
+      editable: Object.keys(raw.editmeta?.fields ?? {}),
+    };
+  }
+
 
   async create(input: {
     project: string;
@@ -537,4 +625,27 @@ export interface LinkType {
   name: string;
   inward: string;
   outward: string;
+}
+
+export interface EditableIssue {
+  key: string;
+  url: string;
+  project: string;
+  type: string;
+  status: string;
+  category: Category;
+  /** Jira's `updated` when loaded; an update is refused if it has moved since. */
+  updated: string;
+  summary: string;
+  /** Markdown, converted from ADF. */
+  description: string;
+  /** Description content Markdown cannot carry; saving the description drops or flattens it. */
+  lossy: string[];
+  assignee: User | null;
+  reporter: User | null;
+  labels: string[];
+  parent: string | null;
+  links: Array<{ id: string; type: string; direction: Direction; key: string }>;
+  /** Field ids on the issue's edit screen. */
+  editable: string[];
 }

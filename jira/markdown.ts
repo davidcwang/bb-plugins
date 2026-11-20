@@ -307,3 +307,177 @@ export function inline(source: string, marks: AdfMark[] = []): AdfNode[] {
 function textNode(text: string, marks: AdfMark[]): AdfNode {
   return marks.length === 0 ? { type: "text", text } : { type: "text", text, marks };
 }
+
+// ---- ADF → Markdown ----------------------------------------------------------
+
+/**
+ * ADF → Markdown, for editing an existing description. The inverse of
+ * markdownToAdf for everything it produces. Content Markdown cannot carry
+ * (images, panels, mentions, colors, ...) is listed in `lossy`; saving the
+ * Markdown back would drop or flatten it.
+ */
+export function adfToMarkdown(doc: unknown): { markdown: string; lossy: string[] } {
+  const lossy = new Set<string>();
+  const root = typeof doc === "object" && doc !== null ? (doc as AdfNode) : { type: "doc", content: [] };
+  const markdown = mdBlocks(root.content ?? [], lossy).join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
+  return { markdown, lossy: [...lossy].sort() };
+}
+
+const LOSSY_BLOCK: Record<string, string> = {
+  mediaSingle: "images or attachments",
+  mediaGroup: "images or attachments",
+  media: "images or attachments",
+  panel: "panels (kept as quotes)",
+  expand: "expand sections (kept as plain content)",
+  nestedExpand: "expand sections (kept as plain content)",
+  decisionList: "decisions (kept as a list)",
+  taskList: "checklists (kept as a list)",
+  extension: "macros",
+  bodiedExtension: "macros",
+  embedCard: "embedded cards (kept as links)",
+  blockCard: "link cards (kept as links)",
+  layoutSection: "column layouts (kept as plain content)",
+};
+
+function mdBlocks(nodes: AdfNode[], lossy: Set<string>): string[] {
+  return nodes.map((n) => mdBlock(n, lossy)).filter((s) => s !== "");
+}
+
+function mdBlock(node: AdfNode, lossy: Set<string>): string {
+  const children = node.content ?? [];
+  switch (node.type) {
+    case "paragraph":
+      return escapeLineStart(mdInline(children, lossy));
+    case "heading": {
+      const level = Math.min(6, Math.max(1, Number(node.attrs?.level ?? 1)));
+      return `${"#".repeat(level)} ${mdInline(children, lossy).replaceAll("\n", " ")}`;
+    }
+    case "bulletList":
+    case "orderedList":
+    case "taskList":
+    case "decisionList": {
+      if (LOSSY_BLOCK[node.type] !== undefined) lossy.add(LOSSY_BLOCK[node.type]!);
+      const start = Number(node.attrs?.order ?? 1);
+      return children
+        .map((item, index) => {
+          const marker = node.type === "orderedList" ? `${start + index}. ` : "- ";
+          const parts = item.type === "listItem" ? mdBlocks(item.content ?? [], lossy) : [mdInline(item.content ?? [], lossy)];
+          const pad = " ".repeat(marker.length);
+          const body = parts
+            .map((part, i) => (i === 0 ? part : `\n${part}`))
+            .join("\n")
+            .split("\n")
+            .map((line, i) => (i === 0 || line === "" ? line : pad + line))
+            .join("\n");
+          return marker + body;
+        })
+        .join("\n");
+    }
+    case "codeBlock": {
+      const text = children.map((c) => c.text ?? "").join("");
+      const fence = text.includes("```") ? "~~~" : "```";
+      return `${fence}${typeof node.attrs?.language === "string" ? node.attrs.language : ""}\n${text}\n${fence}`;
+    }
+    case "blockquote":
+    case "panel":
+      if (node.type === "panel") lossy.add(LOSSY_BLOCK.panel!);
+      return mdBlocks(children, lossy)
+        .join("\n\n")
+        .split("\n")
+        .map((line) => (line === "" ? ">" : `> ${line}`))
+        .join("\n");
+    case "rule":
+      return "---";
+    case "table": {
+      const rows = children.map((row) =>
+        (row.content ?? []).map((cell) =>
+          mdBlocks(cell.content ?? [], lossy).join(" ").replaceAll("\n", " ").replaceAll("|", "\\|"),
+        ),
+      );
+      if (rows.length === 0) return "";
+      const width = Math.max(...rows.map((r) => r.length));
+      const line = (r: string[]) => `| ${Array.from({ length: width }, (_, i) => r[i] ?? "").join(" | ")} |`;
+      return [line(rows[0]!), `|${" --- |".repeat(width)}`, ...rows.slice(1).map(line)].join("\n");
+    }
+    case "embedCard":
+    case "blockCard":
+      lossy.add(LOSSY_BLOCK[node.type]!);
+      return typeof node.attrs?.url === "string" ? node.attrs.url : "";
+    case "mediaSingle":
+    case "mediaGroup":
+    case "media":
+    case "extension":
+    case "bodiedExtension":
+      lossy.add(LOSSY_BLOCK[node.type]!);
+      return "";
+    default:
+      if (LOSSY_BLOCK[node.type] !== undefined) lossy.add(LOSSY_BLOCK[node.type]!);
+      else if (node.content === undefined && node.text === undefined) lossy.add(`unsupported content (${node.type})`);
+      return node.content === undefined ? mdInline([node], lossy) : mdBlocks(children, lossy).join("\n\n");
+  }
+}
+
+/** A paragraph line that would otherwise read as a heading, list, quote, or rule. */
+function escapeLineStart(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => line.replace(/^(\s*)([#>+]|-(?=\s)|\*(?=\s)|\d+(?=[.)]\s)|---)/, "$1\\$2"))
+    .join("\n");
+}
+
+function escapeText(text: string): string {
+  return text
+    .replace(/[\\`*[\]~]/g, "\\$&")
+    .replace(/(^|[^\w])_|_(?=[^\w]|$)/g, (m) => m.replace("_", "\\_"));
+}
+
+function mdInline(nodes: AdfNode[], lossy: Set<string>): string {
+  return nodes
+    .map((node) => {
+      switch (node.type) {
+        case "text": {
+          const marks = node.marks ?? [];
+          const code = marks.some((m) => m.type === "code");
+          let text = code ? codeSpan(node.text ?? "") : escapeText(node.text ?? "");
+          for (const mark of marks) {
+            if (mark.type === "strong") text = `**${text}**`;
+            else if (mark.type === "em") text = `*${text}*`;
+            else if (mark.type === "strike") text = `~~${text}~~`;
+            else if (mark.type !== "code" && mark.type !== "link") lossy.add("text styling such as underline or color");
+          }
+          const link = marks.find((m): m is Extract<AdfMark, { type: "link" }> => m.type === "link");
+          if (link !== undefined) {
+            text = !code && node.text === link.attrs.href ? link.attrs.href : `[${text}](${link.attrs.href})`;
+          }
+          return text;
+        }
+        case "hardBreak":
+          return "\n";
+        case "mention":
+          lossy.add("@mentions (kept as plain names)");
+          return typeof node.attrs?.text === "string" ? node.attrs.text : "@someone";
+        case "emoji":
+          return typeof node.attrs?.text === "string" ? node.attrs.text : String(node.attrs?.shortName ?? "");
+        case "inlineCard":
+          return typeof node.attrs?.url === "string" ? node.attrs.url : "";
+        case "date": {
+          lossy.add("dates (kept as text)");
+          const ts = Number(node.attrs?.timestamp);
+          return Number.isFinite(ts) ? new Date(ts).toISOString().slice(0, 10) : "";
+        }
+        case "status":
+          lossy.add("status lozenges (kept as text)");
+          return String(node.attrs?.text ?? "");
+        default:
+          lossy.add(`unsupported content (${node.type})`);
+          return mdInline(node.content ?? [], lossy);
+      }
+    })
+    .join("");
+}
+
+function codeSpan(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((r) => r.length));
+  const fence = "`".repeat(longest + 1);
+  return /^`|`$/.test(text) ? `${fence} ${text} ${fence}` : `${fence}${text}${fence}`;
+}
