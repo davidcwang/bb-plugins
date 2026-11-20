@@ -813,6 +813,8 @@ export function CommentCard({ rpc, threadId, comment, forceOpen, onJump }: { rpc
                 </span>
               ) : null}
               {comment.draftStatus === "failed" ? <span className="text-destructive">The draft thread finished without a reply.</span> : null}
+              {comment.replySentAt !== null ? <span className="rounded bg-green-500/15 px-1.5 py-0.5 text-green-700 dark:text-green-400">posted to the Doc</span> : null}
+              {comment.replyQueuedAt !== null ? <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700 dark:text-amber-400">queued for the next push{comment.resolveQueued ? ", resolves" : ""}</span> : null}
               <span className="ml-auto flex items-center gap-1">
                 {comment.draft !== null && comment.draft !== "" ? (
                   <button
@@ -825,6 +827,22 @@ export function CommentCard({ rpc, threadId, comment, forceOpen, onJump }: { rpc
                   >
                     Copy
                   </button>
+                ) : null}
+                {comment.gdocId !== null && comment.draft !== null && comment.draft !== "" && comment.replySentAt === null ? (
+                  comment.replyQueuedAt === null ? (
+                    <>
+                      <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground" disabled={busy} onClick={() => run(() => rpc.call("comment_queue_reply", { threadId, id: comment.id, queue: true, resolve: false }))}>
+                        Send reply
+                      </button>
+                      <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground" disabled={busy} onClick={() => run(() => rpc.call("comment_queue_reply", { threadId, id: comment.id, queue: true, resolve: true }))}>
+                        Send & resolve
+                      </button>
+                    </>
+                  ) : (
+                    <button type="button" className="rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground" disabled={busy} onClick={() => run(() => rpc.call("comment_queue_reply", { threadId, id: comment.id, queue: false }))}>
+                      Unqueue
+                    </button>
+                  )
                 ) : null}
                 <button type="button" className={cn("rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground", guiding && "bg-muted text-foreground")} onClick={() => setGuiding((v) => !v)} disabled={busy || comment.draftStatus === "pending"}>
                   {comment.draft === null ? "Draft with agent" : "Redraft with agent"}
@@ -878,6 +896,98 @@ export function CommentCard({ rpc, threadId, comment, forceOpen, onJump }: { rpc
   );
 }
 
+type GdocStatus = Awaited<ReturnType<Rpc["call"]>> extends never ? never : {
+  docId: string | null;
+  folder: string | null;
+  syncDir: string | null;
+  commentsExportedAt: string | null;
+  bodyExportedAt: string | null;
+  outboxPending: boolean;
+  lastResults: { appliedAt: string; repliesOk: number; repliesFailed: number; opsOk: number; opsFailed: number; errors: string[] } | null;
+  plan: { ops: number; replies: number; manual: Array<{ kind: string; line: number }> } | null;
+};
+
+/** Status and actions for the Google Doc linked through the frontmatter `gdoc:` line. */
+function GdocSyncPanel({ rpc, threadId, onChanged }: { rpc: Rpc; threadId: string; onChanged: () => void }) {
+  const [status, setStatus] = useState<GdocStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const refresh = useCallback(() => {
+    rpc.call("gdoc_status", { threadId }).then((r) => setStatus(r as GdocStatus), () => undefined);
+  }, [rpc, threadId]);
+  useEffect(() => {
+    refresh();
+    const t = window.setInterval(refresh, 30_000);
+    return () => window.clearInterval(t);
+  }, [refresh]);
+  const act = (label: string, fn: () => Promise<unknown>) => {
+    setBusy(true);
+    fn()
+      .then(() => {
+        refresh();
+        onChanged();
+      })
+      .catch((cause: unknown) => toast.error(`${label} failed: ${describe(cause)}`))
+      .finally(() => setBusy(false));
+  };
+  if (status === null) return null;
+  if (status.docId === null) {
+    return (
+      <div className="border-b border-border px-2 py-1.5 text-[11px] text-muted-foreground">
+        <span className="font-medium text-foreground">Google Doc sync:</span> add <code>gdoc: &lt;doc url&gt;</code> to the RFC's frontmatter and set up the Apps Script (plugin folder <code>gdoc-sync/README.md</code>) to pull comments and push edits automatically.
+      </div>
+    );
+  }
+  const fmt = (iso: string | null) => (iso === null ? "never" : new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }));
+  return (
+    <div className="border-b border-border px-2 py-1.5 text-[11px]">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="font-medium">Google Doc sync</span>
+        {status.folder === null ? (
+          <span className="text-destructive">No sync folder found. Install Google Drive for Desktop or set the folder in plugin settings.</span>
+        ) : (
+          <>
+            <span className="text-muted-foreground" title={status.folder}>
+              comments {fmt(status.commentsExportedAt)} · body {fmt(status.bodyExportedAt)}
+            </span>
+            {status.outboxPending ? <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700 dark:text-amber-400">push waiting for the script</span> : null}
+            {status.lastResults !== null ? (
+              <span className={cn("rounded px-1.5 py-0.5", status.lastResults.repliesFailed + status.lastResults.opsFailed > 0 ? "bg-destructive/15 text-destructive" : "bg-green-500/15 text-green-700 dark:text-green-400")} title={status.lastResults.errors.join("\n")}>
+                last push {fmt(status.lastResults.appliedAt)}: {status.lastResults.opsOk} edits, {status.lastResults.repliesOk} replies
+                {status.lastResults.repliesFailed + status.lastResults.opsFailed > 0 ? `, ${status.lastResults.repliesFailed + status.lastResults.opsFailed} failed` : ""}
+              </span>
+            ) : null}
+            <span className="ml-auto flex items-center gap-1">
+              <Button size="sm" variant="outline" className="h-6 text-[11px]" disabled={busy} onClick={() => act("Pull", async () => {
+                const r = await rpc.call("gdoc_pull", { threadId });
+                toast.success(`Pulled: ${r.added} new, ${r.updated} updated${r.repliesConfirmed > 0 ? `, ${r.repliesConfirmed} replies confirmed posted` : ""}.`);
+              })}>
+                Pull from Doc
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 text-[11px]"
+                disabled={busy || status.outboxPending || status.plan === null || status.plan.ops + status.plan.replies === 0}
+                onClick={() => act("Push", async () => {
+                  const r = await rpc.call("gdoc_push", { threadId, edits: true, replies: true });
+                  toast.success(`Queued ${r.ops} edit${r.ops === 1 ? "" : "s"} and ${r.replies} repl${r.replies === 1 ? "y" : "ies"}; the script applies them within ~5 minutes.${r.manual > 0 ? ` ${r.manual} table/diagram block${r.manual === 1 ? "" : "s"} need a manual update.` : ""}`);
+                })}
+              >
+                Push to Doc{status.plan !== null && status.plan.ops + status.plan.replies > 0 ? ` (${status.plan.ops} edit${status.plan.ops === 1 ? "" : "s"}, ${status.plan.replies} repl${status.plan.replies === 1 ? "y" : "ies"})` : ""}
+              </Button>
+            </span>
+          </>
+        )}
+      </div>
+      {status.plan !== null && status.plan.manual.length > 0 ? (
+        <p className="mt-1 text-muted-foreground">
+          Not pushed automatically (update in the Doc by hand): {status.plan.manual.map((m) => `${m.kind} at line ${m.line}`).join(", ")}.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function CommentsTab({ rpc, threadId, sidecar, section, onJump }: { rpc: Rpc; threadId: string; sidecar: Sidecar | null; section: string | null; onJump: (anchor: Anchor) => void }) {
   const [filter, setFilter] = useState<CommentStatus | "all">("all");
   const [files, setFiles] = useState<Array<{ path: string; name: string; modifiedAtMs: number | null }>>([]);
@@ -904,6 +1014,7 @@ function CommentsTab({ rpc, threadId, sidecar, section, onJump }: { rpc: Rpc; th
   };
   return (
     <>
+      <GdocSyncPanel rpc={rpc} threadId={threadId} onChanged={refreshFiles} />
       <div className="flex flex-wrap items-center gap-1 border-b border-border px-2 py-1.5 text-[11px]">
         {(["all", ...COMMENT_STATUSES] as Array<CommentStatus | "all">).map((st) => (
           <button key={st} type="button" onClick={() => setFilter(st)} className={cn("rounded-full px-2 py-0.5 uppercase", st === "all" ? "bg-muted" : commentTone[st], filter === st && "ring-1 ring-primary")}>

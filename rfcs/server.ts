@@ -24,6 +24,8 @@ import { z } from "zod";
 import { CHANGED, PRIORITIES, SEVERITIES, markdownBlocks, outline, parseFrontmatter, type Priority, type Severity } from "./shared";
 import { darkenFills } from "./d2colors";
 import { parseDocxComments } from "./docx";
+import { markdownToDocBlocks, planDocOps, type DocParagraph } from "./docmodel";
+import { diffArrays } from "./diff";
 import {
   CARD_MODES,
   CARD_MODE_LABEL,
@@ -246,6 +248,32 @@ export const rpcContract = defineRpcContract({
   card_remove: {
     input: z.object({ threadId: z.string(), id: z.string() }),
     output: z.object({ ok: z.literal(true) }),
+  },
+  gdoc_status: {
+    // Is this RFC linked to a Google Doc (frontmatter `gdoc:`), and what does the sync folder hold?
+    input: z.object({ threadId: z.string() }),
+    output: z.object({
+      docId: z.string().nullable(),
+      folder: z.string().nullable(),
+      syncDir: z.string().nullable(),
+      commentsExportedAt: z.string().nullable(),
+      bodyExportedAt: z.string().nullable(),
+      outboxPending: z.boolean(),
+      lastResults: z.object({ appliedAt: z.string(), repliesOk: z.number(), repliesFailed: z.number(), opsOk: z.number(), opsFailed: z.number(), errors: z.array(z.string()) }).nullable(),
+      plan: z.object({ ops: z.number(), replies: z.number(), manual: z.array(z.object({ kind: z.string(), line: z.number() })) }).nullable(),
+    }),
+  },
+  gdoc_pull: {
+    input: z.object({ threadId: z.string() }),
+    output: z.object({ added: z.number(), updated: z.number(), repliesConfirmed: z.number(), bodyParagraphs: z.number() }),
+  },
+  gdoc_push: {
+    input: z.object({ threadId: z.string(), edits: z.boolean().default(true), replies: z.boolean().default(true) }),
+    output: z.object({ ops: z.number(), replies: z.number(), manual: z.number(), outbox: z.string() }),
+  },
+  comment_queue_reply: {
+    input: z.object({ threadId: z.string(), id: z.string(), queue: z.boolean(), resolve: z.boolean().default(false) }),
+    output: commentSchema,
   },
   comments_files: {
     // .docx files in the RFC directory, for the import picker.
@@ -649,6 +677,13 @@ export default async function plugin(bb: BbPluginApi) {
       type: "boolean",
       label: "D2 sketch (hand-drawn) style",
       default: false,
+    },
+    gdocSyncDir: {
+      type: "string",
+      label: "Google Doc sync folder",
+      description:
+        "Local path of the Drive folder the Apps Script syncs through (see gdoc-sync/README.md). Empty = auto-detect \"My Drive/rfc-sync\" under Google Drive for Desktop.",
+      default: "",
     },
   });
 
@@ -1522,6 +1557,193 @@ export default async function plugin(bb: BbPluginApi) {
     return { anchor: { section: null, line: null, quote: c.quoted.slice(0, 600) || null }, matched: "none" };
   }
 
+  // ---- Google Doc sync (Apps Script + Drive for Desktop; see gdoc-sync/) ----
+  const gdocBodyKey = (path: string) => `gdocbody:${sha256(path)}`;
+  const docIdFrom = (v: string | undefined): string | null => {
+    if (v === undefined) return null;
+    const m = /\/d\/([A-Za-z0-9_-]{20,})/.exec(v) ?? /^([A-Za-z0-9_-]{20,})$/.exec(v.trim());
+    return m?.[1] ?? null;
+  };
+  async function gdocContext(threadId: string) {
+    const ctx = await threadContext(threadId);
+    if (ctx.doc === null) throw new Error("No RFC is open on this thread.");
+    const file = await readFileAt(ctx.doc.path, ctx.doc.hostId);
+    const meta = file === null ? null : parseFrontmatter(file.content)?.meta ?? null;
+    // `gdoc:` in YAML frontmatter, or a "Google Doc: <url>" line in the header block most RFCs here use.
+    const headLine = file === null ? null : /^(?:gdoc|google doc|googledoc)\s*:\s*(\S+)/im.exec(file.content.split("\n").slice(0, 20).join("\n"))?.[1];
+    const docId = docIdFrom(meta?.gdoc ?? meta?.googleDoc ?? meta?.doc ?? headLine ?? undefined);
+    const { gdocSyncDir } = await settings.get();
+    let syncDir: string | null = gdocSyncDir.trim() === "" ? null : normalize(gdocSyncDir.trim());
+    if (syncDir === null) {
+      // Auto-detect Google Drive for Desktop's My Drive.
+      const home = process.env.HOME ?? "";
+      try {
+        const listed = await bb.sdk.files.listPaths({ path: joinPath(home, "Library/CloudStorage"), includeFiles: false, includeDirectories: true, includeHidden: false, limit: 50, ...fileArgs(ctx.hostId) });
+        const drive = (listed.paths as Array<{ path: string }>).find((p) => /GoogleDrive-/.test(p.path));
+        if (drive !== undefined) syncDir = joinPath(drive.path, "My Drive/rfc-sync");
+      } catch {
+        syncDir = null;
+      }
+    }
+    const folder = docId === null || syncDir === null ? null : joinPath(syncDir, docId);
+    return { ...ctx, doc: ctx.doc, content: file?.content ?? "", docId, syncDir, folder };
+  }
+  async function readJsonAt<T>(path: string, hostId: string | null): Promise<T | null> {
+    const f = await readFileAt(path, hostId);
+    if (f === null) return null;
+    try {
+      return JSON.parse(f.content) as T;
+    } catch {
+      return null;
+    }
+  }
+  interface GdocCommentFile {
+    exportedAt: string;
+    comments: Array<{ id: string; author: string; createdTime: string | null; modifiedTime: string | null; content: string; quoted: string; resolved: boolean; replies: Array<{ id: string; author: string; content: string; createdTime: string | null; action: string | null }> }>;
+  }
+  interface GdocBodyFile {
+    exportedAt: string;
+    paragraphs: DocParagraph[];
+  }
+  interface GdocResults {
+    id: string | null;
+    appliedAt: string;
+    replies: Array<{ commentId: string; ok: boolean; error?: string }>;
+    ops: Array<{ i: number; ok: boolean; error?: string }>;
+  }
+  async function gdocPlan(threadId: string) {
+    const ctx = await gdocContext(threadId);
+    if (ctx.folder === null) return null;
+    const body = (await bb.storage.kv.get<GdocBodyFile>(gdocBodyKey(ctx.doc.path))) ?? (await readJsonAt<GdocBodyFile>(joinPath(ctx.folder, "body.json"), ctx.hostId));
+    const sidecar = await readSidecar(threadId);
+    const replies = (sidecar?.comments ?? []).filter((c) => c.gdocId !== null && c.replyQueuedAt !== null && c.replySentAt === null && c.draft !== null && c.draft.trim() !== "");
+    if (body === null) return { ctx, body: null, ops: [], manual: [], replies };
+    const { ops, manual } = planDocOps(body.paragraphs, markdownToDocBlocks(ctx.content), diffArrays);
+    return { ctx, body, ops, manual, replies };
+  }
+  async function gdocStatus(threadId: string) {
+    const ctx = await gdocContext(threadId);
+    if (ctx.docId === null || ctx.folder === null) return { docId: ctx.docId, folder: null, syncDir: ctx.syncDir, commentsExportedAt: null, bodyExportedAt: null, outboxPending: false, lastResults: null, plan: null };
+    const comments = await readJsonAt<GdocCommentFile>(joinPath(ctx.folder, "comments.json"), ctx.hostId);
+    const body = await readJsonAt<GdocBodyFile>(joinPath(ctx.folder, "body.json"), ctx.hostId);
+    const outbox = await readFileAt(joinPath(ctx.folder, "outbox.json"), ctx.hostId);
+    const results = await readJsonAt<GdocResults>(joinPath(ctx.folder, "results.json"), ctx.hostId);
+    const plan = await gdocPlan(threadId);
+    return {
+      docId: ctx.docId,
+      folder: ctx.folder,
+      syncDir: ctx.syncDir,
+      commentsExportedAt: comments?.exportedAt ?? null,
+      bodyExportedAt: body?.exportedAt ?? null,
+      outboxPending: outbox !== null,
+      lastResults:
+        results === null
+          ? null
+          : {
+              appliedAt: results.appliedAt,
+              repliesOk: results.replies.filter((r) => r.ok).length,
+              repliesFailed: results.replies.filter((r) => !r.ok).length,
+              opsOk: results.ops.filter((r) => r.ok).length,
+              opsFailed: results.ops.filter((r) => !r.ok).length,
+              errors: [...results.replies, ...results.ops].filter((r) => !r.ok).map((r) => r.error ?? "failed").slice(0, 10),
+            },
+      plan: plan === null ? null : { ops: plan.ops.length, replies: plan.replies.length, manual: plan.manual.map((m) => ({ kind: m.opaque ?? "block", line: m.line })) },
+    };
+  }
+  async function gdocPull(threadId: string) {
+    const ctx = await gdocContext(threadId);
+    if (ctx.docId === null) throw new Error("This RFC has no `gdoc:` line in its frontmatter.");
+    if (ctx.folder === null) throw new Error("No sync folder: set the Google Doc sync folder in settings or install Google Drive for Desktop.");
+    const file = await readJsonAt<GdocCommentFile>(joinPath(ctx.folder, "comments.json"), ctx.hostId);
+    if (file === null) throw new Error(`No comments.json in ${ctx.folder} yet. Run the Apps Script's setup() once and wait for Drive to sync.`);
+    const body = await readJsonAt<GdocBodyFile>(joinPath(ctx.folder, "body.json"), ctx.hostId);
+    if (body !== null) await bb.storage.kv.set(gdocBodyKey(ctx.doc.path), body);
+    const results = await readJsonAt<GdocResults>(joinPath(ctx.folder, "results.json"), ctx.hostId);
+    const nowIso = now();
+    let added = 0;
+    let updated = 0;
+    let repliesConfirmed = 0;
+    await mutateSidecar(threadId, (d) => {
+      for (const gc of file.comments) {
+        const where = locateComment(ctx.content, { quoted: gc.quoted, context: gc.quoted, heading: null });
+        const replies = gc.replies.filter((r) => r.content.trim() !== "").map((r) => ({ author: r.author, date: r.createdTime, text: r.content }));
+        let existing = d.comments.find((x) => x.gdocId === gc.id);
+        if (existing === undefined) {
+          // A .docx import of the same comment: adopt it so status and drafts carry over.
+          existing = d.comments.find((x) => x.gdocId === null && x.author === gc.author && normText(x.text) === normText(gc.content));
+        }
+        if (existing !== undefined) {
+          Object.assign(existing, { gdocId: gc.id, source: "gdoc", replies, resolved: gc.resolved, quoted: gc.quoted, anchor: where.matched === "none" ? existing.anchor : where.anchor, matched: where.matched === "none" ? existing.matched : where.matched, updatedAt: nowIso });
+          if (gc.resolved && existing.status === "new") existing.status = "answered";
+          updated++;
+          continue;
+        }
+        d.comments.push({
+          id: newId("cmt"),
+          fingerprint: `gdoc:${gc.id}`,
+          source: "gdoc",
+          gdocId: gc.id,
+          author: gc.author,
+          date: gc.createdTime,
+          text: gc.content,
+          replies,
+          resolved: gc.resolved,
+          anchor: where.anchor,
+          quoted: gc.quoted,
+          context: gc.quoted,
+          heading: null,
+          onImage: gc.quoted.trim() === "",
+          matched: where.matched,
+          status: gc.resolved ? "answered" : "new",
+          draft: null,
+          draftStatus: "idle",
+          threadId: null,
+          exchanges: [],
+          replyQueuedAt: null,
+          replySentAt: null,
+          resolveQueued: false,
+          importedFrom: joinPath(ctx.folder!, "comments.json"),
+          importedAt: nowIso,
+          updatedAt: nowIso,
+        });
+        added++;
+      }
+      // Replies the script confirmed posting.
+      if (results !== null) {
+        for (const r of results.replies) {
+          if (!r.ok) continue;
+          const c = d.comments.find((x) => x.gdocId === r.commentId && x.replyQueuedAt !== null && x.replySentAt === null);
+          if (c !== undefined) {
+            c.replySentAt = results.appliedAt;
+            c.replyQueuedAt = null;
+            if (c.resolveQueued) c.status = "answered";
+            c.resolveQueued = false;
+            repliesConfirmed++;
+          }
+        }
+      }
+    });
+    return { added, updated, repliesConfirmed, bodyParagraphs: body?.paragraphs.length ?? 0 };
+  }
+  async function gdocPush(threadId: string, edits: boolean, replies: boolean) {
+    const plan = await gdocPlan(threadId);
+    if (plan === null) throw new Error("This RFC is not linked to a Google Doc, or no sync folder is available.");
+    if (edits && plan.body === null) throw new Error("No body.json yet: pull once so the plugin knows the Doc's current paragraphs.");
+    const ops = edits ? plan.ops : [];
+    const queued = replies ? plan.replies : [];
+    if (ops.length === 0 && queued.length === 0) throw new Error("Nothing to push: no paragraph differences and no queued replies.");
+    const outbox = {
+      id: newId("push"),
+      createdAt: now(),
+      replies: queued.map((c) => ({ commentId: c.gdocId!, text: c.draft!, resolve: c.resolveQueued })),
+      ops,
+    };
+    const path = joinPath(plan.ctx.folder!, "outbox.json");
+    const result = await bb.sdk.files.write({ path, content: JSON.stringify(outbox, null, 2), createParents: true, expectedSha256: null, ...fileArgs(plan.ctx.hostId) });
+    if (result.outcome !== "written") throw new Error("Could not write outbox.json.");
+    return { ops: ops.length, replies: queued.length, manual: plan.manual.length, outbox: path };
+  }
+
   async function importComments(threadId: string, input: string) {
     const { doc, hostId, rfcDir } = await (async () => {
       const ctx = await threadContext(threadId);
@@ -1571,6 +1793,10 @@ export default async function plugin(bb: BbPluginApi) {
           draftStatus: "idle",
           threadId: null,
           exchanges: [],
+          gdocId: null,
+          replyQueuedAt: null,
+          replySentAt: null,
+          resolveQueued: false,
           importedFrom: path,
           importedAt: nowIso,
           updatedAt: nowIso,
@@ -1877,6 +2103,19 @@ export default async function plugin(bb: BbPluginApi) {
         return { ok: true as const };
       }),
     card_followup: ({ threadId, cardId, question }) => askCard(threadId, cardId, question),
+    gdoc_status: ({ threadId }) => gdocStatus(threadId),
+    gdoc_pull: ({ threadId }) => gdocPull(threadId),
+    gdoc_push: ({ threadId, edits, replies }) => gdocPush(threadId, edits, replies),
+    comment_queue_reply: ({ threadId, id, queue, resolve }) =>
+      mutateSidecar(threadId, (d) => {
+        const c = d.comments.find((x) => x.id === id);
+        if (c === undefined) throw new Error("Comment not found.");
+        if (queue && (c.draft === null || c.draft.trim() === "")) throw new Error("Write or draft a reply first.");
+        c.replyQueuedAt = queue ? now() : null;
+        c.resolveQueued = queue ? resolve : false;
+        c.updatedAt = now();
+        return c;
+      }),
     comments_files: async ({ threadId }) => {
       const { rfcDir, hostId, doc } = await threadContext(threadId);
       const dir = rfcDir ?? (doc === null ? null : dirname(doc.path));

@@ -159,7 +159,13 @@ export const commentSchema = z.object({
   id: z.string(),
   /** sha256(author|date|text): stable across re-exports, which renumber comment ids. */
   fingerprint: z.string(),
-  source: z.literal("docx"),
+  source: z.enum(["docx", "gdoc"]).default("docx"),
+  /** Google's comment id when the comment came through the Doc sync; stable across pulls. */
+  gdocId: z.string().nullable().default(null),
+  /** Reply queued for the next push to the Doc, and when it was confirmed posted. */
+  replyQueuedAt: z.string().nullable().default(null),
+  replySentAt: z.string().nullable().default(null),
+  resolveQueued: z.boolean().default(false),
   author: z.string().max(200),
   date: z.string().nullable().default(null),
   text: z.string().max(20_000),

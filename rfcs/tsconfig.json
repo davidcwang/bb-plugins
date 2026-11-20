@@ -25,6 +25,7 @@
     "diff.ts",
     "d2colors.ts",
     "docx.ts",
+    "docmodel.ts",
     "app-changes.tsx",
     "app-rich.tsx",
     "shared.ts",
