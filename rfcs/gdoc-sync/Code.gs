@@ -1,77 +1,69 @@
 /**
- * RFCs plugin ↔ Google Doc sync, running inside Google Apps Script.
+ * RFCs plugin ↔ Google Docs bridge, running inside Google Apps Script as a
+ * web app. One deployment serves every Doc you own: the plugin passes the Doc
+ * id with each call.
  *
  * Why this exists: Workspace admins often block third-party OAuth apps, but a
- * script bound to your own account runs as you with first-party services. It
- * moves data through a Drive folder that Google Drive for Desktop mirrors to
- * your laptop, where the BB plugin reads and writes it.
+ * script you deploy yourself runs as you with first-party services.
  *
- * Files in the sync folder (one folder per Doc):
- *   comments.json  ← written here: every comment thread on the Doc
- *   body.json      ← written here: the Doc body as paragraphs
- *   outbox.json    → written by the plugin: replies, resolutions, paragraph edits
- *   results.json   ← written here after an outbox is applied
+ *   GET  ?token=…&doc=<id>&what=comments   → comment threads (Drive API v3)
+ *   GET  ?token=…&doc=<id>&what=body       → the Doc body as paragraphs
+ *   POST ?token=…&doc=<id>  body: outbox   → posts replies / resolutions and
+ *                                            applies paragraph edits; returns results
  *
- * Setup (once per Doc), see README.md:
- *   1. Extensions → Apps Script from the Doc, paste this file.
- *   2. Services (+) → add "Drive API" (v3), identifier Drive.
- *   3. Project Settings → Script properties: SYNC_FOLDER_ID = id of the Drive folder
- *      (inside "My Drive/rfc-sync/"), DOC_ID = the Doc id (optional for a bound script).
- *   4. Run `setup` once (authorize), which installs a 5-minute trigger for `sync`.
+ * Setup (once), see README.md:
+ *   1. script.google.com → New project; paste this file.
+ *   2. Services (+) → Drive API (v3), identifier Drive.
+ *   3. Project Settings → Script properties: TOKEN = a long random string.
+ *   4. Deploy → New deployment → Web app: execute as Me, access "Anyone".
+ *      Copy the /exec URL into the plugin settings together with the token.
  */
 
 var PROPS = PropertiesService.getScriptProperties();
 
-function docId_() {
-  var id = PROPS.getProperty("DOC_ID");
-  if (id) return id;
-  return DocumentApp.getActiveDocument().getId();
+function json_(obj, code) {
+  var out = ContentService.createTextOutput(JSON.stringify(obj));
+  out.setMimeType(ContentService.MimeType.JSON);
+  return out;
 }
-function folder_() {
-  var id = PROPS.getProperty("SYNC_FOLDER_ID");
-  if (!id) throw new Error("Set the SYNC_FOLDER_ID script property to the sync folder's Drive id.");
-  return DriveApp.getFolderById(id);
+
+function auth_(e) {
+  var token = PROPS.getProperty("TOKEN");
+  if (!token) throw new Error("Set the TOKEN script property.");
+  var given = (e && e.parameter && e.parameter.token) || "";
+  if (given !== token) throw new Error("bad token");
 }
-function writeJson_(name, obj) {
-  var folder = folder_();
-  var it = folder.getFilesByName(name);
-  var text = JSON.stringify(obj, null, 2);
-  if (it.hasNext()) {
-    var f = it.next();
-    f.setContent(text);
-    while (it.hasNext()) it.next().setTrashed(true);
-    return f;
+
+function doGet(e) {
+  try {
+    auth_(e);
+    var docId = e.parameter.doc;
+    if (!docId) throw new Error("doc parameter required");
+    var what = e.parameter.what || "comments";
+    if (what === "comments") return json_({ docId: docId, exportedAt: new Date().toISOString(), comments: getComments(docId) });
+    if (what === "body") return json_({ docId: docId, exportedAt: new Date().toISOString(), paragraphs: getBody(docId) });
+    if (what === "ping") return json_({ ok: true, user: Session.getActiveUser().getEmail() || null });
+    throw new Error("unknown what=" + what);
+  } catch (err) {
+    return json_({ error: String(err && err.message ? err.message : err) });
   }
-  return folder.createFile(name, text, "application/json");
-}
-function readJson_(name) {
-  var it = folder_().getFilesByName(name);
-  if (!it.hasNext()) return null;
-  var f = it.next();
-  return { file: f, data: JSON.parse(f.getBlob().getDataAsString("UTF-8")) };
 }
 
-/** Install the periodic trigger and do a first pull. */
-function setup() {
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === "sync") ScriptApp.deleteTrigger(t);
-  });
-  ScriptApp.newTrigger("sync").timeBased().everyMinutes(5).create();
-  sync();
+function doPost(e) {
+  try {
+    auth_(e);
+    var docId = e.parameter.doc;
+    if (!docId) throw new Error("doc parameter required");
+    var data = JSON.parse((e.postData && e.postData.contents) || "{}");
+    return json_(applyOutbox(docId, data));
+  } catch (err) {
+    return json_({ error: String(err && err.message ? err.message : err) });
+  }
 }
 
-/** Apply anything the plugin queued, then export comments and body. */
-function sync() {
-  var applied = applyOutbox_();
-  pullComments();
-  pullBody();
-  return applied;
-}
+// ---- read ----------------------------------------------------------------
 
-// ---- pull ----------------------------------------------------------------
-
-function pullComments() {
-  var fileId = docId_();
+function getComments(fileId) {
   var out = [];
   var pageToken = null;
   do {
@@ -101,8 +93,7 @@ function pullComments() {
     });
     pageToken = res.nextPageToken || null;
   } while (pageToken);
-  writeJson_("comments.json", { docId: fileId, exportedAt: new Date().toISOString(), comments: out });
-  return out.length;
+  return out;
 }
 
 function headingLevel_(h) {
@@ -116,8 +107,8 @@ function headingLevel_(h) {
   return 0;
 }
 
-function pullBody() {
-  var body = DocumentApp.openById(docId_()).getBody();
+function getBody(docId) {
+  var body = DocumentApp.openById(docId).getBody();
   var paras = [];
   var n = body.getNumChildren();
   for (var i = 0; i < n; i++) {
@@ -136,11 +127,10 @@ function pullBody() {
       paras.push({ index: i, kind: "other", level: 0, text: "" });
     }
   }
-  writeJson_("body.json", { docId: docId_(), exportedAt: new Date().toISOString(), paragraphs: paras });
-  return paras.length;
+  return paras;
 }
 
-// ---- push (apply the plugin's outbox) ------------------------------------
+// ---- write (apply the plugin's outbox) -----------------------------------
 
 function norm_(t) {
   return String(t || "").toLowerCase().replace(/[\s ]+/g, " ").replace(/[“”]/g, '"').replace(/[‘’]/g, "'").trim();
@@ -155,7 +145,7 @@ function findPara_(body, text) {
     var el = body.getChild(i);
     var type = el.getType();
     if (type !== DocumentApp.ElementType.PARAGRAPH && type !== DocumentApp.ElementType.LIST_ITEM) continue;
-    if (norm_(el.asText ? el.getText() : "") === want) return el;
+    if (norm_(el.getText()) === want) return el;
   }
   return null;
 }
@@ -164,16 +154,17 @@ var HEADINGS = [null, "HEADING1", "HEADING2", "HEADING3", "HEADING4", "HEADING5"
 
 /** Write runs into a paragraph/list item: text, then bold/italic/code/link ranges. */
 function setRuns_(el, block) {
-  var text = (block.runs || []).map(function (r) { return r.text; }).join("");
-  el.setText(text || block.text || "");
+  var runs = block.runs || [];
+  var text = runs.map(function (r) { return r.text; }).join("") || block.text || "";
+  el.setText(text);
   var t = el.editAsText();
   var pos = 0;
-  (block.runs || []).forEach(function (r) {
+  runs.forEach(function (r) {
     var len = r.text.length;
     if (len > 0) {
       var a = pos, b = pos + len - 1;
-      if (r.bold) t.setBold(a, b, true);
-      if (r.italic) t.setItalic(a, b, true);
+      t.setBold(a, b, !!r.bold);
+      t.setItalic(a, b, !!r.italic);
       if (r.code) { t.setFontFamily(a, b, "Roboto Mono"); t.setBackgroundColor(a, b, "#f1f3f4"); }
       if (r.link) t.setLinkUrl(a, b, r.link);
     }
@@ -201,14 +192,9 @@ function insertBlockAfter_(body, anchorEl, block) {
   return el;
 }
 
-function applyOutbox_() {
-  var box = readJson_("outbox.json");
-  if (box === null) return null;
-  var data = box.data;
-  var fileId = docId_();
+function applyOutbox(fileId, data) {
   var results = { id: data.id || null, appliedAt: new Date().toISOString(), replies: [], ops: [] };
 
-  // 1. Replies and resolutions.
   (data.replies || []).forEach(function (r) {
     try {
       var payload = { content: r.text };
@@ -220,7 +206,6 @@ function applyOutbox_() {
     }
   });
 
-  // 2. Paragraph edits.
   if ((data.ops || []).length > 0) {
     var doc = DocumentApp.openById(fileId);
     var body = doc.getBody();
@@ -228,29 +213,26 @@ function applyOutbox_() {
       try {
         if (op.op === "replace") {
           var el = findPara_(body, op.find);
-          if (el === null) throw new Error("paragraph not found: " + op.find.slice(0, 80));
+          if (el === null) throw new Error("paragraph not found: " + String(op.find).slice(0, 80));
           setRuns_(el, op.block);
-          results.ops.push({ i: i, ok: true });
         } else if (op.op === "delete") {
           var del = findPara_(body, op.find);
-          if (del === null) throw new Error("paragraph not found: " + op.find.slice(0, 80));
+          if (del === null) throw new Error("paragraph not found: " + String(op.find).slice(0, 80));
           if (body.getNumChildren() === 1) del.asParagraph().setText("");
           else del.removeFromParent();
-          results.ops.push({ i: i, ok: true });
         } else if (op.op === "insertAfter") {
           var anchor = op.anchor === null ? null : findPara_(body, op.anchor);
-          if (op.anchor !== null && anchor === null) throw new Error("anchor not found: " + op.anchor.slice(0, 80));
+          if (op.anchor !== null && anchor === null) throw new Error("anchor not found: " + String(op.anchor).slice(0, 80));
           insertBlockAfter_(body, anchor, op.block);
-          results.ops.push({ i: i, ok: true });
+        } else {
+          throw new Error("unknown op " + op.op);
         }
+        results.ops.push({ i: i, ok: true });
       } catch (e) {
         results.ops.push({ i: i, ok: false, error: String(e) });
       }
     });
     doc.saveAndClose();
   }
-
-  writeJson_("results.json", results);
-  box.file.setName("outbox.done-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json");
   return results;
 }

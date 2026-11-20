@@ -896,94 +896,104 @@ export function CommentCard({ rpc, threadId, comment, forceOpen, onJump }: { rpc
   );
 }
 
-type GdocStatus = Awaited<ReturnType<Rpc["call"]>> extends never ? never : {
+interface GdocStatus {
   docId: string | null;
-  folder: string | null;
-  syncDir: string | null;
-  commentsExportedAt: string | null;
-  bodyExportedAt: string | null;
-  outboxPending: boolean;
-  lastResults: { appliedAt: string; repliesOk: number; repliesFailed: number; opsOk: number; opsFailed: number; errors: string[] } | null;
+  configured: boolean;
+  bodyPulledAt: string | null;
+  lastPush: { appliedAt: string; repliesOk: number; repliesFailed: number; opsOk: number; opsFailed: number; errors: string[] } | null;
   plan: { ops: number; replies: number; manual: Array<{ kind: string; line: number }> } | null;
-};
+}
 
-/** Status and actions for the Google Doc linked through the frontmatter `gdoc:` line. */
+/** Status and actions for the Google Doc linked through the RFC's "Google Doc:" header line. */
 function GdocSyncPanel({ rpc, threadId, onChanged }: { rpc: Rpc; threadId: string; onChanged: () => void }) {
   const [status, setStatus] = useState<GdocStatus | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"pull" | "push" | null>(null);
   const refresh = useCallback(() => {
-    rpc.call("gdoc_status", { threadId }).then((r) => setStatus(r as GdocStatus), () => undefined);
+    rpc.call("gdoc_status", { threadId }).then((r) => setStatus(r), () => undefined);
   }, [rpc, threadId]);
-  useEffect(() => {
-    refresh();
-    const t = window.setInterval(refresh, 30_000);
-    return () => window.clearInterval(t);
-  }, [refresh]);
-  const act = (label: string, fn: () => Promise<unknown>) => {
-    setBusy(true);
+  useEffect(refresh, [refresh]);
+  useRealtime(CHANGED, (payload: unknown) => {
+    const p = payload as ChangedPayload;
+    if (p.threadId === threadId && (p.kind === "sidecar" || p.kind === "doc")) refresh();
+  });
+  const act = (which: "pull" | "push", label: string, fn: () => Promise<unknown>) => {
+    setBusy(which);
     fn()
       .then(() => {
         refresh();
         onChanged();
       })
       .catch((cause: unknown) => toast.error(`${label} failed: ${describe(cause)}`))
-      .finally(() => setBusy(false));
+      .finally(() => setBusy(null));
   };
   if (status === null) return null;
-  if (status.docId === null) {
+  const fmt = (iso: string | null) => (iso === null ? "never" : new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }));
+  if (status.docId === null || !status.configured) {
     return (
       <div className="border-b border-border px-2 py-1.5 text-[11px] text-muted-foreground">
-        <span className="font-medium text-foreground">Google Doc sync:</span> add <code>gdoc: &lt;doc url&gt;</code> to the RFC's frontmatter and set up the Apps Script (plugin folder <code>gdoc-sync/README.md</code>) to pull comments and push edits automatically.
+        <span className="font-medium text-foreground">Google Doc sync:</span>{" "}
+        {status.docId === null ? (
+          <>
+            add <code>Google Doc: &lt;doc url&gt;</code> to the RFC header
+          </>
+        ) : (
+          <>set the bridge URL and token in the plugin settings</>
+        )}{" "}
+        (setup in the plugin's <code>gdoc-sync/README.md</code>).
       </div>
     );
   }
-  const fmt = (iso: string | null) => (iso === null ? "never" : new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }));
+  const plan = status.plan;
   return (
     <div className="border-b border-border px-2 py-1.5 text-[11px]">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <span className="font-medium">Google Doc sync</span>
-        {status.folder === null ? (
-          <span className="text-destructive">No sync folder found. Install Google Drive for Desktop or set the folder in plugin settings.</span>
-        ) : (
-          <>
-            <span className="text-muted-foreground" title={status.folder}>
-              comments {fmt(status.commentsExportedAt)} · body {fmt(status.bodyExportedAt)}
-            </span>
-            {status.outboxPending ? <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700 dark:text-amber-400">push waiting for the script</span> : null}
-            {status.lastResults !== null ? (
-              <span className={cn("rounded px-1.5 py-0.5", status.lastResults.repliesFailed + status.lastResults.opsFailed > 0 ? "bg-destructive/15 text-destructive" : "bg-green-500/15 text-green-700 dark:text-green-400")} title={status.lastResults.errors.join("\n")}>
-                last push {fmt(status.lastResults.appliedAt)}: {status.lastResults.opsOk} edits, {status.lastResults.repliesOk} replies
-                {status.lastResults.repliesFailed + status.lastResults.opsFailed > 0 ? `, ${status.lastResults.repliesFailed + status.lastResults.opsFailed} failed` : ""}
-              </span>
-            ) : null}
-            <span className="ml-auto flex items-center gap-1">
-              <Button size="sm" variant="outline" className="h-6 text-[11px]" disabled={busy} onClick={() => act("Pull", async () => {
+        <span className="text-muted-foreground">last pull {fmt(status.bodyPulledAt)}</span>
+        {status.lastPush !== null ? (
+          <span
+            className={cn("rounded px-1.5 py-0.5", status.lastPush.repliesFailed + status.lastPush.opsFailed > 0 ? "bg-destructive/15 text-destructive" : "bg-green-500/15 text-green-700 dark:text-green-400")}
+            title={status.lastPush.errors.join("\n")}
+          >
+            last push {fmt(status.lastPush.appliedAt)}: {status.lastPush.opsOk} edits, {status.lastPush.repliesOk} replies
+            {status.lastPush.repliesFailed + status.lastPush.opsFailed > 0 ? `, ${status.lastPush.repliesFailed + status.lastPush.opsFailed} failed` : ""}
+          </span>
+        ) : null}
+        <span className="ml-auto flex items-center gap-1">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 text-[11px]"
+            disabled={busy !== null}
+            onClick={() =>
+              act("pull", "Pull", async () => {
                 const r = await rpc.call("gdoc_pull", { threadId });
-                toast.success(`Pulled: ${r.added} new, ${r.updated} updated${r.repliesConfirmed > 0 ? `, ${r.repliesConfirmed} replies confirmed posted` : ""}.`);
-              })}>
-                Pull from Doc
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-6 text-[11px]"
-                disabled={busy || status.outboxPending || status.plan === null || status.plan.ops + status.plan.replies === 0}
-                onClick={() => act("Push", async () => {
-                  const r = await rpc.call("gdoc_push", { threadId, edits: true, replies: true });
-                  toast.success(`Queued ${r.ops} edit${r.ops === 1 ? "" : "s"} and ${r.replies} repl${r.replies === 1 ? "y" : "ies"}; the script applies them within ~5 minutes.${r.manual > 0 ? ` ${r.manual} table/diagram block${r.manual === 1 ? "" : "s"} need a manual update.` : ""}`);
-                })}
-              >
-                Push to Doc{status.plan !== null && status.plan.ops + status.plan.replies > 0 ? ` (${status.plan.ops} edit${status.plan.ops === 1 ? "" : "s"}, ${status.plan.replies} repl${status.plan.replies === 1 ? "y" : "ies"})` : ""}
-              </Button>
-            </span>
-          </>
-        )}
+                toast.success(`Pulled from the Doc: ${r.added} new comment${r.added === 1 ? "" : "s"}, ${r.updated} updated, ${r.bodyParagraphs} paragraphs.`);
+              })
+            }
+          >
+            {busy === "pull" ? "Pulling…" : "Pull from Doc"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 text-[11px]"
+            disabled={busy !== null || status.bodyPulledAt === null || plan === null || plan.ops + plan.replies === 0}
+            onClick={() =>
+              act("push", "Push", async () => {
+                const r = await rpc.call("gdoc_push", { threadId, edits: true, replies: true });
+                const failed = r.opsFailed + r.repliesFailed;
+                const msg = `Pushed ${r.ops} edit${r.ops === 1 ? "" : "s"} and ${r.replies} repl${r.replies === 1 ? "y" : "ies"} to the Doc.${r.manual > 0 ? ` ${r.manual} table/diagram block${r.manual === 1 ? "" : "s"} need a manual update.` : ""}`;
+                if (failed > 0) toast.warning(`${msg} ${failed} failed: ${r.errors[0] ?? ""}`);
+                else toast.success(msg);
+              })
+            }
+          >
+            {busy === "push" ? "Pushing…" : plan !== null && plan.ops + plan.replies > 0 ? `Push to Doc (${plan.ops} edit${plan.ops === 1 ? "" : "s"}, ${plan.replies} repl${plan.replies === 1 ? "y" : "ies"})` : "Push to Doc"}
+          </Button>
+        </span>
       </div>
-      {status.plan !== null && status.plan.manual.length > 0 ? (
-        <p className="mt-1 text-muted-foreground">
-          Not pushed automatically (update in the Doc by hand): {status.plan.manual.map((m) => `${m.kind} at line ${m.line}`).join(", ")}.
-        </p>
-      ) : null}
+      {status.bodyPulledAt === null ? <p className="mt-1 text-muted-foreground">Pull once so the plugin knows the Doc's paragraphs; then Push shows what would change.</p> : null}
+      {plan !== null && plan.manual.length > 0 ? <p className="mt-1 text-muted-foreground">Not pushed automatically (update in the Doc by hand): {plan.manual.map((m) => `${m.kind} at line ${m.line}`).join(", ")}.</p> : null}
     </div>
   );
 }
