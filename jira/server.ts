@@ -930,7 +930,200 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  bb.agents.configure(() => ({ tools: ["jira_search", "jira_create_issue", "jira_draft"], skills: ["jira"] }));
+  /** "me", "none" (where allowed), or a name or email to search for; ambiguous matches are an error. */
+  async function resolveUser(spec: string, project: string | null, assignable: boolean): Promise<User | null> {
+    const { jira, config } = await client();
+    const wanted = spec.trim();
+    if (wanted.toLowerCase() === "me") {
+      const m = await myself(jira, config.email!);
+      return { accountId: m.accountId, displayName: m.displayName };
+    }
+    if (wanted.toLowerCase() === "none") return null;
+    const found = await jira.users({ query: wanted, project, assignable });
+    const exact = found.filter((u) => u.displayName.toLowerCase() === wanted.toLowerCase());
+    const pick = exact.length === 1 ? exact : found;
+    if (pick.length === 1) return pick[0]!;
+    throw new Error(
+      pick.length === 0
+        ? `No ${assignable ? "assignable " : ""}user matches "${wanted}".`
+        : `"${wanted}" matches several people: ${pick.slice(0, 8).map((u) => u.displayName).join(", ")}. Use a fuller name.`,
+    );
+  }
+
+  const linkParam = z.object({
+    type: z.string().min(1).max(100).default("Blocks").describe("Link type name, e.g. Blocks or Relates."),
+    direction: z.enum(["outward", "inward"]).describe('"outward": this issue blocks the other. "inward": this issue is blocked by the other.'),
+    key: issueKeySchema,
+  });
+
+  const describeIssue = (issue: EditableIssue) =>
+    [
+      `${issue.key} · ${issue.type} · ${issue.status} · ${issue.url}`,
+      `updated: ${issue.updated}`,
+      `summary: ${issue.summary}`,
+      `assignee: ${issue.assignee?.displayName ?? "unassigned"}`,
+      `reporter: ${issue.reporter?.displayName ?? "none"}`,
+      `labels: ${issue.labels.length === 0 ? "none" : issue.labels.join(", ")}`,
+      `parent: ${issue.parent ?? "none"}`,
+      `links: ${issue.links.length === 0 ? "none" : issue.links.map((l) => `${l.direction === "outward" ? "→" : "←"} ${l.type} ${l.key}`).join("; ")}`,
+      `editable fields: ${issue.editable.join(", ")}`,
+      ...(issue.lossy.length === 0
+        ? []
+        : [`description also holds content Markdown can't carry (${issue.lossy.join(", ")}); replacing the description drops it`]),
+      "",
+      "description (Markdown):",
+      issue.description === "" ? "(empty)" : issue.description.slice(0, 20_000),
+    ].join("\n");
+
+  bb.agents.registerTool({
+    name: "jira_get_issue",
+    description:
+      "Read a Jira issue's editable fields: summary, Markdown description, assignee, reporter, labels, parent, links (→ outward, ← inward), its `updated` stamp, and which fields its edit screen allows.",
+    parameters: z.object({ key: issueKeySchema }),
+    async execute({ key }) {
+      try {
+        return describeIssue(await (await client()).jira.editable(key));
+      } catch (cause) {
+        return toolError(cause);
+      }
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "jira_update_issue",
+    description:
+      "Update an existing Jira issue. Only the fields you pass change. `description` replaces the whole description (Markdown, converted to Jira formatting). Links are added or removed individually. Returns the issue as it is after the update.",
+    instructions:
+      "Updating an issue is visible to the user's team. Only call this when the user asked for the change. Call jira_get_issue first, edit from what it returns, and pass its `updated` as expectedUpdated so a concurrent edit in Jira is not overwritten. Say exactly what you changed afterwards. Follow the same writing rules as jira_draft: no references to other tickets by number.",
+    parameters: z.object({
+      key: issueKeySchema,
+      expectedUpdated: z.string().optional().describe("The `updated` from jira_get_issue; the update is refused if Jira's has moved since."),
+      summary: z.string().trim().min(1).max(255).optional(),
+      description: z.string().max(30_000).optional().describe("The full new description in Markdown."),
+      assignee: z.string().max(200).optional().describe('"me", "none", or a person\'s name or email.'),
+      reporter: z.string().max(200).optional().describe('"me", or a person\'s name or email.'),
+      labels: z.array(labelSchema).max(50).optional().describe("Replace all labels."),
+      addLabels: z.array(labelSchema).max(50).default([]),
+      removeLabels: z.array(z.string()).max(50).default([]),
+      parent: z.string().max(40).optional().describe('An epic or parent issue key, or "none" to clear it.'),
+      addLinks: z.array(linkParam).max(50).default([]),
+      removeLinks: z.array(linkParam).max(50).default([]),
+      allowDroppingDescriptionContent: z
+        .boolean()
+        .default(false)
+        .describe("Required to replace a description that holds images, panels, mentions, or other content Markdown can't carry."),
+    }),
+    async execute(input) {
+      try {
+        const { jira } = await client();
+        const current = await jira.editable(input.key);
+        if (input.description !== undefined && current.lossy.length > 0 && !input.allowDroppingDescriptionContent) {
+          throw new Error(
+            `${input.key}'s description holds ${current.lossy.join(", ")}, which replacing it would drop. Ask the user, then pass allowDroppingDescriptionContent: true.`,
+          );
+        }
+        if (input.labels !== undefined && (input.addLabels.length > 0 || input.removeLabels.length > 0)) {
+          throw new Error("Pass either labels or addLabels/removeLabels, not both.");
+        }
+        const changes: EditInput["changes"] = {};
+        if (input.summary !== undefined) changes.summary = input.summary;
+        if (input.description !== undefined) changes.description = input.description;
+        if (input.assignee !== undefined) changes.assignee = await resolveUser(input.assignee, current.project, true);
+        if (input.reporter !== undefined) {
+          const reporter = await resolveUser(input.reporter, null, false);
+          if (reporter === null) throw new Error("An issue always has a reporter; it can't be set to none.");
+          changes.reporter = reporter;
+        }
+        if (input.labels !== undefined) changes.labels = input.labels;
+        else if (input.addLabels.length > 0 || input.removeLabels.length > 0) {
+          const drop = new Set(input.removeLabels);
+          changes.labels = [...new Set([...current.labels.filter((l) => !drop.has(l)), ...input.addLabels])];
+        }
+        if (input.parent !== undefined) {
+          if (input.parent.trim().toLowerCase() === "none") changes.parent = null;
+          else {
+            const parsed = issueKeySchema.safeParse(input.parent);
+            if (!parsed.success) throw new Error(`"${input.parent}" is not an issue key.`);
+            changes.parent = parsed.data;
+          }
+        }
+        const removeLinks: string[] = [];
+        for (const l of input.removeLinks) {
+          const match = current.links.find((x) => x.type === l.type && x.direction === l.direction && x.key === l.key);
+          if (match === undefined) throw new Error(`${input.key} has no ${l.direction} ${l.type} link to ${l.key}.`);
+          removeLinks.push(match.id);
+        }
+        const { issue, warnings } = await saveIssue({
+          key: input.key,
+          baseUpdated: input.expectedUpdated ?? current.updated,
+          changes,
+          addLinks: input.addLinks,
+          removeLinks,
+        });
+        return [...warnings.map((w) => `warning: ${w}`), describeIssue(issue)].join("\n");
+      } catch (cause) {
+        return toolError(cause);
+      }
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "jira_drafts",
+    description: "List the drafts on the Jira page's Drafts tab: id, project, parent, links, summary.",
+    parameters: z.object({}),
+    async execute() {
+      const drafts = await listDrafts();
+      return drafts.length === 0
+        ? "No drafts."
+        : drafts
+            .map((d) => `${d.id}  ${d.project ?? "-"}  parent ${d.parent ?? "-"}  ${d.links.length} link(s)  ${d.summary || "(untitled)"}`)
+            .join("\n");
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "jira_update_draft",
+    description:
+      "Edit a draft on the Drafts tab (nothing is sent to Jira). Only the fields you pass change; `description` replaces the whole description.",
+    instructions: "Follow the jira_draft writing rules. Use jira_drafts to find draft ids.",
+    parameters: z.object({
+      draftId: z.string().min(1).max(64),
+      summary: z.string().trim().min(1).max(255).optional(),
+      description: z.string().max(20_000).optional(),
+      labels: z.array(labelSchema).max(50).optional().describe("Replace all labels."),
+      parent: z.string().max(40).optional().describe('An issue key, or "none".'),
+      assignee: z.string().max(200).optional().describe('"me", "none", or a name or email.'),
+      reporter: z.string().max(200).optional().describe('"me", "none", or a name or email.'),
+    }),
+    async execute(input) {
+      try {
+        const draft = await getDraft(input.draftId);
+        const { id: _id, createdAt: _c, updatedAt: _u, ...fields } = draft;
+        if (input.summary !== undefined) fields.summary = input.summary;
+        if (input.description !== undefined) fields.description = input.description;
+        if (input.labels !== undefined) fields.labels = input.labels;
+        if (input.parent !== undefined) {
+          if (input.parent.trim().toLowerCase() === "none") fields.parent = null;
+          else {
+            const parsed = issueKeySchema.safeParse(input.parent);
+            if (!parsed.success) throw new Error(`"${input.parent}" is not an issue key.`);
+            fields.parent = parsed.data;
+          }
+        }
+        if (input.assignee !== undefined) fields.assignee = await resolveUser(input.assignee, draft.project, true);
+        if (input.reporter !== undefined) fields.reporter = await resolveUser(input.reporter, null, false);
+        const saved = await saveDraft(draft.id, fields);
+        return `Updated draft ${saved.id}: ${saved.summary}`;
+      } catch (cause) {
+        return toolError(cause);
+      }
+    },
+  });
+
+  bb.agents.configure(() => ({
+    tools: ["jira_search", "jira_get_issue", "jira_update_issue", "jira_create_issue", "jira_draft", "jira_drafts", "jira_update_draft"],
+    skills: ["jira"],
+  }));
 
   bb.log.info("loaded");
 }

@@ -67,6 +67,20 @@ not transition the Jira issue.
 ## Agent tools
 
 - `jira_search` — read-only; scope `mine` or `project`, optional text.
+- `jira_get_issue` — read-only; one issue's editable fields, its `updated`
+  stamp, which fields its edit screen allows, and the description as Markdown.
+- `jira_update_issue` — changes an existing issue in Jira. Only when the user
+  asked. Read it with `jira_get_issue` first and pass its `updated` as
+  `expectedUpdated`; the update is refused if the issue changed since. Pass
+  only the fields to change: `summary`, `description` (full Markdown
+  replacement), `assignee` / `reporter` (`"me"`, `"none"` for assignee, or a
+  name or email), `labels` or `addLabels`/`removeLabels`, `parent` (key or
+  `"none"`), `addLinks` / `removeLinks`. Replacing a description that holds
+  images, panels or mentions needs `allowDroppingDescriptionContent: true`,
+  which only the user can approve. Tell the user exactly what changed.
+- `jira_drafts` — list drafts with their ids.
+- `jira_update_draft` — edit a draft's summary, description, labels, parent,
+  assignee or reporter; nothing goes to Jira.
 - `jira_draft` — saves a draft on the Drafts tab; nothing goes to Jira. Prefer
   it when the user wants a ticket written but has not asked to file it.
 - `jira_create_issue` — creates a real issue visible to the team. Only use it
