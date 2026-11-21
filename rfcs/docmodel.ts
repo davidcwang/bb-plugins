@@ -188,3 +188,91 @@ export function planDocOps(docParas: DocParagraph[], blocks: DocBlock[], diff: (
   }
   return { ops, manual };
 }
+
+/** A block for creating a fresh Doc: everything, including the content of tables, code and diagrams. */
+export type CreateBlock =
+  | DocBlock
+  | { kind: "table"; level: 0; text: string; runs: DocRun[]; rows: Array<Array<{ text: string; runs: DocRun[] }>>; line: number }
+  | { kind: "code"; level: 0; text: string; runs: DocRun[]; code: string; lang: string | null; line: number }
+  | { kind: "diagram"; level: 0; text: string; runs: DocRun[]; code: string; lang: string; imageKey: string; line: number };
+
+function splitRow(line: string): string[] {
+  const cells: string[] = [];
+  let cur = "";
+  let i = 0;
+  const t = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  while (i < t.length) {
+    const ch = t[i]!;
+    if (ch === "\\" && t[i + 1] === "|") {
+      cur += "|";
+      i += 2;
+      continue;
+    }
+    if (ch === "`") {
+      const end = t.indexOf("`", i + 1);
+      if (end !== -1) {
+        cur += t.slice(i, end + 1);
+        i = end + 1;
+        continue;
+      }
+    }
+    if (ch === "|") {
+      cells.push(cur.trim());
+      cur = "";
+    } else cur += ch;
+    i++;
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
+/**
+ * The whole document as blocks for "Create Google Doc". Prose blocks are the
+ * same as markdownToDocBlocks; tables carry their cells, code fences their
+ * text, diagrams their source plus an image key the app fills with a PNG.
+ */
+export function markdownToCreateBlocks(content: string): CreateBlock[] {
+  const fm = parseFrontmatter(content);
+  const body = fm === null ? content : fm.body;
+  const offset = fm === null ? 0 : content.slice(0, content.length - body.length).split("\n").length - 1;
+  const prose = markdownToDocBlocks(content);
+  const out: CreateBlock[] = [];
+  let diagramN = 0;
+  for (const seg of splitDocument(body)) {
+    if (seg.kind === "diagram") {
+      diagramN++;
+      out.push({ kind: "diagram", level: 0, text: "", runs: [], code: seg.text, lang: seg.lang ?? "mermaid", imageKey: `diagram-${diagramN}`, line: seg.startLine + offset });
+      continue;
+    }
+    const lines = seg.text.split("\n");
+    for (const b of markdownBlocks(seg.text)) {
+      const line = b.line + seg.startLine - 1 + offset;
+      if (b.kind === "table") {
+        const rows = (b.rows ?? [b.line]).map((rl) => splitRow(lines[rl - 1] ?? "").map((cell) => {
+          const runs = inlineRuns(cell);
+          return { text: plainText(runs), runs };
+        }));
+        out.push({ kind: "table", level: 0, text: "", runs: [], rows, line });
+      } else if (b.kind === "code") {
+        const open = lines[b.line - 1] ?? "";
+        const fence = /^\s{0,3}(`{3,}|~{3,})\s*(\S*)/.exec(open);
+        const lang = fence?.[2] ? fence[2] : null;
+        const codeLines: string[] = [];
+        for (let l = b.line; l < lines.length; l++) {
+          const cur = lines[l] ?? "";
+          if (fence !== null && cur.trim().startsWith(fence[1]!)) break;
+          codeLines.push(cur);
+        }
+        out.push({ kind: "code", level: 0, text: "", runs: [], code: codeLines.join("\n"), lang, line });
+      } else if (b.kind === "html" || b.kind === "hr") {
+        continue;
+      } else {
+        // Prose: take the already-built blocks that start on this block's lines.
+        const next = markdownBlocks(seg.text).find((x) => x.line > b.line);
+        const endLine = (next === undefined ? lines.length : next.line - 1) + seg.startLine - 1 + offset;
+        for (const pb of prose) if (pb.kind !== "opaque" && pb.line >= line && pb.line <= endLine) out.push(pb);
+      }
+    }
+  }
+  return out;
+}

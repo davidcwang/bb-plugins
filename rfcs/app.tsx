@@ -12,9 +12,9 @@ import { Markdown, ThreadChat, definePluginApp, useBbNavigate, useRealtime, useR
 import mermaid from "mermaid";
 import { toast } from "sonner";
 import type { Candidate, DocRead, DocRef, Finding, LibraryItem, ReviewState, rpcContract } from "./server";
-import { CHANGED, PRIORITIES, markdownBlocks, parseFrontmatter, splitSections, type ChangedPayload, type DocSection, type Priority } from "./shared";
+import { CHANGED, PRIORITIES, markdownBlocks, parseFrontmatter, splitDocument, splitSections, type ChangedPayload, type DocSection, type Priority } from "./shared";
 import type { Anchor, CardMode } from "./sidecar";
-import { CardView, CommentCard, ItemsView, SectionChrome, SelectionToolbar, WalkthroughView, itemsForSection, useSelectionActions, useSidecar, type DiagramRenderer, type ItemsTab } from "./app-sidecar";
+import { CardView, CommentCard, ItemsView, SectionChrome, SelectionToolbar, WalkthroughView, diagramRasterizer, itemsForSection, useSelectionActions, useSidecar, type DiagramRenderer, type ItemsTab } from "./app-sidecar";
 import type { Sidecar } from "./sidecar";
 import { recall, remember } from "./memory";
 import "./app.css";
@@ -264,6 +264,81 @@ function hashString(text: string): string {
 }
 
 const mermaidCache = new Map<string, string>();
+
+/** Draw an SVG string onto a canvas at 2x and return base64 PNG (no data: prefix). */
+async function svgToPng(svg: string): Promise<string> {
+  const doc = new DOMParser().parseFromString(svg, "image/svg+xml");
+  const root = doc.documentElement;
+  const vb = (root.getAttribute("viewBox") ?? "").split(/[\s,]+/).map(Number);
+  const num = (v: string | null) => (v === null ? NaN : Number.parseFloat(v));
+  let w = num(root.getAttribute("width"));
+  let h = num(root.getAttribute("height"));
+  if (!(w > 0) || !(h > 0)) {
+    w = vb.length === 4 && vb[2]! > 0 ? vb[2]! : 800;
+    h = vb.length === 4 && vb[3]! > 0 ? vb[3]! : 400;
+  }
+  // Image decoding needs explicit pixel dimensions; mermaid emits width="100%".
+  root.setAttribute("width", String(w));
+  root.setAttribute("height", String(h));
+  root.removeAttribute("style");
+  const text = new XMLSerializer().serializeToString(root);
+  const img = new Image();
+  img.decoding = "async";
+  const loaded = new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error("the SVG did not decode as an image"));
+  });
+  img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(text)}`;
+  await loaded;
+  const scale = 2;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(w * scale);
+  canvas.height = Math.ceil(h * scale);
+  const g = canvas.getContext("2d");
+  if (g === null) throw new Error("no 2d canvas");
+  g.fillStyle = "#ffffff";
+  g.fillRect(0, 0, canvas.width, canvas.height);
+  g.drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/png").replace(/^data:image\/png;base64,/, "");
+}
+
+/**
+ * Every diagram in the thread's RFC as a light-theme PNG, keyed `diagram-N`
+ * in document order (the same keys markdownToCreateBlocks assigns), for the
+ * Google Doc the plugin creates. Diagrams that fail stay out of the list and
+ * go into the Doc as source.
+ */
+async function rasterizeDiagrams(rpc: ReturnType<typeof useRpc<typeof rpcContract>>, threadId: string, dark: boolean): Promise<Array<{ key: string; png: string }>> {
+  const doc = await rpc.call("doc_read", { threadId });
+  if (doc === null) return [];
+  const out: Array<{ key: string; png: string }> = [];
+  let n = 0;
+  try {
+    ensureMermaid(false);
+    for (const seg of splitDocument(doc.content)) {
+      if (seg.kind !== "diagram") continue;
+      n++;
+      try {
+        let svg: string;
+        if (seg.lang === "d2") {
+          const r = await rpc.call("diagram_render", { lang: "d2", source: seg.text, dark: false });
+          if (!r.ok) continue;
+          svg = r.svg;
+        } else {
+          const id = `rfc-x${hashString(seg.text)}-${n}`;
+          svg = (await mermaid.render(id, seg.text)).svg;
+          document.getElementById(`d${id}`)?.remove();
+        }
+        out.push({ key: `diagram-${n}`, png: await svgToPng(svg) });
+      } catch {
+        // leave it out: the Doc gets the source instead
+      }
+    }
+  } finally {
+    ensureMermaid(dark);
+  }
+  return out;
+}
 
 function DiagramFrame({
   lang,
@@ -1834,6 +1909,10 @@ function RfcPanel({
   controlledView?: View;
 }) {
   const rpc = useRpc<typeof rpcContract>();
+  const isDark = useIsDark();
+  useEffect(() => {
+    diagramRasterizer.fn = (tid) => rasterizeDiagrams(rpc, tid, isDark);
+  }, [rpc, isDark]);
   const navigate = useBbNavigate();
   const { context, error, reload } = useThreadContext(rpc, threadId);
   const requested = typeof params === "object" && params !== null && typeof (params as { view?: unknown }).view === "string" ? (params as { view: string }).view : null;

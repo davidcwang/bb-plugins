@@ -24,7 +24,7 @@ import { z } from "zod";
 import { CHANGED, PRIORITIES, SEVERITIES, markdownBlocks, outline, parseFrontmatter, type Priority, type Severity } from "./shared";
 import { darkenFills } from "./d2colors";
 import { parseDocxComments } from "./docx";
-import { markdownToDocBlocks, planDocOps, type DocParagraph } from "./docmodel";
+import { markdownToCreateBlocks, markdownToDocBlocks, planDocOps, type DocParagraph } from "./docmodel";
 import { diffArrays } from "./diff";
 import {
   CARD_MODES,
@@ -257,12 +257,33 @@ export const rpcContract = defineRpcContract({
       configured: z.boolean(),
       bodyPulledAt: z.string().nullable(),
       lastPush: z.object({ appliedAt: z.string(), repliesOk: z.number(), repliesFailed: z.number(), opsOk: z.number(), opsFailed: z.number(), errors: z.array(z.string()) }).nullable(),
-      plan: z.object({ ops: z.number(), replies: z.number(), manual: z.array(z.object({ kind: z.string(), line: z.number() })) }).nullable(),
+      plan: z
+        .object({
+          ops: z.number(),
+          replies: z.number(),
+          manual: z.array(z.object({ kind: z.string(), line: z.number() })),
+          changes: z.array(z.object({ op: z.enum(["replace", "insertAfter", "delete"]), text: z.string(), note: z.string().nullable() })),
+        })
+        .nullable(),
+      docUrl: z.string().nullable(),
+      title: z.string().nullable(),
+      /** Suggested edits still open in the Doc (ours or anyone's). */
+      suggestions: z.array(z.object({ id: z.string(), kind: z.enum(["insert", "delete"]), text: z.string(), paragraph: z.string() })),
     }),
   },
   gdoc_pull: {
     input: z.object({ threadId: z.string() }),
-    output: z.object({ added: z.number(), updated: z.number(), repliesConfirmed: z.number(), bodyParagraphs: z.number() }),
+    output: z.object({ added: z.number(), updated: z.number(), repliesConfirmed: z.number(), bodyParagraphs: z.number(), suggestions: z.number() }),
+  },
+  gdoc_suggest: {
+    // Accept or reject suggestions in the Doc by id.
+    input: z.object({ threadId: z.string(), accept: z.array(z.string()).default([]), reject: z.array(z.string()).default([]) }),
+    output: z.object({ accepted: z.number(), rejected: z.number() }),
+  },
+  gdoc_create: {
+    // Create a Google Doc from the RFC and record its URL in the RFC header.
+    input: z.object({ threadId: z.string(), title: z.string().nullable().default(null), images: z.array(z.object({ key: z.string(), png: z.string().max(8_000_000) })).default([]) }),
+    output: z.object({ docId: z.string(), url: z.string(), blocks: z.number(), headerUpdated: z.boolean() }),
   },
   gdoc_push: {
     input: z.object({ threadId: z.string(), edits: z.boolean().default(true), replies: z.boolean().default(true) }),
@@ -1584,22 +1605,35 @@ export default async function plugin(bb: BbPluginApi) {
     exportedAt: string;
     comments: Array<{ id: string; author: string; createdTime: string | null; modifiedTime: string | null; content: string; quoted: string; resolved: boolean; replies: Array<{ id: string; author: string; content: string; createdTime: string | null; action: string | null }> }>;
   }
+  interface GdocSuggestion {
+    id: string;
+    kind: "insert" | "delete";
+    text: string;
+    paragraph: string;
+  }
   interface GdocBodyFile {
     exportedAt: string;
+    title?: string;
+    revisionId?: string | null;
     paragraphs: DocParagraph[];
+    suggestions?: GdocSuggestion[];
   }
   interface GdocResults {
     id: string | null;
     appliedAt: string;
     replies: Array<{ commentId: string; ok: boolean; error?: string }>;
     ops: Array<{ i: number; ok: boolean; error?: string }>;
+    suggestionIds?: string[];
+    notes?: number;
+    notesError?: string;
   }
+  const gdocUrl = (docId: string) => `https://docs.google.com/document/d/${docId}/edit`;
   /** Call the bridge. Apps Script answers with a redirect to googleusercontent; fetch follows it. */
   async function gdocCall<T>(ctx: { url: string; token: string; docId: string | null }, what: string, body?: unknown): Promise<T> {
-    if (ctx.docId === null) throw new Error("This RFC has no `Google Doc:` line in its header.");
+    if (ctx.docId === null && what !== "create" && what !== "ping") throw new Error("This RFC has no `Google Doc:` line in its header.");
     const u = new URL(ctx.url);
     u.searchParams.set("token", ctx.token);
-    u.searchParams.set("doc", ctx.docId);
+    if (ctx.docId !== null) u.searchParams.set("doc", ctx.docId);
     u.searchParams.set("what", what);
     const res = await fetch(u, body === undefined ? { method: "GET", redirect: "follow" } : { method: "POST", redirect: "follow", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const text = await res.text();
@@ -1629,19 +1663,48 @@ export default async function plugin(bb: BbPluginApi) {
     const replies = (sidecar?.comments ?? []).filter((c) => c.gdocId !== null && c.replyQueuedAt !== null && c.replySentAt === null && c.draft !== null && c.draft.trim() !== "");
     if (body === null || body === undefined) return { ctx, body: null, ops: [], manual: [], replies };
     const { ops, manual } = planDocOps(body.paragraphs, markdownToDocBlocks(ctx.content), diffArrays);
-    return { ctx, body, ops, manual, replies };
+    // Which review comment does each change answer? The first change inside a
+    // section with an open "needs change" comment carries a note naming it,
+    // which the bridge posts as an anchored comment beside the suggestion.
+    const heads = outline(ctx.content);
+    const sectionOf = (line: number) => {
+      let title: string | null = null;
+      for (const h of heads) if (h.line <= line) title = h.title;
+      return title;
+    };
+    const open = (sidecar?.comments ?? []).filter((c) => c.status === "needs-change" && !c.resolved);
+    const used = new Set<string>();
+    const noted = ops.map((op) => {
+      if (op.op === "delete") return { ...op, note: null as string | null };
+      const section = sectionOf(op.block.line);
+      const hit = section === null ? undefined : open.find((c) => !used.has(c.id) && c.anchor.section !== null && sectionMatches(c.anchor.section, section));
+      if (hit === undefined) return { ...op, note: null as string | null };
+      used.add(hit.id);
+      const quote = hit.text.replace(/\s+/g, " ").trim();
+      return { ...op, note: `Suggested from the RFC to address ${hit.author}'s comment: "${quote.length > 160 ? `${quote.slice(0, 157)}…` : quote}"` };
+    });
+    return { ctx, body, ops: noted, manual, replies };
   }
   async function gdocStatus(threadId: string) {
     const ctx = await gdocContext(threadId);
-    if (ctx.docId === null) return { docId: null, configured: ctx.configured, bodyPulledAt: null, lastPush: null, plan: null };
+    if (ctx.docId === null) return { docId: null, configured: ctx.configured, bodyPulledAt: null, lastPush: null, plan: null, docUrl: null, title: null, suggestions: [] };
     const plan = await gdocPlan(threadId);
     const lastPush = await bb.storage.kv.get<GdocResults>(gdocPushKey(ctx.doc.path));
+    const opText = (op: (typeof plan.ops)[number]) => (op.op === "delete" ? op.find : op.block.text);
     return {
       docId: ctx.docId,
       configured: ctx.configured,
       bodyPulledAt: plan.body?.exportedAt ?? null,
       lastPush: lastPush === null || lastPush === undefined ? null : summarizeResults(lastPush),
-      plan: { ops: plan.ops.length, replies: plan.replies.length, manual: plan.manual.map((m) => ({ kind: m.opaque ?? "block", line: m.line })) },
+      plan: {
+        ops: plan.ops.length,
+        replies: plan.replies.length,
+        manual: plan.manual.map((m) => ({ kind: m.opaque ?? "block", line: m.line })),
+        changes: plan.ops.map((op) => ({ op: op.op, text: opText(op).slice(0, 140), note: op.note })),
+      },
+      docUrl: gdocUrl(ctx.docId),
+      title: plan.body?.title ?? null,
+      suggestions: plan.body?.suggestions ?? [],
     };
   }
   /** Fold a results object into the sidecar: replies confirmed posted. */
@@ -1717,7 +1780,67 @@ export default async function plugin(bb: BbPluginApi) {
         added++;
       }
     });
-    return { added, updated, repliesConfirmed: 0, bodyParagraphs: body.paragraphs.length };
+    return { added, updated, repliesConfirmed: 0, bodyParagraphs: body.paragraphs.length, suggestions: body.suggestions?.length ?? 0 };
+  }
+  async function gdocSuggest(threadId: string, accept: string[], reject: string[]) {
+    const ctx = await gdocContext(threadId);
+    if (!ctx.configured) throw new Error("Set the Google Doc bridge URL and token in the plugin settings.");
+    const r = await gdocCall<{ accepted: number; rejected: number }>(ctx, "suggest", { accept, reject });
+    try {
+      const body = await gdocCall<GdocBodyFile>(ctx, "body");
+      await bb.storage.kv.set(gdocBodyKey(ctx.doc.path), body);
+    } catch (cause) {
+      bb.log.warn(`gdoc body refresh after suggest failed: ${describe(cause)}`);
+    }
+    return r;
+  }
+  /** Where a "Google Doc:" line belongs: after the header block that follows the H1, or into YAML frontmatter. */
+  function withGdocHeader(content: string, url: string): string {
+    const fm = parseFrontmatter(content);
+    if (fm !== null && content.startsWith("---")) {
+      const end = content.indexOf("\n---", 3);
+      if (end !== -1) return `${content.slice(0, end)}\ngdoc: ${url}${content.slice(end)}`;
+    }
+    const lines = content.split("\n");
+    const h1 = lines.findIndex((l) => /^#\s+/.test(l));
+    if (h1 === -1) return `Google Doc: ${url}\n\n${content}`;
+    let i = h1 + 1;
+    while (i < lines.length && /^\s*$/.test(lines[i] ?? "")) i++;
+    let j = i;
+    while (j < lines.length && /^\*{0,2}[A-Za-z][A-Za-z ]{1,24}\*{0,2}:\s*\S/.test(lines[j] ?? "")) j++;
+    if (j > i) lines.splice(j, 0, `Google Doc: ${url}`);
+    else lines.splice(h1 + 1, 0, "", `Google Doc: ${url}`);
+    return lines.join("\n");
+  }
+  async function gdocCreate(threadId: string, title: string | null, images: Array<{ key: string; png: string }>) {
+    const ctx = await gdocContext(threadId);
+    if (!ctx.configured) throw new Error("Set the Google Doc bridge URL and token in the plugin settings.");
+    if (ctx.docId !== null) throw new Error("This RFC already has a Google Doc; remove its `Google Doc:` line first to create another.");
+    const meta = parseFrontmatter(ctx.content)?.meta ?? null;
+    const h1 = /^#\s+(.+?)\s*$/m.exec(ctx.content)?.[1] ?? null;
+    const docTitle = (title ?? meta?.title ?? h1 ?? ctx.doc.path.split("/").pop() ?? "RFC").replace(/^RFC:\s*/i, "RFC: ");
+    const blocks = markdownToCreateBlocks(ctx.content).filter((b) => !(b.kind === "heading" && b.level === 1 && b.text === h1));
+    const imageMap = Object.fromEntries(images.map((im) => [im.key, im.png]));
+    const r = await gdocCall<{ docId: string; url: string; title: string }>(ctx, "create", { title: docTitle, blocks, images: imageMap });
+    let headerUpdated = false;
+    const file = await readFileAt(ctx.doc.path, ctx.doc.hostId);
+    if (file !== null) {
+      const next = withGdocHeader(file.content, gdocUrl(r.docId));
+      const w = await bb.sdk.files.write({ path: ctx.doc.path, content: next, createParents: true, expectedSha256: file.sha256, ...fileArgs(ctx.doc.hostId) });
+      headerUpdated = w.outcome === "written";
+      if (w.outcome === "written") {
+        lastUserSha.set(ctx.doc.path, w.sha256);
+        bb.realtime.publish(CHANGED, { threadId, kind: "doc" });
+      }
+    }
+    // Seed the body snapshot so the first plan compares against what was just written.
+    try {
+      const body = await gdocCall<GdocBodyFile>({ ...ctx, docId: r.docId }, "body");
+      await bb.storage.kv.set(gdocBodyKey(ctx.doc.path), body);
+    } catch (cause) {
+      bb.log.warn(`gdoc body fetch after create failed: ${describe(cause)}`);
+    }
+    return { docId: r.docId, url: gdocUrl(r.docId), blocks: blocks.length, headerUpdated };
   }
   async function gdocPush(threadId: string, edits: boolean, replies: boolean) {
     const plan = await gdocPlan(threadId);
@@ -2103,6 +2226,8 @@ export default async function plugin(bb: BbPluginApi) {
     gdoc_status: ({ threadId }) => gdocStatus(threadId),
     gdoc_pull: ({ threadId }) => gdocPull(threadId),
     gdoc_push: ({ threadId, edits, replies }) => gdocPush(threadId, edits, replies),
+    gdoc_suggest: ({ threadId, accept, reject }) => gdocSuggest(threadId, accept, reject),
+    gdoc_create: ({ threadId, title, images }) => gdocCreate(threadId, title, images),
     comment_queue_reply: ({ threadId, id, queue, resolve }) =>
       mutateSidecar(threadId, (d) => {
         const c = d.comments.find((x) => x.id === id);

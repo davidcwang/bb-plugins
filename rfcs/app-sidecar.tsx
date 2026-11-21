@@ -901,13 +901,23 @@ interface GdocStatus {
   configured: boolean;
   bodyPulledAt: string | null;
   lastPush: { appliedAt: string; repliesOk: number; repliesFailed: number; opsOk: number; opsFailed: number; errors: string[] } | null;
-  plan: { ops: number; replies: number; manual: Array<{ kind: string; line: number }> } | null;
+  plan: { ops: number; replies: number; manual: Array<{ kind: string; line: number }>; changes: Array<{ op: "replace" | "insertAfter" | "delete"; text: string; note: string | null }> } | null;
+  docUrl: string | null;
+  title: string | null;
+  suggestions: Array<{ id: string; kind: "insert" | "delete"; text: string; paragraph: string }>;
 }
+
+/** Set by app.tsx: renders the document's diagrams to PNG (base64) for "Create Google Doc". */
+export const diagramRasterizer: { fn: ((threadId: string) => Promise<Array<{ key: string; png: string }>>) | null } = { fn: null };
+
+const OP_LABEL = { replace: "change", insertAfter: "add", delete: "remove" } as const;
 
 /** Status and actions for the Google Doc linked through the RFC's "Google Doc:" header line. */
 function GdocSyncPanel({ rpc, threadId, onChanged }: { rpc: Rpc; threadId: string; onChanged: () => void }) {
   const [status, setStatus] = useState<GdocStatus | null>(null);
-  const [busy, setBusy] = useState<"pull" | "push" | null>(null);
+  const [busy, setBusy] = useState<"pull" | "push" | "create" | "suggest" | null>(null);
+  const [showChanges, setShowChanges] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(true);
   const refresh = useCallback(() => {
     rpc.call("gdoc_status", { threadId }).then((r) => setStatus(r), () => undefined);
   }, [rpc, threadId]);
@@ -916,7 +926,7 @@ function GdocSyncPanel({ rpc, threadId, onChanged }: { rpc: Rpc; threadId: strin
     const p = payload as ChangedPayload;
     if (p.threadId === threadId && (p.kind === "sidecar" || p.kind === "doc")) refresh();
   });
-  const act = (which: "pull" | "push", label: string, fn: () => Promise<unknown>) => {
+  const act = (which: NonNullable<typeof busy>, label: string, fn: () => Promise<unknown>) => {
     setBusy(which);
     fn()
       .then(() => {
@@ -928,33 +938,71 @@ function GdocSyncPanel({ rpc, threadId, onChanged }: { rpc: Rpc; threadId: strin
   };
   if (status === null) return null;
   const fmt = (iso: string | null) => (iso === null ? "never" : new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }));
-  if (status.docId === null || !status.configured) {
+  if (!status.configured) {
     return (
       <div className="border-b border-border px-2 py-1.5 text-[11px] text-muted-foreground">
-        <span className="font-medium text-foreground">Google Doc sync:</span>{" "}
-        {status.docId === null ? (
-          <>
-            add <code>Google Doc: &lt;doc url&gt;</code> to the RFC header
-          </>
-        ) : (
-          <>set the bridge URL and token in the plugin settings</>
-        )}{" "}
-        (setup in the plugin's <code>gdoc-sync/README.md</code>).
+        <span className="font-medium text-foreground">Google Doc sync:</span> set the bridge URL and token in the plugin settings (setup in the plugin's <code>gdoc-sync/README.md</code>).
+      </div>
+    );
+  }
+  if (status.docId === null) {
+    return (
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-2 py-1.5 text-[11px]">
+        <span className="font-medium">Google Doc sync</span>
+        <span className="text-muted-foreground">
+          no Doc yet: create one from this RFC, or add <code>Google Doc: &lt;url&gt;</code> to the header
+        </span>
+        <Button
+          size="sm"
+          variant="outline"
+          className="ml-auto h-6 text-[11px]"
+          disabled={busy !== null}
+          onClick={() =>
+            act("create", "Create Google Doc", async () => {
+              let images: Array<{ key: string; png: string }> = [];
+              if (diagramRasterizer.fn !== null) {
+                try {
+                  images = await diagramRasterizer.fn(threadId);
+                } catch (cause) {
+                  toast.warning(`Diagrams could not be rendered to images (${describe(cause)}); their source goes in as code.`);
+                }
+              }
+              const r = await rpc.call("gdoc_create", { threadId, title: null, images });
+              toast.success(`Created the Google Doc (${r.blocks} blocks${images.length > 0 ? `, ${images.length} diagram image${images.length === 1 ? "" : "s"}` : ""})${r.headerUpdated ? " and linked it in the RFC header." : "."}`, {
+                action: { label: "Open", onClick: () => window.open(r.url, "_blank", "noopener") },
+                duration: 12000,
+              });
+            })
+          }
+        >
+          {busy === "create" ? "Creating…" : "Create Google Doc"}
+        </Button>
       </div>
     );
   }
   const plan = status.plan;
+  const suggestions = status.suggestions;
+  const suggest = (accept: string[], reject: string[]) =>
+    act("suggest", accept.length > 0 ? "Accept" : "Reject", async () => {
+      const r = await rpc.call("gdoc_suggest", { threadId, accept, reject });
+      toast.success(`${r.accepted > 0 ? `${r.accepted} accepted` : ""}${r.accepted > 0 && r.rejected > 0 ? ", " : ""}${r.rejected > 0 ? `${r.rejected} rejected` : ""} in the Doc.`);
+    });
   return (
     <div className="border-b border-border px-2 py-1.5 text-[11px]">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <span className="font-medium">Google Doc sync</span>
+        {status.docUrl !== null ? (
+          <a href={status.docUrl} target="_blank" rel="noopener noreferrer" className="text-primary underline-offset-2 hover:underline" title={status.title ?? undefined}>
+            Open Doc
+          </a>
+        ) : null}
         <span className="text-muted-foreground">last pull {fmt(status.bodyPulledAt)}</span>
         {status.lastPush !== null ? (
           <span
             className={cn("rounded px-1.5 py-0.5", status.lastPush.repliesFailed + status.lastPush.opsFailed > 0 ? "bg-destructive/15 text-destructive" : "bg-green-500/15 text-green-700 dark:text-green-400")}
             title={status.lastPush.errors.join("\n")}
           >
-            last push {fmt(status.lastPush.appliedAt)}: {status.lastPush.opsOk} edits, {status.lastPush.repliesOk} replies
+            last push {fmt(status.lastPush.appliedAt)}: {status.lastPush.opsOk} suggestion{status.lastPush.opsOk === 1 ? "" : "s"}, {status.lastPush.repliesOk} repl{status.lastPush.repliesOk === 1 ? "y" : "ies"}
             {status.lastPush.repliesFailed + status.lastPush.opsFailed > 0 ? `, ${status.lastPush.repliesFailed + status.lastPush.opsFailed} failed` : ""}
           </span>
         ) : null}
@@ -967,7 +1015,7 @@ function GdocSyncPanel({ rpc, threadId, onChanged }: { rpc: Rpc; threadId: strin
             onClick={() =>
               act("pull", "Pull", async () => {
                 const r = await rpc.call("gdoc_pull", { threadId });
-                toast.success(`Pulled from the Doc: ${r.added} new comment${r.added === 1 ? "" : "s"}, ${r.updated} updated, ${r.bodyParagraphs} paragraphs.`);
+                toast.success(`Pulled from the Doc: ${r.added} new comment${r.added === 1 ? "" : "s"}, ${r.updated} updated, ${r.suggestions} open suggestion${r.suggestions === 1 ? "" : "s"}.`);
               })
             }
           >
@@ -982,18 +1030,68 @@ function GdocSyncPanel({ rpc, threadId, onChanged }: { rpc: Rpc; threadId: strin
               act("push", "Push", async () => {
                 const r = await rpc.call("gdoc_push", { threadId, edits: true, replies: true });
                 const failed = r.opsFailed + r.repliesFailed;
-                const msg = `Pushed ${r.ops} edit${r.ops === 1 ? "" : "s"} and ${r.replies} repl${r.replies === 1 ? "y" : "ies"} to the Doc.${r.manual > 0 ? ` ${r.manual} table/diagram block${r.manual === 1 ? "" : "s"} need a manual update.` : ""}`;
+                const msg = `Pushed ${r.ops} suggested edit${r.ops === 1 ? "" : "s"} and ${r.replies} repl${r.replies === 1 ? "y" : "ies"} to the Doc. Reviewers accept or reject each one there.${r.manual > 0 ? ` ${r.manual} table/diagram block${r.manual === 1 ? "" : "s"} need a manual update.` : ""}`;
                 if (failed > 0) toast.warning(`${msg} ${failed} failed: ${r.errors[0] ?? ""}`);
                 else toast.success(msg);
               })
             }
           >
-            {busy === "push" ? "Pushing…" : plan !== null && plan.ops + plan.replies > 0 ? `Push to Doc (${plan.ops} edit${plan.ops === 1 ? "" : "s"}, ${plan.replies} repl${plan.replies === 1 ? "y" : "ies"})` : "Push to Doc"}
+            {busy === "push" ? "Pushing…" : plan !== null && plan.ops + plan.replies > 0 ? `Push as suggestions (${plan.ops} edit${plan.ops === 1 ? "" : "s"}, ${plan.replies} repl${plan.replies === 1 ? "y" : "ies"})` : "Push as suggestions"}
           </Button>
         </span>
       </div>
       {status.bodyPulledAt === null ? <p className="mt-1 text-muted-foreground">Pull once so the plugin knows the Doc's paragraphs; then Push shows what would change.</p> : null}
+      {plan !== null && plan.changes.length > 0 ? (
+        <div className="mt-1">
+          <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setShowChanges((v) => !v)}>
+            {showChanges ? "▾" : "▸"} {plan.changes.length} paragraph change{plan.changes.length === 1 ? "" : "s"} to suggest
+            {plan.changes.some((c) => c.note !== null) ? ` (${plan.changes.filter((c) => c.note !== null).length} tied to review comments)` : ""}
+          </button>
+          {showChanges ? (
+            <ul className="mt-1 max-h-40 space-y-0.5 overflow-auto">
+              {plan.changes.map((c, i) => (
+                <li key={i} className="flex gap-1.5 truncate" title={c.note ?? undefined}>
+                  <span className={cn("shrink-0 rounded px-1 uppercase", c.op === "delete" ? "bg-destructive/15 text-destructive" : c.op === "insertAfter" ? "bg-green-500/15 text-green-700 dark:text-green-400" : "bg-amber-500/15 text-amber-700 dark:text-amber-400")}>{OP_LABEL[c.op]}</span>
+                  <span className="truncate">{c.text}</span>
+                  {c.note !== null ? <span className="shrink-0 text-muted-foreground">💬</span> : null}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
       {plan !== null && plan.manual.length > 0 ? <p className="mt-1 text-muted-foreground">Not pushed automatically (update in the Doc by hand): {plan.manual.map((m) => `${m.kind} at line ${m.line}`).join(", ")}.</p> : null}
+      {suggestions.length > 0 ? (
+        <div className="mt-1">
+          <div className="flex items-center gap-2">
+            <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setShowSuggestions((v) => !v)}>
+              {showSuggestions ? "▾" : "▸"} {suggestions.length} open suggestion{suggestions.length === 1 ? "" : "s"} in the Doc
+            </button>
+            <button type="button" className="text-primary hover:underline disabled:opacity-50" disabled={busy !== null} onClick={() => suggest(suggestions.map((x) => x.id), [])}>
+              Accept all
+            </button>
+            <button type="button" className="text-destructive hover:underline disabled:opacity-50" disabled={busy !== null} onClick={() => suggest([], suggestions.map((x) => x.id))}>
+              Reject all
+            </button>
+          </div>
+          {showSuggestions ? (
+            <ul className="mt-1 max-h-48 space-y-0.5 overflow-auto">
+              {suggestions.map((sg) => (
+                <li key={sg.id} className="flex items-start gap-1.5" title={sg.paragraph}>
+                  <span className={cn("mt-px shrink-0 rounded px-1 uppercase", sg.kind === "delete" ? "bg-destructive/15 text-destructive" : "bg-green-500/15 text-green-700 dark:text-green-400")}>{sg.kind === "delete" ? "del" : "ins"}</span>
+                  <span className={cn("min-w-0 flex-1 truncate", sg.kind === "delete" && "line-through")}>{sg.text || sg.paragraph}</span>
+                  <button type="button" className="shrink-0 text-primary hover:underline disabled:opacity-50" disabled={busy !== null} onClick={() => suggest([sg.id], [])}>
+                    Accept
+                  </button>
+                  <button type="button" className="shrink-0 text-destructive hover:underline disabled:opacity-50" disabled={busy !== null} onClick={() => suggest([], [sg.id])}>
+                    Reject
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -115,15 +115,17 @@ beside the RFC (so git carries it):
   change, so you triage and send them to the agent like any round. CLI:
   `bb rfcs comments <file.docx> --thread <id>`. Replies cannot be posted to
   the Doc without API access; the Copy button is the bridge.
-- **Google Doc sync (automatic)**: for the review copy in Google Docs, a
-  small Apps Script you deploy once as a web app (`gdoc-sync/`) serves
-  comments and the Doc body and applies edits, running as you inside Google
-  so no third-party OAuth app is involved. With a `Google Doc: <url>` line in
-  the RFC header and the bridge URL + token in the plugin settings, the
-  Comments tab gains **Pull from Doc** (imports and dedupes comments) and
-  **Push to Doc** (queued replies, resolutions, and paragraph edits that bring
-  the Doc in line with the markdown; tables and diagrams are reported for
-  manual update). Setup in `gdoc-sync/README.md`.
+- **Google Doc sync**: a small Apps Script you deploy once as a web app
+  (`gdoc-sync/`) runs as you inside Google, so no third-party OAuth app is
+  involved. With the bridge URL + token in the plugin settings, Items →
+  Comments gains **Create Google Doc** (builds the Doc from the markdown,
+  diagrams as images, and links it in the RFC header), **Pull from Doc**
+  (imports and dedupes comment threads, lists open suggestions) and **Push as
+  suggestions** (paragraph edits land as Google Docs suggested edits for
+  reviewers to accept or reject, with an anchored comment tying each to the
+  review comment it answers; queued replies and resolutions post to their
+  threads). Open suggestions can be accepted or rejected from the panel too.
+  Setup and the full workflow in `gdoc-sync/README.md`.
 - **Glossary**: terms and IDs (S12, A2, OIDC) with one-line definitions.
   Each section lists the terms it mentions; hover or click for the
   definition, or expand them all. "Build from document" asks the agent to
