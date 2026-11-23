@@ -451,6 +451,8 @@ export default async function plugin(bb: BbPluginApi) {
         await bb.storage.kv.set(LIST_KEY, { prs, fetchedAt: new Date().toISOString() });
         syncing.delete("list");
         bb.realtime.publish(CHANGED, { kind: "list" });
+        pruneDetails(prs);
+        prefetchDetails(prs);
       } catch (cause) {
         syncing.delete("list");
         bb.realtime.publish(CHANGED, { kind: "list-error", message: describe(cause) });
@@ -464,6 +466,7 @@ export default async function plugin(bb: BbPluginApi) {
       const prs = await fetchList();
       const result = { prs, fetchedAt: new Date().toISOString() };
       await bb.storage.kv.set(LIST_KEY, result);
+      prefetchDetails(prs);
       return { ...result, syncing: false, error: null };
     }
     if (refresh || Date.now() - Date.parse(cached.fetchedAt) >= LIST_TTL_MS) startListSync();
@@ -562,9 +565,44 @@ export default async function plugin(bb: BbPluginApi) {
     };
   }
 
-  // In-memory (patches are too big for kv); lost on reload, refilled on first open.
+  // Details are cached in memory and persisted in the plugin database
+  // (patches are too big for kv's 256KB cap), so they survive reloads and a
+  // previously opened PR renders instantly.
+  const db = bb.storage.database();
+  bb.storage.migrate(db, [
+    `CREATE TABLE IF NOT EXISTS pr_details (key TEXT PRIMARY KEY, json TEXT NOT NULL, fetched_at TEXT NOT NULL)`,
+  ]);
   const detailCache = new Map<string, PrDetail>();
   const DETAIL_TTL_MS = 60_000;
+
+  function readCachedDetail(key: string): PrDetail | undefined {
+    const hit = detailCache.get(key);
+    if (hit !== undefined) return hit;
+    try {
+      const row = db.prepare("SELECT json FROM pr_details WHERE key = ?").get(key) as { json: string } | undefined;
+      if (row === undefined) return undefined;
+      const parsed = prDetailSchema.safeParse(JSON.parse(row.json));
+      if (!parsed.success) return undefined;
+      detailCache.set(key, parsed.data);
+      return parsed.data;
+    } catch (cause) {
+      bb.log.warn(`detail cache read ${key}: ${describe(cause)}`);
+      return undefined;
+    }
+  }
+
+  function writeCachedDetail(key: string, detail: PrDetail): void {
+    detailCache.set(key, detail);
+    try {
+      db.prepare("INSERT OR REPLACE INTO pr_details (key, json, fetched_at) VALUES (?, ?, ?)").run(
+        key,
+        JSON.stringify(detail),
+        detail.fetchedAt,
+      );
+    } catch (cause) {
+      bb.log.warn(`detail cache write ${key}: ${describe(cause)}`);
+    }
+  }
 
   function startDetailSync(ref: PrRef): void {
     const key = prKey(ref);
@@ -573,7 +611,7 @@ export default async function plugin(bb: BbPluginApi) {
     void (async () => {
       try {
         const detail = await fetchDetail(ref);
-        detailCache.set(key, detail);
+        writeCachedDetail(key, detail);
         syncing.delete(key);
         bb.realtime.publish(CHANGED, { key, kind: "detail" });
       } catch (cause) {
@@ -586,14 +624,55 @@ export default async function plugin(bb: BbPluginApi) {
   /** Cached detail with current local item state merged in; fetches only when nothing is cached. */
   async function getDetail(ref: PrRef): Promise<PrDetail> {
     const key = prKey(ref);
-    const cached = detailCache.get(key);
+    const cached = readCachedDetail(key);
     if (cached !== undefined) {
       const state = await readState(ref);
       return { ...cached, items: state.items };
     }
     const detail = await fetchDetail(ref);
-    detailCache.set(key, detail);
+    writeCachedDetail(key, detail);
     return detail;
+  }
+
+  /** Drop cached details for PRs no longer in the list (merged/closed). */
+  function pruneDetails(prs: PrSummary[]): void {
+    const keep = new Set(prs.map((p) => prKey(p)));
+    try {
+      const rows = db.prepare("SELECT key FROM pr_details").all() as Array<{ key: string }>;
+      for (const { key } of rows) {
+        if (!keep.has(key)) {
+          db.prepare("DELETE FROM pr_details WHERE key = ?").run(key);
+          detailCache.delete(key);
+        }
+      }
+    } catch (cause) {
+      bb.log.warn(`detail cache prune: ${describe(cause)}`);
+    }
+  }
+
+  /** Warm the detail cache for listed PRs so first click is instant. One at a time. */
+  let prefetching = false;
+  function prefetchDetails(prs: PrSummary[]): void {
+    if (prefetching) return;
+    prefetching = true;
+    void (async () => {
+      try {
+        for (const pr of prs) {
+          const ref = { owner: pr.owner, repo: pr.repo, number: pr.number };
+          const cached = readCachedDetail(prKey(ref));
+          // Fresh enough, or cached newer than the PR's last activity: skip.
+          if (cached !== undefined && Date.parse(cached.fetchedAt) >= Date.parse(pr.updatedAt)) continue;
+          try {
+            writeCachedDetail(prKey(ref), await fetchDetail(ref));
+            bb.realtime.publish(CHANGED, { key: prKey(ref), kind: "detail" });
+          } catch (cause) {
+            bb.log.warn(`prefetch ${prKey(ref)}: ${describe(cause)}`);
+          }
+        }
+      } finally {
+        prefetching = false;
+      }
+    })();
   }
 
   // ---- hidden worker threads (draft replies, proposed fixes) ----
@@ -968,6 +1047,8 @@ export default async function plugin(bb: BbPluginApi) {
               prs = await fetchList();
               await bb.storage.kv.set(LIST_KEY, { prs, fetchedAt: new Date().toISOString() });
               bb.realtime.publish(CHANGED, { kind: "list" });
+              pruneDetails(prs);
+              prefetchDetails(prs);
             } else {
               ({ prs, error } = await listPrs(false));
             }

@@ -745,9 +745,12 @@ function IssueCommentCard({
 
 type Tab = "overview" | "files" | "comments";
 
+/** Last detail per PR for this window, so re-opening renders instantly. */
+const detailMemo = new Map<string, PrDetail>();
+
 function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void }) {
   const rpc = useRpc<typeof rpcContract>();
-  const [detail, setDetail] = useState<PrDetail | null>(null);
+  const [detail, setDetail] = useState<PrDetail | null>(() => detailMemo.get(prKey(refObj)) ?? null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("comments");
   const [syncing, setSyncing] = useState(false);
@@ -758,13 +761,17 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
     rpc
       .call("pr_get", refObj)
       .then((r) => {
+        detailMemo.set(prKey(refObj), r.detail);
         setDetail(r.detail);
         setSyncing(r.syncing);
         setError(null);
       })
       .catch((cause) => setError(describe(cause)));
   }, [rpc, refObj.owner, refObj.repo, refObj.number]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => load(), [load]);
+  useEffect(() => {
+    setDetail(detailMemo.get(key) ?? null);
+    load();
+  }, [key, load]); // eslint-disable-line react-hooks/exhaustive-deps
   const sync = useCallback(() => {
     setSyncing(true);
     rpc.call("pr_refresh", refObj).catch((cause) => {
