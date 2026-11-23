@@ -86,6 +86,10 @@ export const rpcContract = defineRpcContract({
     input: z.object({ ref: prRefSchema, item: z.string(), guidance: z.string().max(4000).default("") }),
     output: itemStateSchema,
   },
+  discuss_open: {
+    input: z.object({ ref: prRefSchema, item: z.string() }),
+    output: z.object({ threadId: z.string() }),
+  },
   fix_apply: {
     input: z.object({ ref: prRefSchema, item: z.string() }),
     output: z.object({ applied: z.boolean(), detail: z.string() }),
@@ -796,6 +800,38 @@ export default async function plugin(bb: BbPluginApi) {
     });
   }
 
+  /** Open (or reuse) the persistent discussion thread for one comment. */
+  async function openDiscussion(ref: PrRef, item: string): Promise<string> {
+    const state = await readState(ref);
+    const existing = state.items[item]?.discussThreadId ?? null;
+    if (existing !== null) {
+      try {
+        await bb.sdk.threads.get({ threadId: existing });
+        return existing;
+      } catch {
+        /* deleted — spawn a fresh one */
+      }
+    }
+    const detail = await getDetail(ref);
+    const key = prKey(ref);
+    const prompt = [
+      `You are the PR author's standing discussion partner for ONE review comment on GitHub PR ${key}. This conversation is shown in a pane next to the comment and persists; the author will come back to it.`,
+      prContextText(detail),
+      threadContextText(detail, item),
+      `Open by explaining the comment: what the reviewer is asking for, the relevant code (read it in the checkout), whether the comment is right, and the realistic options with their trade-offs. Keep the opening under ~300 words, specific, with file:line references.`,
+      `Then discuss: answer follow-up questions and take the author's own ideas seriously. When the author asks for a reply draft, publish it with ghpr_publish_draft (item ${JSON.stringify(item)}) — it lands in the comment's reply box in the PR panel, where the author edits and posts it; never post to GitHub yourself. When the author asks for a proposed code change, publish a unified diff with ghpr_publish_fix (item ${JSON.stringify(item)}), verified with \`git apply --check\` first. Only edit files in the checkout directly when the author explicitly asks you to in this conversation.`,
+    ].join("\n\n");
+    const threadId = await spawnWorker(`Discuss: ${key} ${item.startsWith("ic:") ? "comment" : "thread"}`, prompt, {
+      ghprKind: "discuss",
+      ghprPr: key,
+      ghprItem: item,
+    });
+    await mutateItem(ref, item, (it) => {
+      it.discussThreadId = threadId;
+    });
+    return threadId;
+  }
+
   function parseKey(key: string): PrRef {
     const m = key.match(/^([^/]+)\/([^#]+)#(\d+)$/);
     if (m === null) throw new Error(`Bad PR key ${key}`);
@@ -880,6 +916,14 @@ export default async function plugin(bb: BbPluginApi) {
         skills: [],
         instructions:
           "You are a read-only worker proposing one patch. Publish it with ghpr_publish_fix; never edit files, never run git write commands, never post to GitHub. `git apply --check` is allowed (it modifies nothing).",
+      };
+    }
+    if (kind === "discuss") {
+      return {
+        tools: ["ghpr_publish_draft", "ghpr_publish_fix"],
+        skills: [],
+        instructions:
+          "You are a persistent discussion about one PR review comment, shown in a pane beside the comment. Explain and discuss; stay on this comment. Publish reply drafts with ghpr_publish_draft and proposed patches with ghpr_publish_fix (item id from your first prompt) — the author edits and posts from the PR panel; never post to GitHub yourself. Edit files in the checkout only when the author explicitly asks you to here.",
       };
     }
     return { tools: [], skills: [] };
@@ -1023,6 +1067,7 @@ export default async function plugin(bb: BbPluginApi) {
       return { ok: true as const };
     },
     fix_start: ({ ref, item, guidance }) => startFix(ref, item, guidance),
+    discuss_open: async ({ ref, item }) => ({ threadId: await openDiscussion(ref, item) }),
     fix_apply: ({ ref, item }) => applyFix(ref, item),
     fix_discard: ({ ref, item }) => mutateItem(ref, item, (it) => void (it.fix = null)),
     checkout_get: (ref) => checkoutFor(ref, null),

@@ -10,6 +10,7 @@ import {
   definePluginApp,
   experimental_Diff as Diff,
   Markdown,
+  ThreadChat,
   UrlLink,
   useBbNavigate,
   useRealtime,
@@ -582,6 +583,9 @@ function ThreadCard({
   canFix,
   onChanged,
   onError,
+  onDiscuss,
+  discussBusy,
+  discussActive,
 }: {
   rpc: Rpc;
   refObj: PrRef;
@@ -590,6 +594,9 @@ function ThreadCard({
   canFix: boolean;
   onChanged: () => void;
   onError: (message: string) => void;
+  onDiscuss: (item: string, label: string) => void;
+  discussBusy: boolean;
+  discussActive: boolean;
 }) {
   const [open, setOpen] = useState(!thread.isResolved);
   const [reactBusy, setReactBusy] = useState(false);
@@ -637,6 +644,18 @@ function ThreadCard({
                   <Icon name="ExternalLink" className="inline size-3" /> GitHub
                 </UrlLink>
               )}
+              <Button
+                variant={discussActive ? "secondary" : "ghost"}
+                size="sm"
+                className="h-6 text-xs"
+                disabled={discussBusy}
+                onClick={() =>
+                  onDiscuss(thread.id, `${thread.path}${thread.line === null ? "" : `:${thread.line}`}`)
+                }
+              >
+                <Icon name={discussBusy ? "Loader" : "MessagesSquare"} className={cn("size-3", discussBusy && "animate-spin")} />
+                {state.discussThreadId !== null ? "Resume discussion" : "Discuss"}
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"
@@ -687,6 +706,9 @@ function IssueCommentCard({
   state,
   onChanged,
   onError,
+  onDiscuss,
+  discussBusy,
+  discussActive,
 }: {
   rpc: Rpc;
   refObj: PrRef;
@@ -694,6 +716,9 @@ function IssueCommentCard({
   state: ItemState;
   onChanged: () => void;
   onError: (message: string) => void;
+  onDiscuss: (item: string, label: string) => void;
+  discussBusy: boolean;
+  discussActive: boolean;
 }) {
   const [showReply, setShowReply] = useState(false);
   const [reactBusy, setReactBusy] = useState(false);
@@ -716,6 +741,16 @@ function IssueCommentCard({
           />
           <Button variant="ghost" size="sm" className="h-6 text-xs text-muted-foreground" onClick={() => setShowReply((s) => !s)}>
             <Icon name="Reply" className="size-3" /> Reply
+          </Button>
+          <Button
+            variant={discussActive ? "secondary" : "ghost"}
+            size="sm"
+            className="h-6 text-xs text-muted-foreground"
+            disabled={discussBusy}
+            onClick={() => onDiscuss(item, `${comment.author}'s comment`)}
+          >
+            <Icon name={discussBusy ? "Loader" : "MessagesSquare"} className={cn("size-3", discussBusy && "animate-spin")} />
+            {state.discussThreadId !== null ? "Resume discussion" : "Discuss"}
           </Button>
           <UrlLink href={comment.url} className="text-xs text-muted-foreground hover:text-foreground">
             <Icon name="ExternalLink" className="inline size-3" />
@@ -755,7 +790,21 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
   const [tab, setTab] = useState<Tab>("comments");
   const [syncing, setSyncing] = useState(false);
   const [showResolved, setShowResolved] = useState(false);
+  const [discuss, setDiscuss] = useState<{ item: string; threadId: string; label: string } | null>(null);
+  const [discussBusy, setDiscussBusy] = useState<string | null>(null);
   const key = prKey(refObj);
+
+  const openDiscuss = useCallback(
+    (item: string, label: string) => {
+      setDiscussBusy(item);
+      rpc
+        .call("discuss_open", { ref: refObj, item })
+        .then(({ threadId }) => setDiscuss({ item, threadId, label }))
+        .catch((cause) => setError(describe(cause)))
+        .finally(() => setDiscussBusy(null));
+    },
+    [rpc, refObj.owner, refObj.repo, refObj.number], // eslint-disable-line react-hooks/exhaustive-deps
+  );
 
   const load = useCallback(() => {
     rpc
@@ -800,19 +849,21 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
 
   if (detail === null) {
     return (
-      <div className="mx-auto w-full max-w-3xl space-y-3">
-        <Button variant="ghost" size="sm" onClick={onBack}>
-          <Icon name="ArrowLeft" className="size-3.5" /> All PRs
-        </Button>
-        {error === null ? (
-          <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
-            Loading {key}…
-          </div>
-        ) : (
-          <p role="alert" className="rounded-md border border-destructive/40 px-3 py-2 text-sm text-destructive">
-            {error}
-          </p>
-        )}
+      <div className="h-full min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto box-border w-full max-w-3xl space-y-3 px-4 pb-6 pt-3 md:px-5 md:pt-4">
+          <Button variant="ghost" size="sm" onClick={onBack}>
+            <Icon name="ArrowLeft" className="size-3.5" /> All PRs
+          </Button>
+          {error === null ? (
+            <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
+              Loading {key}…
+            </div>
+          ) : (
+            <p role="alert" className="rounded-md border border-destructive/40 px-3 py-2 text-sm text-destructive">
+              {error}
+            </p>
+          )}
+        </div>
       </div>
     );
   }
@@ -822,6 +873,9 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
   const unresolvedCount = detail.threads.filter((t) => !t.isResolved).length;
 
   return (
+    <div className="flex h-full min-h-0 flex-1">
+      <div className="min-w-0 flex-1 overflow-y-auto">
+        <div className="box-border w-full px-4 pb-6 pt-3 md:px-5 md:pt-4">
     <div className={cn("mx-auto w-full space-y-3", tab === "files" ? "max-w-7xl" : "max-w-4xl")}>
       <div className="flex items-center gap-2">
         <Button variant="ghost" size="sm" onClick={onBack}>
@@ -953,6 +1007,9 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
                 state={item(`ic:${c.id}`)}
                 onChanged={load}
                 onError={onError}
+                onDiscuss={openDiscuss}
+                discussBusy={discussBusy === `ic:${c.id}`}
+                discussActive={discuss?.item === `ic:${c.id}`}
               />
             ))}
             <div className="rounded-lg border border-border bg-card px-3 py-3">
@@ -1001,9 +1058,38 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
                 canFix={canFix}
                 onChanged={load}
                 onError={onError}
+                onDiscuss={openDiscuss}
+                discussBusy={discussBusy === t.id}
+                discussActive={discuss?.item === t.id}
               />
             ))
           )}
+        </div>
+      )}
+    </div>
+        </div>
+      </div>
+      {discuss !== null && (
+        <div className="flex w-[26rem] shrink-0 flex-col border-l border-border bg-background lg:w-[30rem]">
+          <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+            <Icon name="MessagesSquare" className="size-4 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
+              <div className="truncate font-mono text-xs font-medium">{discuss.label}</div>
+              <div className="truncate text-[10px] text-muted-foreground">
+                Ask for a reply draft or a code change — results land on the comment card.
+              </div>
+            </div>
+            <Button variant="ghost" size="sm" className="h-6 px-1.5" onClick={() => setDiscuss(null)} aria-label="Close discussion">
+              <Icon name="X" className="size-3.5" />
+            </Button>
+          </div>
+          <ThreadChat
+            threadId={discuss.threadId}
+            variant="compact"
+            layout="contained"
+            permissionPolicy="editable"
+            className="min-h-0 flex-1"
+          />
         </div>
       )}
     </div>
@@ -1206,19 +1292,19 @@ function parseSubPath(subPath: string): PrRef | null {
 function PrsPage({ subPath }: { subPath: string }) {
   const navigate = useBbNavigate();
   const refObj = parseSubPath(subPath);
-  return (
-    <div className="h-full min-h-0 flex-1 overflow-y-auto">
-      <div className="box-border w-full px-4 pb-6 pt-3 md:px-5 md:pt-4">
-        {refObj === null ? (
+  if (refObj === null) {
+    return (
+      <div className="h-full min-h-0 flex-1 overflow-y-auto">
+        <div className="box-border w-full px-4 pb-6 pt-3 md:px-5 md:pt-4">
           <PrListPage
             onOpen={(ref) => navigate.toPluginPanel("prs", { subPath: `${ref.owner}/${ref.repo}/${ref.number}` })}
           />
-        ) : (
-          <PrDetailPage refObj={refObj} onBack={() => navigate.toPluginPanel("prs", { subPath: "" })} />
-        )}
+        </div>
       </div>
-    </div>
-  );
+    );
+  }
+  // The detail page owns its own scrolling so the discussion pane can take full height.
+  return <PrDetailPage refObj={refObj} onBack={() => navigate.toPluginPanel("prs", { subPath: "" })} />;
 }
 
 export default definePluginApp((app) => {

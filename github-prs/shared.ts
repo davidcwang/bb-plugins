@@ -133,6 +133,8 @@ export const itemStateSchema = z.object({
   draft: z.string().nullable(),
   draftStatus: z.enum(["pending", "ready", "failed"]).nullable(),
   draftThreadId: z.string().nullable(),
+  /** Persistent per-comment discussion thread (right pane), reused across opens. */
+  discussThreadId: z.string().nullable().default(null),
   fix: fixSchema.nullable(),
   postedAt: z.string().nullable(),
 });
@@ -143,6 +145,7 @@ export const emptyItem = (): ItemState => ({
   draft: null,
   draftStatus: null,
   draftThreadId: null,
+  discussThreadId: null,
   fix: null,
   postedAt: null,
 });
