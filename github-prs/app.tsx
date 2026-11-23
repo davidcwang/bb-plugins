@@ -25,6 +25,7 @@ import {
   type IssueComment,
   type ItemState,
   type PrDetail,
+  type PrFile,
   type PrRef,
   type PrSummary,
   type ReactionGroup,
@@ -773,7 +774,7 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
   const unresolvedCount = detail.threads.filter((t) => !t.isResolved).length;
 
   return (
-    <div className="mx-auto w-full max-w-4xl space-y-3">
+    <div className={cn("mx-auto w-full space-y-3", tab === "files" ? "max-w-7xl" : "max-w-4xl")}>
       <div className="flex items-center gap-2">
         <Button variant="ghost" size="sm" onClick={onBack}>
           <Icon name="ArrowLeft" className="size-3.5" /> All PRs
@@ -923,13 +924,7 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
         </div>
       )}
 
-      {tab === "files" && (
-        <div className="space-y-2">
-          {detail.files.map((f) => (
-            <FileDiff key={f.path} file={f} />
-          ))}
-        </div>
-      )}
+      {tab === "files" && <FilesView files={detail.files} threads={detail.threads} />}
 
       {tab === "comments" && (
         <div className="space-y-2">
@@ -966,25 +961,188 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
   );
 }
 
-function FileDiff({ file }: { file: { path: string; status: string; additions: number; deletions: number; patch: string | null } }) {
+// ------------------------------------------------------- files: tree + diff
+
+interface TreeDir {
+  name: string;
+  path: string;
+  dirs: TreeDir[];
+  files: PrFile[];
+}
+
+/** Nest files into directories, compressing single-child directory chains (GitHub-style). */
+function buildTree(files: PrFile[]): TreeDir {
+  const root: TreeDir = { name: "", path: "", dirs: [], files: [] };
+  for (const f of files) {
+    const parts = f.path.split("/");
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const dirPath = parts.slice(0, i + 1).join("/");
+      let next = node.dirs.find((d) => d.path === dirPath);
+      if (next === undefined) {
+        next = { name: parts[i], path: dirPath, dirs: [], files: [] };
+        node.dirs.push(next);
+      }
+      node = next;
+    }
+    node.files.push(f);
+  }
+  const compress = (d: TreeDir): TreeDir => {
+    let out = d;
+    while (out.files.length === 0 && out.dirs.length === 1) {
+      const child = out.dirs[0];
+      out = { ...child, name: `${out.name}/${child.name}` };
+    }
+    return { ...out, dirs: out.dirs.map(compress) };
+  };
+  const sortTree = (d: TreeDir): TreeDir => ({
+    ...d,
+    dirs: [...d.dirs].sort((a, b) => a.name.localeCompare(b.name)).map(sortTree),
+    files: [...d.files].sort((a, b) => a.path.localeCompare(b.path)),
+  });
+  return sortTree({ ...root, dirs: root.dirs.map(compress) });
+}
+
+function fileStatusIcon(status: string): { icon: string; className: string } {
+  switch (status) {
+    case "added":
+      return { icon: "FilePlus", className: "text-green-600 dark:text-green-400" };
+    case "removed":
+      return { icon: "FileMinus", className: "text-destructive" };
+    case "renamed":
+      return { icon: "FileSymlink", className: "text-yellow-600 dark:text-yellow-400" };
+    default:
+      return { icon: "FileDiff", className: "text-muted-foreground" };
+  }
+}
+
+function TreeNode({
+  dir,
+  depth,
+  selected,
+  commentCounts,
+  onSelect,
+}: {
+  dir: TreeDir;
+  depth: number;
+  selected: string | null;
+  commentCounts: Map<string, number>;
+  onSelect: (path: string) => void;
+}) {
   const [open, setOpen] = useState(true);
+  const pad = (d: number) => ({ paddingLeft: `${d * 14 + 8}px` });
   return (
-    <div className="overflow-hidden rounded-lg border border-border bg-card">
-      <button type="button" onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-3 py-2 text-left">
-        <Icon name={open ? "ChevronDown" : "ChevronRight"} className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate font-mono text-xs">{file.path}</span>
-        {file.status !== "modified" && <Chip>{file.status}</Chip>}
-        <span className="text-xs text-green-600 dark:text-green-400">+{file.additions}</span>
-        <span className="text-xs text-destructive">−{file.deletions}</span>
-      </button>
-      {open &&
-        (file.patch === null ? (
-          <div className="border-t border-border px-3 py-2 text-xs text-muted-foreground">No text diff (binary or too large).</div>
-        ) : (
-          <div className="border-t border-border">
-            <Diff patch={file.patch} path={file.path} />
+    <>
+      {dir.name !== "" && (
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          style={pad(depth)}
+          className="flex w-full items-center gap-1.5 rounded py-1 pr-2 text-left text-xs text-muted-foreground hover:bg-accent"
+        >
+          <Icon name={open ? "ChevronDown" : "ChevronRight"} className="size-3 shrink-0" />
+          <Icon name="Folder" className="size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1 truncate">{dir.name}</span>
+        </button>
+      )}
+      {(dir.name === "" || open) && (
+        <>
+          {dir.dirs.map((d) => (
+            <TreeNode key={d.path} dir={d} depth={dir.name === "" ? depth : depth + 1} selected={selected} commentCounts={commentCounts} onSelect={onSelect} />
+          ))}
+          {dir.files.map((f) => {
+            const st = fileStatusIcon(f.status);
+            const comments = commentCounts.get(f.path) ?? 0;
+            const name = f.path.split("/").pop() ?? f.path;
+            return (
+              <button
+                key={f.path}
+                type="button"
+                onClick={() => onSelect(f.path)}
+                style={pad(dir.name === "" ? depth : depth + 1)}
+                className={cn(
+                  "flex w-full items-center gap-1.5 rounded py-1 pr-2 text-left text-xs transition-colors",
+                  selected === f.path ? "bg-primary/10 font-medium text-foreground" : "hover:bg-accent",
+                )}
+                title={f.path}
+              >
+                <span className="size-3 shrink-0" />
+                <Icon name={st.icon} className={cn("size-3.5 shrink-0", st.className)} />
+                <span className="min-w-0 flex-1 truncate">{name}</span>
+                {comments > 0 && (
+                  <span className="inline-flex shrink-0 items-center gap-0.5 text-[10px] text-muted-foreground">
+                    <Icon name="MessageSquare" className="size-3" />
+                    {comments}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </>
+      )}
+    </>
+  );
+}
+
+function FilesView({ files, threads }: { files: PrFile[]; threads: ReviewThread[] }) {
+  const tree = useMemo(() => buildTree(files), [files]);
+  const commentCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const t of threads) {
+      if (!t.isResolved) map.set(t.path, (map.get(t.path) ?? 0) + 1);
+    }
+    return map;
+  }, [threads]);
+  const [selected, setSelected] = useState<string | null>(files[0]?.path ?? null);
+  const current = files.find((f) => f.path === selected) ?? files[0];
+  const index = current === undefined ? -1 : files.findIndex((f) => f.path === current.path);
+  if (files.length === 0) {
+    return <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">No files.</div>;
+  }
+  return (
+    <div className="flex flex-col gap-3 md:flex-row md:items-start">
+      <div className="w-full shrink-0 self-start rounded-lg border border-border bg-card py-1.5 pr-1 md:sticky md:top-2 md:max-h-[calc(100vh-10rem)] md:w-64 md:overflow-y-auto">
+        <TreeNode dir={tree} depth={0} selected={current?.path ?? null} commentCounts={commentCounts} onSelect={setSelected} />
+      </div>
+      {current !== undefined && (
+        <div className="min-w-0 flex-1 overflow-hidden rounded-lg border border-border bg-card">
+          <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+            <span className="min-w-0 flex-1 truncate font-mono text-xs">{current.path}</span>
+            {current.status !== "modified" && <Chip>{current.status}</Chip>}
+            <span className="text-xs text-green-600 dark:text-green-400">+{current.additions}</span>
+            <span className="text-xs text-destructive">−{current.deletions}</span>
+            <span className="mx-1 h-4 w-px bg-border" />
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-1.5"
+              disabled={index <= 0}
+              onClick={() => setSelected(files[index - 1].path)}
+              aria-label="Previous file"
+            >
+              <Icon name="ChevronUp" className="size-3.5" />
+            </Button>
+            <span className="text-[11px] text-muted-foreground">
+              {index + 1}/{files.length}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-1.5"
+              disabled={index >= files.length - 1}
+              onClick={() => setSelected(files[index + 1].path)}
+              aria-label="Next file"
+            >
+              <Icon name="ChevronDown" className="size-3.5" />
+            </Button>
           </div>
-        ))}
+          {current.patch === null ? (
+            <div className="px-3 py-2 text-xs text-muted-foreground">No text diff (binary or too large).</div>
+          ) : (
+            <Diff patch={current.patch} path={current.path} />
+          )}
+        </div>
+      )}
     </div>
   );
 }
