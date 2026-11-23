@@ -36,9 +36,15 @@ import {
 export const rpcContract = defineRpcContract({
   prs_list: {
     input: z.object({ refresh: z.boolean().default(false) }),
-    output: z.object({ prs: z.array(prSummarySchema), fetchedAt: z.string(), error: z.string().nullable() }),
+    output: z.object({
+      prs: z.array(prSummarySchema),
+      fetchedAt: z.string(),
+      syncing: z.boolean(),
+      error: z.string().nullable(),
+    }),
   },
-  pr_get: { input: prRefSchema, output: prDetailSchema },
+  pr_get: { input: prRefSchema, output: z.object({ detail: prDetailSchema, syncing: z.boolean() }) },
+  pr_refresh: { input: prRefSchema, output: z.object({ syncing: z.boolean() }) },
   triage_set: {
     input: z.object({ ref: prRefSchema, item: z.string(), triage: z.enum(["pending", "address", "wont-fix", "done"]) }),
     output: itemStateSchema,
@@ -342,7 +348,7 @@ export default async function plugin(bb: BbPluginApi) {
     fn(it);
     state.items[item] = it;
     await bb.storage.kv.set(stateKey(ref), state);
-    bb.realtime.publish(CHANGED, { key: prKey(ref) });
+    bb.realtime.publish(CHANGED, { key: prKey(ref), kind: "state" });
     return it;
   }
 
@@ -432,20 +438,36 @@ export default async function plugin(bb: BbPluginApi) {
     return prs;
   }
 
+  // ---- stale-while-revalidate: cached data is returned instantly; GitHub
+  // fetches run in the background and announce themselves over realtime.
+  const syncing = new Set<string>(); // "list" or a PR key
+
+  function startListSync(): void {
+    if (syncing.has("list")) return;
+    syncing.add("list");
+    void (async () => {
+      try {
+        const prs = await fetchList();
+        await bb.storage.kv.set(LIST_KEY, { prs, fetchedAt: new Date().toISOString() });
+        syncing.delete("list");
+        bb.realtime.publish(CHANGED, { kind: "list" });
+      } catch (cause) {
+        syncing.delete("list");
+        bb.realtime.publish(CHANGED, { kind: "list-error", message: describe(cause) });
+      }
+    })();
+  }
+
   async function listPrs(refresh: boolean) {
     const cached = (await bb.storage.kv.get<{ prs: PrSummary[]; fetchedAt: string }>(LIST_KEY)) ?? null;
-    if (!refresh && cached !== null && Date.now() - Date.parse(cached.fetchedAt) < LIST_TTL_MS) {
-      return { ...cached, error: null };
-    }
-    try {
+    if (cached === null) {
       const prs = await fetchList();
       const result = { prs, fetchedAt: new Date().toISOString() };
       await bb.storage.kv.set(LIST_KEY, result);
-      return { ...result, error: null };
-    } catch (cause) {
-      if (cached !== null) return { ...cached, error: describe(cause) };
-      throw cause;
+      return { ...result, syncing: false, error: null };
     }
+    if (refresh || Date.now() - Date.parse(cached.fetchedAt) >= LIST_TTL_MS) startListSync();
+    return { ...cached, syncing: syncing.has("list"), error: null };
   }
 
   async function fetchDetail(ref: PrRef): Promise<PrDetail> {
@@ -540,6 +562,40 @@ export default async function plugin(bb: BbPluginApi) {
     };
   }
 
+  // In-memory (patches are too big for kv); lost on reload, refilled on first open.
+  const detailCache = new Map<string, PrDetail>();
+  const DETAIL_TTL_MS = 60_000;
+
+  function startDetailSync(ref: PrRef): void {
+    const key = prKey(ref);
+    if (syncing.has(key)) return;
+    syncing.add(key);
+    void (async () => {
+      try {
+        const detail = await fetchDetail(ref);
+        detailCache.set(key, detail);
+        syncing.delete(key);
+        bb.realtime.publish(CHANGED, { key, kind: "detail" });
+      } catch (cause) {
+        syncing.delete(key);
+        bb.realtime.publish(CHANGED, { key, kind: "error", message: describe(cause) });
+      }
+    })();
+  }
+
+  /** Cached detail with current local item state merged in; fetches only when nothing is cached. */
+  async function getDetail(ref: PrRef): Promise<PrDetail> {
+    const key = prKey(ref);
+    const cached = detailCache.get(key);
+    if (cached !== undefined) {
+      const state = await readState(ref);
+      return { ...cached, items: state.items };
+    }
+    const detail = await fetchDetail(ref);
+    detailCache.set(key, detail);
+    return detail;
+  }
+
   // ---- hidden worker threads (draft replies, proposed fixes) ----
   type EnvChoice = Parameters<typeof bb.sdk.threads.spawn>[0]["environment"];
 
@@ -608,7 +664,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   async function startDraft(ref: PrRef, item: string, guidance: string): Promise<ItemState> {
-    const detail = await fetchDetail(ref);
+    const detail = await getDetail(ref);
     const { replyVoice } = await settings.get();
     const key = prKey(ref);
     const prompt = [
@@ -633,7 +689,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   async function startFix(ref: PrRef, item: string, guidance: string): Promise<ItemState> {
-    const detail = await fetchDetail(ref);
+    const detail = await getDetail(ref);
     if (detail.checkout === null) {
       throw new Error(`No local checkout for ${ref.owner}/${ref.repo} under the configured repos directory.`);
     }
@@ -850,7 +906,15 @@ export default async function plugin(bb: BbPluginApi) {
   // ---- RPC ----
   bb.rpc.register(rpcContract, {
     prs_list: ({ refresh }) => listPrs(refresh),
-    pr_get: (ref) => fetchDetail(ref),
+    pr_get: async (ref) => {
+      const detail = await getDetail(ref);
+      if (Date.now() - Date.parse(detail.fetchedAt) >= DETAIL_TTL_MS) startDetailSync(ref);
+      return { detail, syncing: syncing.has(prKey(ref)) };
+    },
+    pr_refresh: (ref) => {
+      startDetailSync(ref);
+      return { syncing: true };
+    },
     triage_set: ({ ref, item, triage }) => mutateItem(ref, item, (it) => void (it.triage = triage)),
     draft_start: ({ ref, item, guidance }) => startDraft(ref, item, guidance),
     draft_save: ({ ref, item, text }) =>
@@ -866,16 +930,17 @@ export default async function plugin(bb: BbPluginApi) {
         it.draft = null;
         it.draftStatus = null;
       });
+      startDetailSync(ref);
       return { url };
     },
     react: async ({ ref, commentId, kind, content, on }) => {
       await setReaction(ref, commentId, kind, content, on);
-      bb.realtime.publish(CHANGED, { key: prKey(ref) });
+      startDetailSync(ref);
       return { ok: true as const };
     },
     thread_resolve: async ({ ref, threadId, resolved }) => {
       await resolveThread(threadId, resolved);
-      bb.realtime.publish(CHANGED, { key: prKey(ref) });
+      startDetailSync(ref);
       return { ok: true as const };
     },
     fix_start: ({ ref, item, guidance }) => startFix(ref, item, guidance),
@@ -897,7 +962,15 @@ export default async function plugin(bb: BbPluginApi) {
             json: { type: "boolean", description: "Emit machine-readable JSON" },
           },
           async run(input) {
-            const { prs, error } = await listPrs(input.options.refresh === true);
+            let prs: PrSummary[];
+            let error: string | null = null;
+            if (input.options.refresh === true) {
+              prs = await fetchList();
+              await bb.storage.kv.set(LIST_KEY, { prs, fetchedAt: new Date().toISOString() });
+              bb.realtime.publish(CHANGED, { kind: "list" });
+            } else {
+              ({ prs, error } = await listPrs(false));
+            }
             if (input.options.json) return { exitCode: 0, stdout: `${JSON.stringify(prs)}\n` };
             const lines = prs.map(
               (p) =>

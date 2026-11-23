@@ -107,38 +107,67 @@ function Spinner({ label }: { label: string }) {
   );
 }
 
+/** Non-blocking freshness indicator: GitHub data refreshes in the background. */
+function SyncBadge({ syncing, fetchedAt }: { syncing: boolean; fetchedAt: string | null }) {
+  return syncing ? (
+    <span className="inline-flex items-center gap-1 rounded-full border border-yellow-600/40 px-2 py-0.5 text-[11px] text-yellow-600 dark:text-yellow-400">
+      <Icon name="RefreshCw" className="size-3 animate-spin" /> syncing
+    </span>
+  ) : (
+    <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+      <Icon name="Check" className="size-3" /> synced{fetchedAt === null ? "" : ` ${ago(fetchedAt)}`}
+    </span>
+  );
+}
+
 // ---------------------------------------------------------------- PR list
 
 function PrListPage({ onOpen }: { onOpen: (ref: PrRef) => void }) {
   const rpc = useRpc<typeof rpcContract>();
   const [prs, setPrs] = useState<PrSummary[] | null>(null);
+  const [fetchedAt, setFetchedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const load = useCallback(
     (refresh: boolean) => {
-      setBusy(true);
+      if (refresh) setSyncing(true);
       rpc
         .call("prs_list", { refresh })
         .then((r) => {
           setPrs(r.prs);
+          setFetchedAt(r.fetchedAt);
+          setSyncing(r.syncing);
           setError(r.error);
         })
-        .catch((cause) => setError(describe(cause)))
-        .finally(() => setBusy(false));
+        .catch((cause) => {
+          setSyncing(false);
+          setError(describe(cause));
+        });
     },
     [rpc],
   );
   useEffect(() => load(false), [load]);
+  useRealtime(CHANGED, (payload: unknown) => {
+    const p = payload as { kind?: string; message?: string };
+    if (p?.kind === "list") load(false);
+    else if (p?.kind === "list-error") {
+      setSyncing(false);
+      setError(p.message ?? "Background refresh failed.");
+    }
+  });
   return (
     <div className="mx-auto w-full max-w-3xl space-y-3">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
           {prs === null ? "Loading…" : `${prs.length} open PR${prs.length === 1 ? "" : "s"}`}
         </p>
-        <Button variant="outline" size="sm" onClick={() => load(true)} disabled={busy}>
-          <Icon name="RefreshCw" className={cn("size-3.5", busy && "animate-spin")} />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <SyncBadge syncing={syncing} fetchedAt={fetchedAt} />
+          <Button variant="outline" size="sm" onClick={() => load(true)} disabled={syncing}>
+            <Icon name="RefreshCw" className="size-3.5" />
+            Refresh
+          </Button>
+        </div>
       </div>
       {error !== null && (
         <p role="alert" className="rounded-md border border-destructive/40 px-3 py-2 text-sm text-destructive">
@@ -721,25 +750,37 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
   const [detail, setDetail] = useState<PrDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("comments");
-  const [busy, setBusy] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [showResolved, setShowResolved] = useState(false);
   const key = prKey(refObj);
 
   const load = useCallback(() => {
-    setBusy(true);
     rpc
       .call("pr_get", refObj)
-      .then((d) => {
-        setDetail(d);
+      .then((r) => {
+        setDetail(r.detail);
+        setSyncing(r.syncing);
         setError(null);
       })
-      .catch((cause) => setError(describe(cause)))
-      .finally(() => setBusy(false));
+      .catch((cause) => setError(describe(cause)));
   }, [rpc, refObj.owner, refObj.repo, refObj.number]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => load(), [load]);
+  const sync = useCallback(() => {
+    setSyncing(true);
+    rpc.call("pr_refresh", refObj).catch((cause) => {
+      setSyncing(false);
+      setError(describe(cause));
+    });
+  }, [rpc, refObj.owner, refObj.repo, refObj.number]); // eslint-disable-line react-hooks/exhaustive-deps
   useRealtime(CHANGED, (payload: unknown) => {
-    const p = payload as { key?: string };
-    if (p?.key === key) load();
+    const p = payload as { key?: string; kind?: string; message?: string };
+    if (p?.key !== key) return;
+    if (p.kind === "error") {
+      setSyncing(false);
+      setError(p.message ?? "Background refresh failed.");
+    } else {
+      load();
+    }
   });
 
   const onError = useCallback((message: string) => setError(message), []);
@@ -780,8 +821,9 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
           <Icon name="ArrowLeft" className="size-3.5" /> All PRs
         </Button>
         <div className="flex-1" />
-        <Button variant="ghost" size="sm" onClick={load} disabled={busy} aria-label="Refresh from GitHub">
-          <Icon name="RefreshCw" className={cn("size-3.5", busy && "animate-spin")} />
+        <SyncBadge syncing={syncing} fetchedAt={detail?.fetchedAt ?? null} />
+        <Button variant="ghost" size="sm" onClick={sync} disabled={syncing} aria-label="Refresh from GitHub">
+          <Icon name="RefreshCw" className="size-3.5" />
         </Button>
         <UrlLink href={s.url} className="text-xs text-muted-foreground hover:text-foreground">
           <Icon name="ExternalLink" className="inline size-3.5" /> Open on GitHub
