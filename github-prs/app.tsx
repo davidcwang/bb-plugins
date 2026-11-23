@@ -1,0 +1,1025 @@
+// bb-plugin-github-prs — frontend: a "Pull Requests" sidebar page.
+//
+// Root: your open PRs (server search query). A PR opens a GitHub-like view —
+// Overview / Files / Comments — where each review thread carries triage state,
+// an AI-draftable reply you edit and post, reactions, resolve, and a proposed
+// fix you can preview as a diff and apply to the local checkout.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import {
+  definePluginApp,
+  experimental_Diff as Diff,
+  Markdown,
+  UrlLink,
+  useBbNavigate,
+  useRealtime,
+  useRpc,
+} from "@get-bb/plugin-sdk/app";
+import type { rpcContract } from "./server";
+import {
+  CHANGED,
+  REACTIONS,
+  REACTION_EMOJI,
+  emptyItem,
+  prKey,
+  type IssueComment,
+  type ItemState,
+  type PrDetail,
+  type PrRef,
+  type PrSummary,
+  type ReactionGroup,
+  type Reaction,
+  type ReviewThread,
+  type Triage,
+} from "./shared";
+import { Button } from "@/components/ui/button";
+import { Icon } from "@/components/ui/icon";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
+
+type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
+
+function describe(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+function ago(iso: string): string {
+  const ms = Date.now() - Date.parse(iso);
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d`;
+  return new Date(iso).toLocaleDateString();
+}
+
+/** Split a possibly multi-file unified patch into per-file patches for <Diff>. */
+function splitPatch(patch: string): Array<{ path: string; patch: string }> {
+  const parts = patch.split(/^(?=diff --git )/m).filter((p) => p.trim() !== "");
+  if (parts.length === 0) return [];
+  if (parts.length === 1 && !parts[0].startsWith("diff --git")) {
+    return [{ path: "patch", patch: parts[0] }];
+  }
+  return parts.map((p) => {
+    const m = p.match(/^diff --git a\/(.+?) b\//);
+    return { path: m?.[1] ?? "patch", patch: p };
+  });
+}
+
+function Chip({ children, tone = "muted" }: { children: ReactNode; tone?: "muted" | "good" | "bad" | "warn" | "accent" }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium",
+        tone === "muted" && "border-border text-muted-foreground",
+        tone === "good" && "border-green-600/40 text-green-600 dark:text-green-400",
+        tone === "bad" && "border-destructive/40 text-destructive",
+        tone === "warn" && "border-yellow-600/40 text-yellow-600 dark:text-yellow-400",
+        tone === "accent" && "border-primary/40 text-primary",
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
+function checksChip(state: string | null): ReactNode {
+  if (state === null) return null;
+  const tone = state === "SUCCESS" ? "good" : state === "PENDING" || state === "EXPECTED" ? "warn" : "bad";
+  return <Chip tone={tone}>checks {state.toLowerCase()}</Chip>;
+}
+
+function decisionChip(decision: string | null): ReactNode {
+  if (decision === null) return null;
+  const tone = decision === "APPROVED" ? "good" : decision === "CHANGES_REQUESTED" ? "bad" : "warn";
+  return <Chip tone={tone}>{decision.toLowerCase().replace("_", " ")}</Chip>;
+}
+
+function Spinner({ label }: { label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+      <Icon name="Loader2" className="size-3.5 animate-spin" />
+      {label}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------- PR list
+
+function PrListPage({ onOpen }: { onOpen: (ref: PrRef) => void }) {
+  const rpc = useRpc<typeof rpcContract>();
+  const [prs, setPrs] = useState<PrSummary[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(
+    (refresh: boolean) => {
+      setBusy(true);
+      rpc
+        .call("prs_list", { refresh })
+        .then((r) => {
+          setPrs(r.prs);
+          setError(r.error);
+        })
+        .catch((cause) => setError(describe(cause)))
+        .finally(() => setBusy(false));
+    },
+    [rpc],
+  );
+  useEffect(() => load(false), [load]);
+  return (
+    <div className="mx-auto w-full max-w-3xl space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">
+          {prs === null ? "Loading…" : `${prs.length} open PR${prs.length === 1 ? "" : "s"}`}
+        </p>
+        <Button variant="outline" size="sm" onClick={() => load(true)} disabled={busy}>
+          <Icon name="RefreshCw" className={cn("size-3.5", busy && "animate-spin")} />
+          Refresh
+        </Button>
+      </div>
+      {error !== null && (
+        <p role="alert" className="rounded-md border border-destructive/40 px-3 py-2 text-sm text-destructive">
+          {error}
+        </p>
+      )}
+      {prs !== null && prs.length === 0 && (
+        <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
+          No open PRs match the search query (plugin settings).
+        </div>
+      )}
+      <ul className="space-y-2">
+        {(prs ?? []).map((pr) => (
+          <li key={prKey(pr)}>
+            <button
+              type="button"
+              onClick={() => onOpen(pr)}
+              className="w-full rounded-lg border border-border bg-card px-4 py-3 text-left transition-colors hover:border-primary/40"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium">{pr.title}</div>
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                    <span className="font-mono">
+                      {pr.owner}/{pr.repo}#{pr.number}
+                    </span>
+                    <span className="font-mono">
+                      {pr.headRefName} → {pr.baseRefName}
+                    </span>
+                    <span>updated {ago(pr.updatedAt)}</span>
+                  </div>
+                </div>
+                <div className="flex shrink-0 flex-col items-end gap-1">
+                  <div className="flex items-center gap-1.5">
+                    {pr.isDraft && <Chip>draft</Chip>}
+                    {decisionChip(pr.reviewDecision)}
+                    {checksChip(pr.checksState)}
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span className="text-green-600 dark:text-green-400">+{pr.additions}</span>
+                    <span className="text-destructive">−{pr.deletions}</span>
+                    {pr.unresolvedThreads > 0 && (
+                      <span className="inline-flex items-center gap-1">
+                        <Icon name="MessageSquare" className="size-3.5" />
+                        {pr.unresolvedThreads}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------- shared pieces
+
+function ReactionBar({
+  groups,
+  busy,
+  onToggle,
+}: {
+  groups: ReactionGroup[];
+  busy: boolean;
+  onToggle: (content: Reaction, on: boolean) => void;
+}) {
+  const [picking, setPicking] = useState(false);
+  const have = new Map(groups.map((g) => [g.content, g]));
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {groups.map((g) => (
+        <button
+          key={g.content}
+          type="button"
+          disabled={busy}
+          onClick={() => onToggle(g.content, !g.viewerReacted)}
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs transition-colors",
+            g.viewerReacted ? "border-primary/50 bg-primary/10" : "border-border hover:border-primary/40",
+          )}
+          title={g.viewerReacted ? "Remove your reaction" : "React"}
+        >
+          <span>{REACTION_EMOJI[g.content]}</span>
+          <span className="text-muted-foreground">{g.count}</span>
+        </button>
+      ))}
+      {picking ? (
+        <span className="inline-flex items-center gap-0.5 rounded-full border border-border px-1 py-0.5">
+          {REACTIONS.filter((r) => !have.get(r)?.viewerReacted).map((r) => (
+            <button
+              key={r}
+              type="button"
+              disabled={busy}
+              className="rounded px-0.5 text-sm hover:bg-accent"
+              onClick={() => {
+                setPicking(false);
+                onToggle(r, true);
+              }}
+            >
+              {REACTION_EMOJI[r]}
+            </button>
+          ))}
+          <button type="button" className="px-1 text-xs text-muted-foreground" onClick={() => setPicking(false)}>
+            ×
+          </button>
+        </span>
+      ) : (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => setPicking(true)}
+          className="rounded-full border border-border px-1.5 py-0.5 text-xs text-muted-foreground hover:border-primary/40"
+          title="Add reaction"
+        >
+          <Icon name="SmilePlus" className="size-3.5" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+const TRIAGE_LABEL: Record<Triage, string> = {
+  pending: "Pending",
+  address: "Address",
+  "wont-fix": "Won't fix",
+  done: "Done",
+};
+const TRIAGE_ICON: Record<Triage, string> = {
+  pending: "Circle",
+  address: "Wrench",
+  "wont-fix": "XCircle",
+  done: "CheckCircle2",
+};
+
+function TriageControl({ value, onChange }: { value: Triage; onChange: (t: Triage) => void }) {
+  return (
+    <div className="inline-flex overflow-hidden rounded-md border border-border">
+      {(Object.keys(TRIAGE_LABEL) as Triage[]).map((t) => (
+        <button
+          key={t}
+          type="button"
+          onClick={() => onChange(t)}
+          className={cn(
+            "inline-flex items-center gap-1 px-2 py-1 text-[11px] transition-colors",
+            value === t
+              ? t === "address"
+                ? "bg-primary/15 text-primary"
+                : t === "done"
+                  ? "bg-green-600/15 text-green-600 dark:text-green-400"
+                  : t === "wont-fix"
+                    ? "bg-muted text-foreground"
+                    : "bg-muted text-foreground"
+              : "text-muted-foreground hover:bg-accent",
+          )}
+        >
+          <Icon name={TRIAGE_ICON[t]} className="size-3" />
+          {TRIAGE_LABEL[t]}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Textarea({
+  value,
+  onChange,
+  onBlur,
+  placeholder,
+  rows = 4,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onBlur?: () => void;
+  placeholder?: string;
+  rows?: number;
+}) {
+  return (
+    <textarea
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onBlur={onBlur}
+      placeholder={placeholder}
+      rows={rows}
+      className="w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus:border-primary/50"
+    />
+  );
+}
+
+/** Reply drafting + posting + fix proposal for one item (review thread or issue comment). */
+function ItemWorkbench({
+  rpc,
+  refObj,
+  item,
+  state,
+  replyTo,
+  resolveId,
+  canFix,
+  onChanged,
+  onError,
+}: {
+  rpc: Rpc;
+  refObj: PrRef;
+  item: string;
+  state: ItemState;
+  /** REST comment id to reply to; null = top-level issue comment. */
+  replyTo: number | null;
+  /** GraphQL thread id to resolve on "Post & resolve"; null hides that button. */
+  resolveId: string | null;
+  canFix: boolean;
+  onChanged: () => void;
+  onError: (message: string) => void;
+}) {
+  const [text, setText] = useState(state.draft ?? "");
+  const [guidance, setGuidance] = useState("");
+  const [showGuidance, setShowGuidance] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const lastDraft = useRef(state.draft);
+  // Adopt a newly arrived AI draft unless the user has typed something else.
+  useEffect(() => {
+    if (state.draft !== lastDraft.current) {
+      if (text === "" || text === lastDraft.current) setText(state.draft ?? "");
+      lastDraft.current = state.draft;
+    }
+  }, [state.draft, text]);
+
+  const act = useCallback(
+    (label: string, work: () => Promise<unknown>) => {
+      setBusy(label);
+      work()
+        .then(onChanged)
+        .catch((cause) => onError(describe(cause)))
+        .finally(() => setBusy(null));
+    },
+    [onChanged, onError],
+  );
+
+  const saveDraft = useCallback(() => {
+    if (text !== (state.draft ?? "")) {
+      rpc.call("draft_save", { ref: refObj, item, text }).catch(() => undefined);
+    }
+  }, [rpc, refObj, item, text, state.draft]);
+
+  const drafting = state.draftStatus === "pending";
+  const fix = state.fix;
+
+  return (
+    <div className="space-y-2">
+      <Textarea
+        value={text}
+        onChange={setText}
+        onBlur={saveDraft}
+        placeholder={drafting ? "Drafting a reply…" : "Write a reply, or let the agent draft one…"}
+      />
+      {showGuidance && (
+        <Input
+          value={guidance}
+          onChange={(e) => setGuidance(e.target.value)}
+          placeholder="Guidance for the agent, e.g. “agree, we'll fix it in a follow-up” or “push back: the lock is held”"
+          className="text-sm"
+        />
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={drafting || busy !== null}
+          onClick={() =>
+            act("draft", () => rpc.call("draft_start", { ref: refObj, item, guidance }))
+          }
+        >
+          {drafting ? <Icon name="Loader2" className="size-3.5 animate-spin" /> : <Icon name="Sparkles" className="size-3.5" />}
+          {state.draftStatus === "failed" ? "Draft failed — retry" : "Draft reply"}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-muted-foreground"
+          onClick={() => setShowGuidance((s) => !s)}
+          aria-label="Add guidance for the draft/fix agent"
+        >
+          <Icon name="SlidersHorizontal" className="size-3.5" />
+        </Button>
+        <div className="flex-1" />
+        {canFix && fix === null && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy !== null}
+            onClick={() => act("fix", () => rpc.call("fix_start", { ref: refObj, item, guidance }))}
+          >
+            <Icon name="Wand2" className="size-3.5" />
+            Propose fix
+          </Button>
+        )}
+        <Button
+          size="sm"
+          disabled={text.trim() === "" || busy !== null}
+          onClick={() =>
+            act("post", () => rpc.call("reply_post", { ref: refObj, item, body: text, replyTo, resolve: null }).then(() => setText("")))
+          }
+        >
+          {busy === "post" ? <Icon name="Loader2" className="size-3.5 animate-spin" /> : <Icon name="Send" className="size-3.5" />}
+          Post
+        </Button>
+        {resolveId !== null && (
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={text.trim() === "" || busy !== null}
+            onClick={() =>
+              act("post", () =>
+                rpc.call("reply_post", { ref: refObj, item, body: text, replyTo, resolve: resolveId }).then(() => setText("")),
+              )
+            }
+          >
+            Post &amp; resolve
+          </Button>
+        )}
+      </div>
+      {fix !== null && (
+        <div className="space-y-2 rounded-md border border-border bg-muted/30 p-2.5">
+          <div className="flex items-center gap-2 text-xs font-medium">
+            <Icon name="Wand2" className="size-3.5" />
+            Proposed fix
+            {fix.status === "pending" && <Spinner label="working…" />}
+            {fix.status === "applied" && <Chip tone="good">applied {fix.appliedAt === null ? "" : ago(fix.appliedAt)}</Chip>}
+            {fix.status === "failed" && <Chip tone="bad">failed</Chip>}
+            <div className="flex-1" />
+            {fix.status !== "pending" && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 text-xs text-muted-foreground"
+                onClick={() => act("discard", () => rpc.call("fix_discard", { ref: refObj, item }))}
+              >
+                Discard
+              </Button>
+            )}
+          </div>
+          {fix.error !== null && <p className="text-xs text-destructive">{fix.error}</p>}
+          {fix.summary !== "" && <Markdown content={fix.summary} className="text-sm" />}
+          {fix.patch !== "" && (
+            <div className="space-y-2">
+              {splitPatch(fix.patch).map((f, i) => (
+                <div key={i} className="overflow-hidden rounded-md border border-border">
+                  <div className="border-b border-border bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground">
+                    {f.path}
+                  </div>
+                  <Diff patch={f.patch} path={f.path} />
+                </div>
+              ))}
+            </div>
+          )}
+          {fix.status === "ready" && (
+            <div className="flex items-center gap-2">
+              <Button size="sm" disabled={busy !== null} onClick={() => act("apply", () => rpc.call("fix_apply", { ref: refObj, item }))}>
+                {busy === "apply" ? <Icon name="Loader2" className="size-3.5 animate-spin" /> : <Icon name="Download" className="size-3.5" />}
+                Apply locally
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy !== null}
+                onClick={() => act("fix", () => rpc.call("fix_start", { ref: refObj, item, guidance }))}
+              >
+                Regenerate
+              </Button>
+            </div>
+          )}
+          {fix.status === "failed" && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy !== null}
+              onClick={() => act("fix", () => rpc.call("fix_start", { ref: refObj, item, guidance }))}
+            >
+              Retry
+            </Button>
+          )}
+        </div>
+      )}
+      {state.postedAt !== null && (
+        <p className="text-[11px] text-muted-foreground">Last reply posted {ago(state.postedAt)}.</p>
+      )}
+    </div>
+  );
+}
+
+function CommentBody({ author: who, createdAt, body, children }: { author: string; createdAt: string; body: string; children?: ReactNode }) {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-baseline gap-2 text-xs">
+        <span className="font-semibold">{who}</span>
+        <span className="text-muted-foreground">{ago(createdAt)}</span>
+      </div>
+      <Markdown content={body} className="text-sm" />
+      {children}
+    </div>
+  );
+}
+
+// ------------------------------------------------------ review thread card
+
+function ThreadCard({
+  rpc,
+  refObj,
+  thread,
+  state,
+  canFix,
+  onChanged,
+  onError,
+}: {
+  rpc: Rpc;
+  refObj: PrRef;
+  thread: ReviewThread;
+  state: ItemState;
+  canFix: boolean;
+  onChanged: () => void;
+  onError: (message: string) => void;
+}) {
+  const [open, setOpen] = useState(!thread.isResolved);
+  const [reactBusy, setReactBusy] = useState(false);
+  const first = thread.comments[0];
+  const toggleReaction = (commentId: number) => (content: Reaction, on: boolean) => {
+    setReactBusy(true);
+    rpc
+      .call("react", { ref: refObj, commentId, kind: "review", content, on })
+      .then(onChanged)
+      .catch((cause) => onError(describe(cause)))
+      .finally(() => setReactBusy(false));
+  };
+  return (
+    <div className={cn("rounded-lg border bg-card", thread.isResolved ? "border-border opacity-70" : "border-border")}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left"
+      >
+        <Icon name={open ? "ChevronDown" : "ChevronRight"} className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate font-mono text-xs">
+          {thread.path}
+          {thread.line !== null && <span className="text-muted-foreground">:{thread.line}</span>}
+        </span>
+        {state.triage !== "pending" && (
+          <Chip tone={state.triage === "address" ? "accent" : state.triage === "done" ? "good" : "muted"}>
+            {TRIAGE_LABEL[state.triage]}
+          </Chip>
+        )}
+        {thread.isOutdated && <Chip tone="warn">outdated</Chip>}
+        {thread.isResolved ? <Chip tone="good">resolved</Chip> : <Chip>{thread.comments.length}</Chip>}
+      </button>
+      {open && (
+        <div className="space-y-3 border-t border-border px-3 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <TriageControl
+              value={state.triage}
+              onChange={(t) => {
+                rpc.call("triage_set", { ref: refObj, item: thread.id, triage: t }).then(onChanged, (c) => onError(describe(c)));
+              }}
+            />
+            <div className="flex items-center gap-2">
+              {first !== undefined && (
+                <UrlLink href={first.url} className="text-xs text-muted-foreground hover:text-foreground">
+                  <Icon name="ExternalLink" className="inline size-3" /> GitHub
+                </UrlLink>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 text-xs text-muted-foreground"
+                onClick={() => {
+                  rpc
+                    .call("thread_resolve", { ref: refObj, threadId: thread.id, resolved: !thread.isResolved })
+                    .then(onChanged, (c) => onError(describe(c)));
+                }}
+              >
+                {thread.isResolved ? "Unresolve" : "Resolve"}
+              </Button>
+            </div>
+          </div>
+          {thread.diffHunk !== "" && (
+            <div className="overflow-hidden rounded-md border border-border">
+              <Diff patch={thread.diffHunk} path={thread.path} />
+            </div>
+          )}
+          <div className="space-y-3">
+            {thread.comments.map((c) => (
+              <CommentBody key={c.id} author={c.author} createdAt={c.createdAt} body={c.body}>
+                <ReactionBar groups={c.reactions} busy={reactBusy} onToggle={toggleReaction(c.id)} />
+              </CommentBody>
+            ))}
+          </div>
+          <ItemWorkbench
+            rpc={rpc}
+            refObj={refObj}
+            item={thread.id}
+            state={state}
+            replyTo={first?.id ?? null}
+            resolveId={thread.isResolved ? null : thread.id}
+            canFix={canFix}
+            onChanged={onChanged}
+            onError={onError}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function IssueCommentCard({
+  rpc,
+  refObj,
+  comment,
+  state,
+  onChanged,
+  onError,
+}: {
+  rpc: Rpc;
+  refObj: PrRef;
+  comment: IssueComment;
+  state: ItemState;
+  onChanged: () => void;
+  onError: (message: string) => void;
+}) {
+  const [showReply, setShowReply] = useState(false);
+  const [reactBusy, setReactBusy] = useState(false);
+  const item = `ic:${comment.id}`;
+  return (
+    <div className="rounded-lg border border-border bg-card px-3 py-3">
+      <CommentBody author={comment.author} createdAt={comment.createdAt} body={comment.body}>
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <ReactionBar
+            groups={comment.reactions}
+            busy={reactBusy}
+            onToggle={(content, on) => {
+              setReactBusy(true);
+              rpc
+                .call("react", { ref: refObj, commentId: comment.id, kind: "issue", content, on })
+                .then(onChanged)
+                .catch((cause) => onError(describe(cause)))
+                .finally(() => setReactBusy(false));
+            }}
+          />
+          <Button variant="ghost" size="sm" className="h-6 text-xs text-muted-foreground" onClick={() => setShowReply((s) => !s)}>
+            <Icon name="Reply" className="size-3" /> Reply
+          </Button>
+          <UrlLink href={comment.url} className="text-xs text-muted-foreground hover:text-foreground">
+            <Icon name="ExternalLink" className="inline size-3" />
+          </UrlLink>
+        </div>
+        {showReply && (
+          <div className="pt-2">
+            <ItemWorkbench
+              rpc={rpc}
+              refObj={refObj}
+              item={item}
+              state={state}
+              replyTo={null}
+              resolveId={null}
+              canFix={false}
+              onChanged={onChanged}
+              onError={onError}
+            />
+          </div>
+        )}
+      </CommentBody>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- detail
+
+type Tab = "overview" | "files" | "comments";
+
+function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void }) {
+  const rpc = useRpc<typeof rpcContract>();
+  const [detail, setDetail] = useState<PrDetail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("comments");
+  const [busy, setBusy] = useState(false);
+  const [showResolved, setShowResolved] = useState(false);
+  const key = prKey(refObj);
+
+  const load = useCallback(() => {
+    setBusy(true);
+    rpc
+      .call("pr_get", refObj)
+      .then((d) => {
+        setDetail(d);
+        setError(null);
+      })
+      .catch((cause) => setError(describe(cause)))
+      .finally(() => setBusy(false));
+  }, [rpc, refObj.owner, refObj.repo, refObj.number]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => load(), [load]);
+  useRealtime(CHANGED, (payload: unknown) => {
+    const p = payload as { key?: string };
+    if (p?.key === key) load();
+  });
+
+  const onError = useCallback((message: string) => setError(message), []);
+  const item = (id: string): ItemState => detail?.items[id] ?? emptyItem();
+
+  const threads = useMemo(() => {
+    const all = detail?.threads ?? [];
+    return showResolved ? all : all.filter((t) => !t.isResolved);
+  }, [detail, showResolved]);
+
+  if (detail === null) {
+    return (
+      <div className="mx-auto w-full max-w-3xl space-y-3">
+        <Button variant="ghost" size="sm" onClick={onBack}>
+          <Icon name="ArrowLeft" className="size-3.5" /> All PRs
+        </Button>
+        {error === null ? (
+          <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
+            Loading {key}…
+          </div>
+        ) : (
+          <p role="alert" className="rounded-md border border-destructive/40 px-3 py-2 text-sm text-destructive">
+            {error}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  const s = detail.summary;
+  const canFix = detail.checkout !== null;
+  const unresolvedCount = detail.threads.filter((t) => !t.isResolved).length;
+
+  return (
+    <div className="mx-auto w-full max-w-4xl space-y-3">
+      <div className="flex items-center gap-2">
+        <Button variant="ghost" size="sm" onClick={onBack}>
+          <Icon name="ArrowLeft" className="size-3.5" /> All PRs
+        </Button>
+        <div className="flex-1" />
+        <Button variant="ghost" size="sm" onClick={load} disabled={busy} aria-label="Refresh from GitHub">
+          <Icon name="RefreshCw" className={cn("size-3.5", busy && "animate-spin")} />
+        </Button>
+        <UrlLink href={s.url} className="text-xs text-muted-foreground hover:text-foreground">
+          <Icon name="ExternalLink" className="inline size-3.5" /> Open on GitHub
+        </UrlLink>
+      </div>
+      <div>
+        <h2 className="text-base font-semibold leading-snug">{s.title}</h2>
+        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span className="font-mono">{key}</span>
+          <span className="font-mono">
+            {s.headRefName} → {s.baseRefName}
+          </span>
+          {s.isDraft && <Chip>draft</Chip>}
+          <Chip tone={detail.state === "OPEN" ? "good" : "muted"}>{detail.state.toLowerCase()}</Chip>
+          {decisionChip(s.reviewDecision)}
+          {checksChip(s.checksState)}
+          <span className="text-green-600 dark:text-green-400">+{s.additions}</span>
+          <span className="text-destructive">−{s.deletions}</span>
+        </div>
+        {detail.checkout !== null && (
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Local checkout: <span className="font-mono">{detail.checkout.path}</span> on{" "}
+            <span className={cn("font-mono", !detail.checkout.onPrBranch && "text-yellow-600 dark:text-yellow-400")}>
+              {detail.checkout.branch ?? "?"}
+            </span>
+            {!detail.checkout.onPrBranch && " (not the PR branch — applied fixes land on this branch)"}
+            {detail.checkout.dirty && " · dirty working tree"}
+          </p>
+        )}
+      </div>
+      {error !== null && (
+        <p role="alert" className="rounded-md border border-destructive/40 px-3 py-2 text-sm text-destructive">
+          {error}
+        </p>
+      )}
+      <div className="flex items-center gap-1 border-b border-border">
+        {(
+          [
+            ["overview", "Overview", null],
+            ["files", "Files", detail.files.length],
+            ["comments", "Comments", unresolvedCount],
+          ] as Array<[Tab, string, number | null]>
+        ).map(([id, label, count]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setTab(id)}
+            className={cn(
+              "-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-sm transition-colors",
+              tab === id ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {label}
+            {count !== null && count > 0 && (
+              <span className="rounded-full bg-muted px-1.5 text-[11px] text-muted-foreground">{count}</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {tab === "overview" && (
+        <div className="space-y-4">
+          <div className="rounded-lg border border-border bg-card px-4 py-3">
+            <div className="mb-1 text-xs text-muted-foreground">
+              {detail.author} opened {ago(s.createdAt)}
+            </div>
+            <Markdown content={detail.body === "" ? "_No description._" : detail.body} className="text-sm" />
+          </div>
+          {detail.checks.length > 0 && (
+            <div className="rounded-lg border border-border bg-card px-4 py-3">
+              <div className="mb-2 text-xs font-medium">Checks</div>
+              <ul className="space-y-1">
+                {detail.checks.map((c, i) => (
+                  <li key={i} className="flex items-center gap-2 text-xs">
+                    <Icon
+                      name={
+                        c.status === "SUCCESS" ? "CheckCircle2" : c.status === "PENDING" || c.status === "IN_PROGRESS" || c.status === "QUEUED" ? "Clock" : "XCircle"
+                      }
+                      className={cn(
+                        "size-3.5",
+                        c.status === "SUCCESS"
+                          ? "text-green-600 dark:text-green-400"
+                          : c.status === "PENDING" || c.status === "IN_PROGRESS" || c.status === "QUEUED"
+                            ? "text-yellow-600 dark:text-yellow-400"
+                            : "text-destructive",
+                      )}
+                    />
+                    {c.url === null ? <span>{c.name}</span> : <UrlLink href={c.url}>{c.name}</UrlLink>}
+                    <span className="text-muted-foreground">{c.status.toLowerCase()}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {detail.reviews.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs font-medium">Reviews</div>
+              {detail.reviews.map((r, i) => (
+                <div key={i} className="rounded-lg border border-border bg-card px-4 py-3">
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="font-semibold">{r.author}</span>
+                    <Chip tone={r.state === "APPROVED" ? "good" : r.state === "CHANGES_REQUESTED" ? "bad" : "muted"}>
+                      {r.state.toLowerCase().replace("_", " ")}
+                    </Chip>
+                    {r.submittedAt !== null && <span className="text-muted-foreground">{ago(r.submittedAt)}</span>}
+                  </div>
+                  {r.body !== "" && <Markdown content={r.body} className="mt-1.5 text-sm" />}
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="space-y-2">
+            <div className="text-xs font-medium">Conversation</div>
+            {detail.issueComments.map((c) => (
+              <IssueCommentCard
+                key={c.id}
+                rpc={rpc}
+                refObj={refObj}
+                comment={c}
+                state={item(`ic:${c.id}`)}
+                onChanged={load}
+                onError={onError}
+              />
+            ))}
+            <div className="rounded-lg border border-border bg-card px-3 py-3">
+              <div className="mb-1.5 text-xs font-medium">Add a comment</div>
+              <ItemWorkbench
+                rpc={rpc}
+                refObj={refObj}
+                item="pr"
+                state={item("pr")}
+                replyTo={null}
+                resolveId={null}
+                canFix={false}
+                onChanged={load}
+                onError={onError}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === "files" && (
+        <div className="space-y-2">
+          {detail.files.map((f) => (
+            <FileDiff key={f.path} file={f} />
+          ))}
+        </div>
+      )}
+
+      {tab === "comments" && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-muted-foreground">
+              {unresolvedCount} unresolved thread{unresolvedCount === 1 ? "" : "s"}
+              {detail.threads.length - unresolvedCount > 0 && ` · ${detail.threads.length - unresolvedCount} resolved`}
+            </p>
+            <Button variant="ghost" size="sm" className="h-6 text-xs text-muted-foreground" onClick={() => setShowResolved((s2) => !s2)}>
+              {showResolved ? "Hide resolved" : "Show resolved"}
+            </Button>
+          </div>
+          {threads.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
+              No {showResolved ? "" : "unresolved "}review threads.
+            </div>
+          ) : (
+            threads.map((t) => (
+              <ThreadCard
+                key={t.id}
+                rpc={rpc}
+                refObj={refObj}
+                thread={t}
+                state={item(t.id)}
+                canFix={canFix}
+                onChanged={load}
+                onError={onError}
+              />
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FileDiff({ file }: { file: { path: string; status: string; additions: number; deletions: number; patch: string | null } }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="overflow-hidden rounded-lg border border-border bg-card">
+      <button type="button" onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-3 py-2 text-left">
+        <Icon name={open ? "ChevronDown" : "ChevronRight"} className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate font-mono text-xs">{file.path}</span>
+        {file.status !== "modified" && <Chip>{file.status}</Chip>}
+        <span className="text-xs text-green-600 dark:text-green-400">+{file.additions}</span>
+        <span className="text-xs text-destructive">−{file.deletions}</span>
+      </button>
+      {open &&
+        (file.patch === null ? (
+          <div className="border-t border-border px-3 py-2 text-xs text-muted-foreground">No text diff (binary or too large).</div>
+        ) : (
+          <div className="border-t border-border">
+            <Diff patch={file.patch} path={file.path} />
+          </div>
+        ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- routing
+
+function parseSubPath(subPath: string): PrRef | null {
+  const m = subPath.match(/^([^/]+)\/([^/]+)\/(\d+)$/);
+  return m === null ? null : { owner: m[1], repo: m[2], number: Number(m[3]) };
+}
+
+function PrsPage({ subPath }: { subPath: string }) {
+  const navigate = useBbNavigate();
+  const refObj = parseSubPath(subPath);
+  return (
+    <div className="h-full min-h-0 flex-1 overflow-y-auto">
+      <div className="box-border w-full px-4 pb-6 pt-3 md:px-5 md:pt-4">
+        {refObj === null ? (
+          <PrListPage
+            onOpen={(ref) => navigate.toPluginPanel("prs", { subPath: `${ref.owner}/${ref.repo}/${ref.number}` })}
+          />
+        ) : (
+          <PrDetailPage refObj={refObj} onBack={() => navigate.toPluginPanel("prs", { subPath: "" })} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default definePluginApp((app) => {
+  app.slots.navPanel({
+    id: "prs",
+    title: "Pull Requests",
+    icon: "GitPullRequest",
+    path: "prs",
+    component: PrsPage,
+  });
+});
