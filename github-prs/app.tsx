@@ -101,7 +101,7 @@ function decisionChip(decision: string | null): ReactNode {
 function Spinner({ label }: { label: string }) {
   return (
     <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-      <Icon name="Loader2" className="size-3.5 animate-spin" />
+      <Icon name="Loader" className="size-3.5 animate-spin" />
       {label}
     </span>
   );
@@ -285,7 +285,7 @@ function ReactionBar({
           className="rounded-full border border-border px-1.5 py-0.5 text-xs text-muted-foreground hover:border-primary/40"
           title="Add reaction"
         >
-          <Icon name="SmilePlus" className="size-3.5" />
+          <Icon name="Smile" className="size-3.5" />
         </button>
       )}
     </div>
@@ -300,9 +300,9 @@ const TRIAGE_LABEL: Record<Triage, string> = {
 };
 const TRIAGE_ICON: Record<Triage, string> = {
   pending: "Circle",
-  address: "Wrench",
-  "wont-fix": "XCircle",
-  done: "CheckCircle2",
+  address: "CircleDot",
+  "wont-fix": "CircleX",
+  done: "CircleCheck",
 };
 
 function TriageControl({ value, onChange }: { value: Triage; onChange: (t: Triage) => void }) {
@@ -441,7 +441,7 @@ function ItemWorkbench({
             act("draft", () => rpc.call("draft_start", { ref: refObj, item, guidance }))
           }
         >
-          {drafting ? <Icon name="Loader2" className="size-3.5 animate-spin" /> : <Icon name="Sparkles" className="size-3.5" />}
+          {drafting ? <Icon name="Loader" className="size-3.5 animate-spin" /> : <Icon name="Bot" className="size-3.5" />}
           {state.draftStatus === "failed" ? "Draft failed — retry" : "Draft reply"}
         </Button>
         <Button
@@ -461,7 +461,7 @@ function ItemWorkbench({
             disabled={busy !== null}
             onClick={() => act("fix", () => rpc.call("fix_start", { ref: refObj, item, guidance }))}
           >
-            <Icon name="Wand2" className="size-3.5" />
+            <Icon name="Code" className="size-3.5" />
             Propose fix
           </Button>
         )}
@@ -472,7 +472,7 @@ function ItemWorkbench({
             act("post", () => rpc.call("reply_post", { ref: refObj, item, body: text, replyTo, resolve: null }).then(() => setText("")))
           }
         >
-          {busy === "post" ? <Icon name="Loader2" className="size-3.5 animate-spin" /> : <Icon name="Send" className="size-3.5" />}
+          {busy === "post" ? <Icon name="Loader" className="size-3.5 animate-spin" /> : <Icon name="Send" className="size-3.5" />}
           Post
         </Button>
         {resolveId !== null && (
@@ -493,7 +493,7 @@ function ItemWorkbench({
       {fix !== null && (
         <div className="space-y-2 rounded-md border border-border bg-muted/30 p-2.5">
           <div className="flex items-center gap-2 text-xs font-medium">
-            <Icon name="Wand2" className="size-3.5" />
+            <Icon name="Code" className="size-3.5" />
             Proposed fix
             {fix.status === "pending" && <Spinner label="working…" />}
             {fix.status === "applied" && <Chip tone="good">applied {fix.appliedAt === null ? "" : ago(fix.appliedAt)}</Chip>}
@@ -527,7 +527,7 @@ function ItemWorkbench({
           {fix.status === "ready" && (
             <div className="flex items-center gap-2">
               <Button size="sm" disabled={busy !== null} onClick={() => act("apply", () => rpc.call("fix_apply", { ref: refObj, item }))}>
-                {busy === "apply" ? <Icon name="Loader2" className="size-3.5 animate-spin" /> : <Icon name="Download" className="size-3.5" />}
+                {busy === "apply" ? <Icon name="Loader" className="size-3.5 animate-spin" /> : <Icon name="Download" className="size-3.5" />}
                 Apply locally
               </Button>
               <Button
@@ -907,7 +907,7 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
                   <li key={i} className="flex items-center gap-2 text-xs">
                     <Icon
                       name={
-                        c.status === "SUCCESS" ? "CheckCircle2" : c.status === "PENDING" || c.status === "IN_PROGRESS" || c.status === "QUEUED" ? "Clock" : "XCircle"
+                        c.status === "SUCCESS" ? "CircleCheck" : c.status === "PENDING" || c.status === "IN_PROGRESS" || c.status === "QUEUED" ? "Clock" : "CircleX"
                       }
                       className={cn(
                         "size-3.5",
@@ -1055,11 +1055,11 @@ function buildTree(files: PrFile[]): TreeDir {
 function fileStatusIcon(status: string): { icon: string; className: string } {
   switch (status) {
     case "added":
-      return { icon: "FilePlus", className: "text-green-600 dark:text-green-400" };
+      return { icon: "Plus", className: "text-green-600 dark:text-green-400" };
     case "removed":
-      return { icon: "FileMinus", className: "text-destructive" };
+      return { icon: "Minus", className: "text-destructive" };
     case "renamed":
-      return { icon: "FileSymlink", className: "text-yellow-600 dark:text-yellow-400" };
+      return { icon: "ArrowRight", className: "text-yellow-600 dark:text-yellow-400" };
     default:
       return { icon: "FileDiff", className: "text-muted-foreground" };
   }
