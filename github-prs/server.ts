@@ -338,7 +338,8 @@ export default async function plugin(bb: BbPluginApi) {
       type: "string",
       label: "Reply drafting guidance",
       description: "Standing guidance for AI-drafted replies (tone, conventions).",
-      default: "Direct and specific, one to four sentences, no preamble, no flattery. Technical terms spelled out.",
+      default:
+        "Direct and specific, one to four sentences, no preamble, no flattery. Technical terms spelled out. Past tense: describe what was done to address the comment (or why it was kept as-is), never promised future work.",
     },
   });
 
@@ -756,7 +757,7 @@ export default async function plugin(bb: BbPluginApi) {
       threadContextText(detail, item),
       guidance.trim() === "" ? null : `Guidance from the author: ${guidance.trim()}`,
       `Voice: ${replyVoice}`,
-      `Decide whether the reviewer is right by reading the actual code. If the comment is right, say what will change; if it is a question, answer it precisely; if you disagree, say why with evidence. Then publish the reply with the ghpr_publish_draft tool (item ${JSON.stringify(item)}), reply here with one line, and stop. The author reads the draft in the PR panel, edits it, and posts it themself — never post to GitHub.`,
+      `Decide whether the reviewer is right by reading the actual code. Write the reply in PAST TENSE, as the author posts it after addressing the comment: if the comment was right, state briefly what was right about it and what was done to address it ("Good catch — added the nil check before the dereference."); if it is a question, answer it precisely; if you disagree, say what the comment missed and that it was kept as-is, with evidence. Never promise future work ("will fix", "going to"). Then publish the reply with the ghpr_publish_draft tool (item ${JSON.stringify(item)}), reply here with one line, and stop. The author reads the draft in the PR panel, edits it, and posts it themself — never post to GitHub.`,
     ]
       .filter((x): x is string => x !== null)
       .join("\n\n");
@@ -819,7 +820,7 @@ export default async function plugin(bb: BbPluginApi) {
       prContextText(detail),
       threadContextText(detail, item),
       `Open by explaining the comment: what the reviewer is asking for, the relevant code (read it in the checkout), whether the comment is right, and the realistic options with their trade-offs. Keep the opening under ~300 words, specific, with file:line references.`,
-      `Then discuss: answer follow-up questions and take the author's own ideas seriously. When the author asks for a reply draft, publish it with ghpr_publish_draft (item ${JSON.stringify(item)}) — it lands in the comment's reply box in the PR panel, where the author edits and posts it; never post to GitHub yourself. When the author asks for a proposed code change — or asks you to revise the fix already shown on the card — publish a unified diff with ghpr_publish_fix (item ${JSON.stringify(item)}), verified with \`git apply --check\` first; publishing replaces the card's current proposed fix. Only edit files in the checkout directly when the author explicitly asks you to in this conversation.`,
+      `Then discuss: answer follow-up questions and take the author's own ideas seriously. When the author asks for a reply draft, publish it with ghpr_publish_draft (item ${JSON.stringify(item)}) — written in PAST TENSE as posted after the comment was addressed (what was right or wrong about it and what was done), never promising future work. It lands in the comment's reply box in the PR panel, where the author edits and posts it; never post to GitHub yourself. When the author asks for a proposed code change — or asks you to revise the fix already shown on the card — publish a unified diff with ghpr_publish_fix (item ${JSON.stringify(item)}), verified with \`git apply --check\` first; publishing replaces the card's current proposed fix. Only edit files in the checkout directly when the author explicitly asks you to in this conversation.`,
     ].join("\n\n");
     const threadId = await spawnWorker(`Discuss: ${key} ${item.startsWith("ic:") ? "comment" : "thread"}`, prompt, {
       ghprKind: "discuss",
