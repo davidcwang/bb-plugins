@@ -5,7 +5,7 @@
 // an AI-draftable reply you edit and post, reactions, resolve, and a proposed
 // fix you can preview as a diff and apply to the local checkout.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import {
   definePluginApp,
   experimental_Diff as Diff,
@@ -371,6 +371,7 @@ function ItemWorkbench({
   canFix,
   onChanged,
   onError,
+  onDiscuss,
 }: {
   rpc: Rpc;
   refObj: PrRef;
@@ -383,11 +384,14 @@ function ItemWorkbench({
   canFix: boolean;
   onChanged: () => void;
   onError: (message: string) => void;
+  /** Opens this comment's discussion pane (e.g. to revise the proposed fix). */
+  onDiscuss?: () => void;
 }) {
   const [text, setText] = useState(state.draft ?? "");
   const [guidance, setGuidance] = useState("");
   const [showGuidance, setShowGuidance] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const [fixOpen, setFixOpen] = useState(true);
   const lastDraft = useRef(state.draft);
   // Adopt a newly arrived AI draft unless the user has typed something else.
   useEffect(() => {
@@ -492,14 +496,24 @@ function ItemWorkbench({
         )}
       </div>
       {fix !== null && (
-        <div className="space-y-2 rounded-md border border-border bg-muted/30 p-2.5">
-          <div className="flex items-center gap-2 text-xs font-medium">
-            <Icon name="Code" className="size-3.5" />
-            Proposed fix
+        <div className="rounded-md border border-border bg-muted/30">
+          <div className="flex items-center gap-2 px-2.5 py-2 text-xs font-medium">
+            <button type="button" onClick={() => setFixOpen((o) => !o)} className="inline-flex items-center gap-1.5">
+              <Icon name={fixOpen ? "ChevronDown" : "ChevronRight"} className="size-3.5 text-muted-foreground" />
+              <Icon name="Code" className="size-3.5" />
+              Proposed fix
+            </button>
             {fix.status === "pending" && <Spinner label="working…" />}
+            {fix.status === "ready" && !fixOpen && <Chip tone="accent">ready</Chip>}
             {fix.status === "applied" && <Chip tone="good">applied {fix.appliedAt === null ? "" : ago(fix.appliedAt)}</Chip>}
             {fix.status === "failed" && <Chip tone="bad">failed</Chip>}
             <div className="flex-1" />
+            {onDiscuss !== undefined && fix.status !== "pending" && (
+              <Button variant="ghost" size="sm" className="h-6 text-xs text-muted-foreground" onClick={onDiscuss}>
+                <Icon name="MessagesSquare" className="size-3" />
+                Revise in discussion
+              </Button>
+            )}
             {fix.status !== "pending" && (
               <Button
                 variant="ghost"
@@ -511,45 +525,49 @@ function ItemWorkbench({
               </Button>
             )}
           </div>
-          {fix.error !== null && <p className="text-xs text-destructive">{fix.error}</p>}
-          {fix.summary !== "" && <Markdown content={fix.summary} className="text-sm" />}
-          {fix.patch !== "" && (
-            <div className="space-y-2">
-              {splitPatch(fix.patch).map((f, i) => (
-                <div key={i} className="overflow-hidden rounded-md border border-border">
-                  <div className="border-b border-border bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground">
-                    {f.path}
-                  </div>
-                  <Diff patch={f.patch} path={f.path} />
+          {fixOpen && (
+            <div className="space-y-2 px-2.5 pb-2.5">
+              {fix.error !== null && <p className="text-xs text-destructive">{fix.error}</p>}
+              {fix.summary !== "" && <Markdown content={fix.summary} className="text-sm" />}
+              {fix.patch !== "" && (
+                <div className="space-y-2">
+                  {splitPatch(fix.patch).map((f, i) => (
+                    <div key={i} className="overflow-hidden rounded-md border border-border">
+                      <div className="border-b border-border bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground">
+                        {f.path}
+                      </div>
+                      <Diff patch={f.patch} path={f.path} />
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
+              {fix.status === "ready" && (
+                <div className="flex items-center gap-2">
+                  <Button size="sm" disabled={busy !== null} onClick={() => act("apply", () => rpc.call("fix_apply", { ref: refObj, item }))}>
+                    {busy === "apply" ? <Icon name="Loader" className="size-3.5 animate-spin" /> : <Icon name="Download" className="size-3.5" />}
+                    Apply locally
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy !== null}
+                    onClick={() => act("fix", () => rpc.call("fix_start", { ref: refObj, item, guidance }))}
+                  >
+                    Regenerate
+                  </Button>
+                </div>
+              )}
+              {fix.status === "failed" && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy !== null}
+                  onClick={() => act("fix", () => rpc.call("fix_start", { ref: refObj, item, guidance }))}
+                >
+                  Retry
+                </Button>
+              )}
             </div>
-          )}
-          {fix.status === "ready" && (
-            <div className="flex items-center gap-2">
-              <Button size="sm" disabled={busy !== null} onClick={() => act("apply", () => rpc.call("fix_apply", { ref: refObj, item }))}>
-                {busy === "apply" ? <Icon name="Loader" className="size-3.5 animate-spin" /> : <Icon name="Download" className="size-3.5" />}
-                Apply locally
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={busy !== null}
-                onClick={() => act("fix", () => rpc.call("fix_start", { ref: refObj, item, guidance }))}
-              >
-                Regenerate
-              </Button>
-            </div>
-          )}
-          {fix.status === "failed" && (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy !== null}
-              onClick={() => act("fix", () => rpc.call("fix_start", { ref: refObj, item, guidance }))}
-            >
-              Retry
-            </Button>
           )}
         </div>
       )}
@@ -692,6 +710,7 @@ function ThreadCard({
             canFix={canFix}
             onChanged={onChanged}
             onError={onError}
+            onDiscuss={() => onDiscuss(thread.id, `${thread.path}${thread.line === null ? "" : `:${thread.line}`}`)}
           />
         </div>
       )}
@@ -768,6 +787,7 @@ function IssueCommentCard({
               canFix={false}
               onChanged={onChanged}
               onError={onError}
+              onDiscuss={() => onDiscuss(item, `${comment.author}'s comment`)}
             />
           </div>
         )}
@@ -792,7 +812,33 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
   const [showResolved, setShowResolved] = useState(false);
   const [discuss, setDiscuss] = useState<{ item: string; threadId: string; label: string } | null>(null);
   const [discussBusy, setDiscussBusy] = useState<string | null>(null);
+  const [paneWidth, setPaneWidth] = useState<number>(() => {
+    const saved = Number(window.localStorage.getItem("ghpr:paneWidth"));
+    return Number.isFinite(saved) && saved >= 320 && saved <= 1000 ? saved : 480;
+  });
   const key = prKey(refObj);
+
+  const startPaneResize = useCallback(
+    (e: ReactPointerEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startW = paneWidth;
+      const move = (ev: PointerEvent) => {
+        setPaneWidth(Math.min(1000, Math.max(320, startW + (startX - ev.clientX))));
+      };
+      const up = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        setPaneWidth((w) => {
+          window.localStorage.setItem("ghpr:paneWidth", String(w));
+          return w;
+        });
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+    },
+    [paneWidth],
+  );
 
   const openDiscuss = useCallback(
     (item: string, label: string) => {
@@ -1070,7 +1116,15 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
         </div>
       </div>
       {discuss !== null && (
-        <div className="flex w-[26rem] shrink-0 flex-col border-l border-border bg-background lg:w-[30rem]">
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          className="w-1 shrink-0 cursor-col-resize bg-border transition-colors hover:bg-primary/50"
+          onPointerDown={startPaneResize}
+        />
+      )}
+      {discuss !== null && (
+        <div style={{ width: paneWidth }} className="flex shrink-0 flex-col bg-background">
           <div className="flex items-center gap-2 border-b border-border px-3 py-2">
             <Icon name="MessagesSquare" className="size-4 shrink-0 text-muted-foreground" />
             <div className="min-w-0 flex-1">
@@ -1289,10 +1343,21 @@ function parseSubPath(subPath: string): PrRef | null {
   return m === null ? null : { owner: m[1], repo: m[2], number: Number(m[3]) };
 }
 
+const LAST_SUBPATH_KEY = "ghpr:lastSubPath";
+
 function PrsPage({ subPath }: { subPath: string }) {
   const navigate = useBbNavigate();
   const refObj = parseSubPath(subPath);
+  // Opening the page at its root (sidebar click) returns to the last-viewed
+  // PR; "All PRs" clears the memory so it really goes to the list.
+  const restored = subPath === "" ? window.localStorage.getItem(LAST_SUBPATH_KEY) : null;
+  const restoreTo = restored !== null && parseSubPath(restored) !== null ? restored : null;
+  useEffect(() => {
+    if (restoreTo !== null) navigate.toPluginPanel("prs", { subPath: restoreTo, replace: true });
+    else if (subPath !== "") window.localStorage.setItem(LAST_SUBPATH_KEY, subPath);
+  }, [subPath, restoreTo]); // eslint-disable-line react-hooks/exhaustive-deps
   if (refObj === null) {
+    if (restoreTo !== null) return null; // redirecting to the last-viewed PR
     return (
       <div className="h-full min-h-0 flex-1 overflow-y-auto">
         <div className="box-border w-full px-4 pb-6 pt-3 md:px-5 md:pt-4">
@@ -1304,7 +1369,15 @@ function PrsPage({ subPath }: { subPath: string }) {
     );
   }
   // The detail page owns its own scrolling so the discussion pane can take full height.
-  return <PrDetailPage refObj={refObj} onBack={() => navigate.toPluginPanel("prs", { subPath: "" })} />;
+  return (
+    <PrDetailPage
+      refObj={refObj}
+      onBack={() => {
+        window.localStorage.removeItem(LAST_SUBPATH_KEY);
+        navigate.toPluginPanel("prs", { subPath: "" });
+      }}
+    />
+  );
 }
 
 export default definePluginApp((app) => {
