@@ -421,6 +421,24 @@ function ItemWorkbench({
   const drafting = state.draftStatus === "pending";
   const fix = state.fix;
 
+  // Rendered above and below the patch so neither end needs scrolling.
+  const fixActions = (
+    <div className="flex items-center gap-2">
+      <Button size="sm" disabled={busy !== null} onClick={() => act("apply", () => rpc.call("fix_apply", { ref: refObj, item }))}>
+        {busy === "apply" ? <Icon name="Loader" className="size-3.5 animate-spin" /> : <Icon name="Download" className="size-3.5" />}
+        Apply locally
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={busy !== null}
+        onClick={() => act("fix", () => rpc.call("fix_start", { ref: refObj, item, guidance }))}
+      >
+        Regenerate
+      </Button>
+    </div>
+  );
+
   return (
     <div className="space-y-2">
       <Textarea
@@ -529,6 +547,7 @@ function ItemWorkbench({
             <div className="space-y-2 px-2.5 pb-2.5">
               {fix.error !== null && <p className="text-xs text-destructive">{fix.error}</p>}
               {fix.summary !== "" && <Markdown content={fix.summary} className="text-sm" />}
+              {fix.status === "ready" && fixActions}
               {fix.patch !== "" && (
                 <div className="space-y-2">
                   {splitPatch(fix.patch).map((f, i) => (
@@ -541,22 +560,7 @@ function ItemWorkbench({
                   ))}
                 </div>
               )}
-              {fix.status === "ready" && (
-                <div className="flex items-center gap-2">
-                  <Button size="sm" disabled={busy !== null} onClick={() => act("apply", () => rpc.call("fix_apply", { ref: refObj, item }))}>
-                    {busy === "apply" ? <Icon name="Loader" className="size-3.5 animate-spin" /> : <Icon name="Download" className="size-3.5" />}
-                    Apply locally
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={busy !== null}
-                    onClick={() => act("fix", () => rpc.call("fix_start", { ref: refObj, item, guidance }))}
-                  >
-                    Regenerate
-                  </Button>
-                </div>
-              )}
+              {fix.status === "ready" && fix.patch !== "" && fixActions}
               {fix.status === "failed" && (
                 <Button
                   variant="outline"
