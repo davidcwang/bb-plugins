@@ -571,6 +571,14 @@ function ItemWorkbench({
                   Retry
                 </Button>
               )}
+              <button
+                type="button"
+                onClick={() => setFixOpen(false)}
+                className="flex w-full items-center justify-center gap-1 rounded-md border border-dashed border-border py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent"
+              >
+                <Icon name="ChevronUp" className="size-3" />
+                Collapse proposed fix
+              </button>
             </div>
           )}
         </div>
