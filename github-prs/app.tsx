@@ -48,12 +48,12 @@ function describe(cause: unknown): string {
 function ago(iso: string): string {
   const ms = Date.now() - Date.parse(iso);
   const minutes = Math.round(ms / 60_000);
-  if (minutes < 1) return "now";
-  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours}h`;
+  if (hours < 48) return `${hours}h ago`;
   const days = Math.round(hours / 24);
-  if (days < 30) return `${days}d`;
+  if (days < 30) return `${days}d ago`;
   return new Date(iso).toLocaleDateString();
 }
 
