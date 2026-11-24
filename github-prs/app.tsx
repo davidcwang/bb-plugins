@@ -893,6 +893,32 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
     return showResolved ? all : all.filter((t) => !t.isResolved);
   }, [detail, showResolved]);
 
+  /** Every discussable comment, for the pane's thread-switcher dropdown. */
+  const discussTargets = useMemo(() => {
+    const short = (s: string) => {
+      const text = s.replace(/\s+/g, " ").trim();
+      return text.length > 48 ? `${text.slice(0, 47)}…` : text;
+    };
+    const mark = (id: string) => (detail?.items[id]?.discussThreadId ? "● " : "");
+    const fromThreads = (detail?.threads ?? []).map((t) => {
+      const label = `${t.path}${t.line === null ? "" : `:${t.line}`}`;
+      const first = t.comments[0];
+      return {
+        item: t.id,
+        label,
+        group: "thread" as const,
+        option: `${mark(t.id)}${label}${t.isResolved ? " (resolved)" : ""} — ${first?.author ?? "?"}: ${short(first?.body ?? "")}`,
+      };
+    });
+    const fromComments = (detail?.issueComments ?? []).map((c) => ({
+      item: `ic:${c.id}`,
+      label: `${c.author}'s comment`,
+      group: "comment" as const,
+      option: `${mark(`ic:${c.id}`)}${c.author}: ${short(c.body)}`,
+    }));
+    return [...fromThreads, ...fromComments];
+  }, [detail]);
+
   if (detail === null) {
     return (
       <div className="h-full min-h-0 flex-1 overflow-y-auto">
@@ -1125,17 +1151,49 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
       )}
       {discuss !== null && (
         <div style={{ width: paneWidth }} className="flex shrink-0 flex-col bg-background">
-          <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-            <Icon name="MessagesSquare" className="size-4 shrink-0 text-muted-foreground" />
-            <div className="min-w-0 flex-1">
-              <div className="truncate font-mono text-xs font-medium">{discuss.label}</div>
-              <div className="truncate text-[10px] text-muted-foreground">
-                Ask for a reply draft or a code change — results land on the comment card.
-              </div>
+          <div className="space-y-1 border-b border-border px-3 py-2">
+            <div className="flex items-center gap-2">
+              <Icon name="MessagesSquare" className="size-4 shrink-0 text-muted-foreground" />
+              <select
+                value={discuss.item}
+                onChange={(e) => {
+                  const picked = discussTargets.find((t) => t.item === e.target.value);
+                  if (picked !== undefined && picked.item !== discuss.item) openDiscuss(picked.item, picked.label);
+                }}
+                aria-label="Switch comment thread"
+                className="h-7 min-w-0 flex-1 truncate rounded-md border border-border bg-background px-2 font-mono text-xs outline-none focus:border-primary/50"
+              >
+                {discussTargets.every((t) => t.item !== discuss.item) && (
+                  <option value={discuss.item}>{discuss.label}</option>
+                )}
+                <optgroup label="Review threads">
+                  {discussTargets
+                    .filter((t) => t.group === "thread")
+                    .map((t) => (
+                      <option key={t.item} value={t.item}>
+                        {t.option}
+                      </option>
+                    ))}
+                </optgroup>
+                <optgroup label="Conversation">
+                  {discussTargets
+                    .filter((t) => t.group === "comment")
+                    .map((t) => (
+                      <option key={t.item} value={t.item}>
+                        {t.option}
+                      </option>
+                    ))}
+                </optgroup>
+              </select>
+              <Button variant="ghost" size="sm" className="h-6 px-1.5" onClick={() => setDiscuss(null)} aria-label="Close discussion">
+                <Icon name="X" className="size-3.5" />
+              </Button>
             </div>
-            <Button variant="ghost" size="sm" className="h-6 px-1.5" onClick={() => setDiscuss(null)} aria-label="Close discussion">
-              <Icon name="X" className="size-3.5" />
-            </Button>
+            <div className="truncate text-[10px] text-muted-foreground">
+              {discussBusy !== null
+                ? "Opening discussion…"
+                : "Ask for a reply draft or a code change — results land on the comment card."}
+            </div>
           </div>
           <ThreadChat
             threadId={discuss.threadId}
