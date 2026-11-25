@@ -1503,8 +1503,18 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  // gh is excluded from the Claude Code sandbox only as a whole command line.
+  const GH_NOTE =
+    " Run every gh command on its own (e.g. `gh pr diff 12 --repo o/r`): no pipes, no `cd … &&`, no `$(…)` around it — otherwise it runs sandboxed and cannot reach GitHub. Save large output to a file with gh's own flags or read it whole, then process it in a separate command.";
+
   bb.agents.configure((context) => {
     const kind = context.pluginMetadata?.ghprKind;
+    const withGh = <T extends { instructions?: string }>(c: T): T =>
+      c.instructions === undefined ? c : { ...c, instructions: c.instructions + GH_NOTE };
+    return withGh(configureWorker(kind));
+  });
+
+  function configureWorker(kind: unknown): { tools: string[]; skills: string[]; instructions?: string } {
     if (kind === "draft") {
       return {
         tools: ["ghpr_publish_draft"],
@@ -1554,7 +1564,7 @@ export default async function plugin(bb: BbPluginApi) {
       };
     }
     return { tools: [], skills: [] };
-  });
+  }
 
   /** A worker finished without publishing: salvage its final output or mark failed. */
   async function settleWorker(threadId: string) {
