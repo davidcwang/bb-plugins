@@ -175,12 +175,25 @@ export type WorkerModel = z.infer<typeof workerModelSchema>;
 export const SEVERITIES = ["bug", "question", "nit"] as const;
 export type Severity = (typeof SEVERITIES)[number];
 
+/** Impact if the finding is real; drives sort order. */
+export const PRIORITIES = ["critical", "high", "medium", "low"] as const;
+export type Priority = (typeof PRIORITIES)[number];
+export const PRIORITY_RANK: Record<Priority, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+
+/** confirmed = verified against the code; plausible = could not be fully verified. */
+export const CONFIDENCES = ["confirmed", "plausible"] as const;
+export type Confidence = (typeof CONFIDENCES)[number];
+
 export const findingSchema = z.object({
   id: z.string(),
   path: z.string(),
   /** Line on the PR head side; null = whole-PR / not line-anchored. */
   line: z.number().nullable(),
   severity: z.enum(SEVERITIES),
+  priority: z.enum(PRIORITIES).default("medium"),
+  confidence: z.enum(CONFIDENCES).default("confirmed"),
+  /** Concrete inputs/state that make it go wrong. */
+  scenario: z.string().nullable().default(null),
   title: z.string(),
   /** Explanation of the finding, for you (markdown). */
   body: z.string(),

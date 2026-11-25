@@ -17,6 +17,8 @@ import {
   CHANGED,
   REACTIONS,
   SEVERITIES,
+  PRIORITIES,
+  CONFIDENCES,
   emptyItem,
   emptyReview,
   emptyWalkthrough,
@@ -1020,11 +1022,15 @@ export default async function plugin(bb: BbPluginApi) {
     const prompt = [
       `You are reviewing GitHub PR ${key} on behalf of the reviewer (they were asked to review it; they make the final call on every finding).`,
       prContextText(detail),
-      `Run the review with the code-review skill: invoke the Skill tool with skill "code-review" and args "high https://github.com/${ref.owner}/${ref.repo}/pull/${ref.number}"${detail.checkout === null ? "" : `, working from the checkout directory ${JSON.stringify(detail.checkout.path)}`}, and follow it to completion (it fetches the PR diff itself and verifies findings). Only if that skill is unavailable in this session, review manually: get the diff with \`gh pr diff ${ref.number} --repo ${ref.owner}/${ref.repo}\`, hunt for real bugs the change introduces, and verify every suspicion against the actual code.`,
-      `Severity mapping for the panel: "bug" = a confirmed defect this change introduces or makes worse; "question" = uncertain, or a pre-existing problem the change touches (say it is pre-existing in the comment); "nit" = minor, prefix its comment with "[nit]". Drop anything a compiler or linter would catch and pure style opinions.`,
+      `Run the review with the code-review skill: invoke the Skill tool with skill "code-review" and args "high https://github.com/${ref.owner}/${ref.repo}/pull/${ref.number} --max-findings 20"${detail.checkout === null ? "" : `, working from the checkout directory ${JSON.stringify(detail.checkout.path)}`}, and follow it to completion (it fetches the PR diff itself and verifies findings). Only if that skill is unavailable in this session, review manually: get the diff with \`gh pr diff ${ref.number} --repo ${ref.owner}/${ref.repo}\`, hunt for real bugs the change introduces, and verify every suspicion against the actual code.`,
+      `Map every finding the skill reports to the panel — do not add findings the skill did not report, and do not drop any it kept. For each:
+- severity (the kind): the skill's "important" → "bug"; "pre_existing" → "question" (say it is pre-existing in the comment); "nit" → "nit" (prefix its comment with "[nit]").
+- confidence: the skill's verify verdict CONFIRMED → "confirmed"; PLAUSIBLE (or no verify pass) → "plausible".
+- priority — impact IF the finding is real: "critical" = data loss or corruption, security hole, crash or outage on a common path, a broken deploy or migration; "high" = wrong results or behavior on a realistic path, resource leaks, broken API contract; "medium" = edge-case misbehavior, missing handling on an unlikely path, a pre-existing issue this change makes worse; "low" = nits and minor issues with little user-visible effect.
+- failureScenario: the skill's concrete inputs/state → wrong output or crash, verbatim or tightened.`,
       guidance.trim() === "" ? null : `Guidance from the reviewer for this round: ${guidance.trim()}`,
       reviewInstructions.trim() === "" ? null : `Standing review instructions: ${reviewInstructions.trim()}`,
-      `Report at most 12 findings with ONE ghpr_report_findings call — the PR panel, NOT ReportFindings or prose (an empty list is a valid, good result). For each: path and the head-side line from the diff; a short title; an explanation for the reviewer (why it's a problem, with evidence); and "comment" — the review comment ready to post, in the reviewer's voice: direct, specific, concise, a question where you are not certain. After the tool call reply here with one line and stop; the reviewer triages everything in the PR panel.`,
+      `Publish with ONE ghpr_report_findings call — the PR panel, NOT ReportFindings or prose (an empty list is a valid, good result). For each finding also give: path and the head-side line from the diff; a short title; an explanation for the reviewer (why it's a problem, with evidence); and "comment" — the review comment ready to post, in the reviewer's voice: direct, specific, concise, phrased as a question when confidence is "plausible". After the tool call reply here with one line and stop; the reviewer triages everything in the PR panel.`,
     ]
       .filter((x): x is string => x !== null)
       .join("\n\n");
@@ -1208,6 +1214,9 @@ export default async function plugin(bb: BbPluginApi) {
             path: z.string().min(1),
             line: z.number().int().positive().nullable().default(null),
             severity: z.enum(SEVERITIES),
+            priority: z.enum(PRIORITIES),
+            confidence: z.enum(CONFIDENCES),
+            failureScenario: z.string().max(4000).nullable().default(null),
             title: z.string().min(1).max(200),
             explanation: z.string().min(1).max(8000),
             comment: z.string().min(1).max(8000),
@@ -1225,6 +1234,9 @@ export default async function plugin(bb: BbPluginApi) {
           path: f.path,
           line: f.line,
           severity: f.severity,
+          priority: f.priority,
+          confidence: f.confidence,
+          scenario: f.failureScenario,
           title: f.title,
           body: f.explanation,
           status: "open" as const,
@@ -1591,7 +1603,7 @@ export default async function plugin(bb: BbPluginApi) {
             const review = (await readState(ref)).review ?? emptyReview();
             if (input.options.json) return { exitCode: 0, stdout: `${JSON.stringify(review)}\n` };
             const lines = review.findings.map(
-              (f) => `[${f.status.padEnd(9)}] ${f.severity.padEnd(8)} ${f.path}${f.line === null ? "" : `:${f.line}`}  ${f.title}`,
+              (f) => `[${f.status.padEnd(9)}] ${(f.priority ?? "medium").padEnd(8)} ${f.severity.padEnd(8)} ${f.confidence === "plausible" ? "?" : " "} ${f.path}${f.line === null ? "" : `:${f.line}`}  ${f.title}`,
             );
             return {
               exitCode: 0,

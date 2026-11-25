@@ -36,6 +36,8 @@ import {
   type Reaction,
   type ReviewThread,
   type Triage,
+  type Priority,
+  PRIORITY_RANK,
   type RunModel,
   type Walkthrough,
   type WorkerModel,
@@ -948,6 +950,33 @@ type Tab = "overview" | "files" | "comments" | "review" | "walkthrough";
 
 const SEVERITY_TONE: Record<string, "bad" | "warn" | "muted"> = { bug: "bad", question: "warn", nit: "muted" };
 
+function PriorityChip({ priority }: { priority: Priority }) {
+  const cls: Record<Priority, string> = {
+    critical: "border-destructive bg-destructive text-white",
+    high: "border-destructive/50 text-destructive",
+    medium: "border-yellow-600/40 text-yellow-600 dark:text-yellow-400",
+    low: "border-border text-muted-foreground",
+  };
+  return (
+    <span className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase", cls[priority])}>
+      {priority}
+    </span>
+  );
+}
+
+/** Open first; then priority (critical → low); then confirmed before plausible. */
+function sortFindings(findings: Finding[]): Finding[] {
+  const statusRank = (f: Finding) => (f.status === "open" ? 0 : f.status === "posted" ? 1 : 2);
+  return findings
+    .slice()
+    .sort(
+      (a, b) =>
+        statusRank(a) - statusRank(b) ||
+        PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] ||
+        (a.confidence === "confirmed" ? 0 : 1) - (b.confidence === "confirmed" ? 0 : 1),
+    );
+}
+
 /** One finding of a plugin-run review round: triage, discuss, edit, post. */
 function FindingCard({
   rpc,
@@ -996,7 +1025,9 @@ function FindingCard({
     <div className={cn("rounded-lg border border-border bg-card", finding.status === "dismissed" && "opacity-60")}>
       <button type="button" onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-3 py-2 text-left">
         <Icon name={open ? "ChevronDown" : "ChevronRight"} className="size-3.5 shrink-0 text-muted-foreground" />
+        <PriorityChip priority={finding.priority} />
         <Chip tone={SEVERITY_TONE[finding.severity] ?? "muted"}>{finding.severity}</Chip>
+        {finding.confidence === "plausible" && <Chip tone="muted">unverified</Chip>}
         <span className="min-w-0 flex-1 truncate text-xs">
           <span className="font-medium">{finding.title}</span>
           <span className="ml-2 font-mono text-muted-foreground">{where}</span>
@@ -1009,6 +1040,12 @@ function FindingCard({
           {contextPatch !== null && (
             <div className="overflow-hidden rounded-md border border-border">
               <Diff patch={contextPatch} path={finding.path} />
+            </div>
+          )}
+          {finding.scenario !== null && finding.scenario !== "" && (
+            <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">
+              <span className="font-medium">Failure scenario: </span>
+              {finding.scenario}
             </div>
           )}
           <Markdown content={finding.body} className="text-sm" />
@@ -1445,7 +1482,13 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
                   ? `Round ${detail.review.round} running…`
                   : detail.review.status === "failed"
                     ? `Round ${detail.review.round} failed`
-                    : `Round ${detail.review.round}: ${detail.review.findings.filter((f) => f.status === "open").length} open, ${detail.review.findings.filter((f) => f.status === "posted").length} posted`}
+                    : `Round ${detail.review.round}: ${
+                        (["critical", "high", "medium", "low"] as const)
+                          .map((p) => [p, detail.review.findings.filter((f) => f.status === "open" && f.priority === p).length] as const)
+                          .filter(([, n]) => n > 0)
+                          .map(([p, n]) => `${n} ${p}`)
+                          .join(" · ") || "0 open"
+                      }, ${detail.review.findings.filter((f) => f.status === "posted").length} posted`}
               {runModelLabel(detail.review.model) !== null && (
                 <span className="ml-2 font-mono text-[10px]">· {runModelLabel(detail.review.model)}</span>
               )}
@@ -1476,24 +1519,40 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
               No findings — the review came back clean.
             </div>
           )}
-          {detail.review.findings
-            .slice()
-            .sort((a, b) => (a.status === "open" ? 0 : 1) - (b.status === "open" ? 0 : 1))
-            .map((f) => (
+          {(() => {
+            const sorted = sortFindings(detail.review.findings);
+            const confirmed = sorted.filter((f) => f.confidence === "confirmed");
+            const plausible = sorted.filter((f) => f.confidence === "plausible");
+            const render = (f: Finding) => (
               <FindingCard
-                key={f.id}
-                rpc={rpc}
-                refObj={refObj}
-                finding={f}
-                state={item(`f:${f.id}`)}
-                contextPatch={hunkFor(detail.files, f.path, f.line)}
-                onChanged={load}
-                onError={onError}
-                onDiscuss={openDiscuss}
-                discussBusy={discussBusy === `f:${f.id}`}
-                discussActive={discuss?.item === `f:${f.id}`}
-              />
-            ))}
+                  key={f.id}
+                  rpc={rpc}
+                  refObj={refObj}
+                  finding={f}
+                  state={item(`f:${f.id}`)}
+                  contextPatch={hunkFor(detail.files, f.path, f.line)}
+                  onChanged={load}
+                  onError={onError}
+                  onDiscuss={openDiscuss}
+                  discussBusy={discussBusy === `f:${f.id}`}
+                  discussActive={discuss?.item === `f:${f.id}`}
+                />
+            );
+            return (
+              <>
+                {confirmed.map(render)}
+                {plausible.length > 0 && (
+                  <details className="group rounded-lg border border-dashed border-border" open={confirmed.length === 0}>
+                    <summary className="cursor-pointer list-none px-3 py-2 text-xs text-muted-foreground">
+                      <Icon name="ChevronRight" className="mr-1 inline size-3 transition-transform group-open:rotate-90" />
+                      Lower confidence — the review couldn't fully verify these ({plausible.length})
+                    </summary>
+                    <div className="space-y-2 px-2 pb-2">{plausible.map(render)}</div>
+                  </details>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
 
