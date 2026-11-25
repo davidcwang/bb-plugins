@@ -140,6 +140,21 @@ function checksChip(state: string | null): ReactNode {
   return <Chip tone={tone}>checks {state.toLowerCase()}</Chip>;
 }
 
+/** Where you stand on a PR you're reviewing. */
+function myReviewChip(pr: PrSummary): ReactNode {
+  if (pr.reviewRequested) return <Chip tone="accent">{pr.myReviewState === null ? "review requested" : "re-requested"}</Chip>;
+  switch (pr.myReviewState) {
+    case "CHANGES_REQUESTED":
+      return <Chip tone="bad">you requested changes</Chip>;
+    case "COMMENTED":
+      return <Chip tone="warn">you commented</Chip>;
+    case "DISMISSED":
+      return <Chip tone="warn">your review was dismissed</Chip>;
+    default:
+      return null;
+  }
+}
+
 function decisionChip(decision: string | null): ReactNode {
   if (decision === null) return null;
   const tone = decision === "APPROVED" ? "good" : decision === "CHANGES_REQUESTED" ? "bad" : "warn";
@@ -359,6 +374,7 @@ function PrRows({ prs, onOpen, numbered = false }: { prs: PrSummary[]; onOpen: (
                 <div className="flex shrink-0 flex-col items-end gap-1">
                   <div className="flex items-center gap-1.5">
                     {pr.isDraft && <Chip>draft</Chip>}
+                    {pr.role === "reviewer" && myReviewChip(pr)}
                     {decisionChip(pr.reviewDecision)}
                     {checksChip(pr.checksState)}
                   </div>

@@ -46,6 +46,10 @@ export const prSummarySchema = z.object({
   checksState: z.string().nullable(),
   unresolvedThreads: z.number(),
   commentCount: z.number(),
+  /** Your latest review on someone else's PR (APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED), or null. */
+  myReviewState: z.string().nullable().default(null),
+  /** Your review is currently requested on it. */
+  reviewRequested: z.boolean().default(false),
 });
 export type PrSummary = z.infer<typeof prSummarySchema>;
 

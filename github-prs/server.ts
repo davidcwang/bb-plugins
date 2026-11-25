@@ -224,6 +224,7 @@ const searchNode = z.object({
   }),
   reviewThreads: z.object({ nodes: z.array(z.object({ isResolved: z.boolean() })) }),
   comments: z.object({ totalCount: z.number() }),
+  viewerLatestReview: z.object({ state: z.string() }).nullable().optional(),
 });
 
 const SEARCH_QUERY = `
@@ -237,6 +238,7 @@ query($q: String!) {
         commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
         reviewThreads(first: 100) { nodes { isResolved } }
         comments { totalCount }
+        viewerLatestReview { state }
       }
     }
   }
@@ -399,6 +401,12 @@ export default async function plugin(bb: BbPluginApi) {
         "GitHub search query for PRs that need your review (empty disables the section). user-review-requested matches only you personally, not teams you are in.",
       default: "is:open is:pr user-review-requested:@me archived:false",
     },
+    keepUntilApproved: {
+      type: "boolean",
+      label: "Keep reviewed PRs until approved",
+      description: "Keep open PRs you've reviewed in Needs review until your latest review is an approval (GitHub drops the review request once you submit any review).",
+      default: true,
+    },
     reviewInstructions: {
       type: "string",
       label: "Review instructions",
@@ -519,6 +527,8 @@ export default async function plugin(bb: BbPluginApi) {
         checksState: n.commits.nodes[0]?.commit.statusCheckRollup?.state ?? null,
         unresolvedThreads: n.reviewThreads.nodes.filter((t) => !t.isResolved).length,
         commentCount: n.comments.totalCount,
+        myReviewState: n.viewerLatestReview?.state ?? null,
+        reviewRequested: false,
       });
     }
     prs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -526,13 +536,26 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   async function fetchList(): Promise<PrSummary[]> {
-    const { searchQuery, reviewQuery } = await settings.get();
-    const [mine, toReview] = await Promise.all([
+    const { searchQuery, reviewQuery, keepUntilApproved } = await settings.get();
+    const [mine, requested, reviewed] = await Promise.all([
       searchPrs(searchQuery, "author"),
       reviewQuery.trim() === "" ? Promise.resolve([]) : searchPrs(reviewQuery, "reviewer"),
+      // Submitting any review clears GitHub's request, so PRs you commented on or
+      // requested changes on would drop off; keep them until you approve.
+      keepUntilApproved
+        ? searchPrs("is:open is:pr reviewed-by:@me -author:@me archived:false", "reviewer")
+        : Promise.resolve([]),
     ]);
     const seen = new Set(mine.map((p) => prKey(p)));
-    return [...mine, ...toReview.filter((p) => !seen.has(prKey(p)))];
+    const toReview = new Map<string, PrSummary>();
+    for (const p of requested) toReview.set(prKey(p), { ...p, reviewRequested: true });
+    for (const p of reviewed) {
+      if (p.myReviewState === "APPROVED" || toReview.has(prKey(p))) continue;
+      toReview.set(prKey(p), p);
+    }
+    const list = [...toReview.values()].filter((p) => !seen.has(prKey(p)));
+    list.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return [...mine, ...list];
   }
 
   // ---- stale-while-revalidate: cached data is returned instantly; GitHub
@@ -642,6 +665,8 @@ export default async function plugin(bb: BbPluginApi) {
         checksState: rollup?.state ?? null,
         unresolvedThreads: threads.filter((t) => !t.isResolved).length,
         commentCount: pr.comments.nodes.length,
+        myReviewState: listed?.myReviewState ?? null,
+        reviewRequested: listed?.reviewRequested ?? false,
       },
       body: pr.body,
       author: login(pr.author),
