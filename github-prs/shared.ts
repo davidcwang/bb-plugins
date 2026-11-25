@@ -152,6 +152,24 @@ export const emptyItem = (): ItemState => ({
   postedAt: null,
 });
 
+// ---- worker model: which provider/model/reasoning a worker ran on ----
+
+export const runModelSchema = z.object({
+  providerId: z.string(),
+  model: z.string(),
+  reasoningLevel: z.string(),
+});
+export type RunModel = z.infer<typeof runModelSchema>;
+
+/** The model selection workers spawn with; null = BB's default for new threads. */
+export const workerModelSchema = z.object({
+  providerId: z.string(),
+  model: z.string(),
+  reasoningLevel: z.string(),
+  serviceTier: z.string().optional(),
+});
+export type WorkerModel = z.infer<typeof workerModelSchema>;
+
 // ---- reviewer side: findings from a plugin-run review round ----
 
 export const SEVERITIES = ["bug", "question", "nit"] as const;
@@ -179,6 +197,8 @@ export const reviewStateSchema = z.object({
   finishedAt: z.string().nullable(),
   error: z.string().nullable(),
   findings: z.array(findingSchema),
+  /** Model the latest round ran on (null for rounds started before this was recorded). */
+  model: runModelSchema.nullable().default(null),
 });
 export type ReviewState = z.infer<typeof reviewStateSchema>;
 
@@ -190,6 +210,7 @@ export const emptyReview = (): ReviewState => ({
   finishedAt: null,
   error: null,
   findings: [],
+  model: null,
 });
 
 // ---- walkthrough: ground-up guided tour of the PR ----
@@ -221,6 +242,7 @@ export const walkthroughSchema = z.object({
   error: z.string().nullable(),
   title: z.string().nullable(),
   steps: z.array(walkStepSchema),
+  model: runModelSchema.nullable().default(null),
 });
 export type Walkthrough = z.infer<typeof walkthroughSchema>;
 
@@ -232,6 +254,7 @@ export const emptyWalkthrough = (): Walkthrough => ({
   error: null,
   title: null,
   steps: [],
+  model: null,
 });
 
 export const checkoutSchema = z.object({

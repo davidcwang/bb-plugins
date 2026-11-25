@@ -20,6 +20,9 @@ import {
   emptyItem,
   emptyReview,
   emptyWalkthrough,
+  workerModelSchema,
+  type RunModel,
+  type WorkerModel,
   prRefSchema,
   prKey,
   prSummarySchema,
@@ -110,6 +113,11 @@ export const rpcContract = defineRpcContract({
     output: z.object({ url: z.string() }),
   },
   walkthrough_start: { input: prRefSchema, output: walkthroughSchema },
+  model_get: {
+    input: z.null(),
+    output: z.object({ selection: workerModelSchema.nullable(), fallback: workerModelSchema.nullable() }),
+  },
+  model_set: { input: z.object({ selection: workerModelSchema.nullable() }), output: z.object({ ok: z.literal(true) }) },
   fix_apply: {
     input: z.object({ ref: prRefSchema, item: z.string() }),
     output: z.object({ applied: z.boolean(), detail: z.string() }),
@@ -695,9 +703,25 @@ export default async function plugin(bb: BbPluginApi) {
     })();
   }
 
+  /** Runs started before models were recorded: resolve once from their worker threads. */
+  async function backfillRunModels(ref: PrRef): Promise<void> {
+    const state = await readState(ref);
+    const r = state.review;
+    const w = state.walkthrough;
+    if (r !== undefined && (r.model ?? null) === null && r.threadId !== null) {
+      const model = await resolveRunModel(r.threadId);
+      if (model !== null) await mutateReview(ref, (x) => void (x.model = model));
+    }
+    if (w !== undefined && (w.model ?? null) === null && w.threadId !== null) {
+      const model = await resolveRunModel(w.threadId);
+      if (model !== null) await mutateWalkthrough(ref, (x) => void (x.model = model));
+    }
+  }
+
   /** Cached detail with current local item state merged in; fetches only when nothing is cached. */
   async function getDetail(ref: PrRef): Promise<PrDetail> {
     const key = prKey(ref);
+    await backfillRunModels(ref);
     const cached = readCachedDetail(key);
     if (cached !== undefined) {
       const state = await readState(ref);
@@ -757,6 +781,42 @@ export default async function plugin(bb: BbPluginApi) {
   // ---- hidden worker threads (draft replies, proposed fixes) ----
   type EnvChoice = Parameters<typeof bb.sdk.threads.spawn>[0]["environment"];
 
+  const WORKER_MODEL_KEY = "workerModel";
+  async function readWorkerModel(): Promise<WorkerModel | null> {
+    const raw = (await bb.storage.kv.get<unknown>(WORKER_MODEL_KEY)) ?? null;
+    const parsed = workerModelSchema.safeParse(raw);
+    return parsed.success ? parsed.data : null;
+  }
+
+  /** The provider/model/reasoning a thread actually runs on, as BB resolved it. */
+  async function resolveRunModel(threadId: string): Promise<RunModel | null> {
+    try {
+      const [thread, opts] = await Promise.all([
+        bb.sdk.threads.get({ threadId }),
+        bb.sdk.threads.defaultExecutionOptions({ threadId }),
+      ]);
+      if (opts === null) return null;
+      return { providerId: thread.providerId, model: opts.model, reasoningLevel: opts.reasoningLevel };
+    } catch (cause) {
+      bb.log.warn(`resolve model for ${threadId}: ${describe(cause)}`);
+      return null;
+    }
+  }
+
+  /** What a worker would run on with no explicit selection: the first project's defaults. */
+  async function fallbackWorkerModel(): Promise<WorkerModel | null> {
+    const projects = (await bb.sdk.projects.list({ includePersonal: true }).catch(() => [])) as Array<{ id: string }>;
+    for (const p of projects) {
+      try {
+        const d = await bb.sdk.projects.defaultExecutionOptions({ projectId: p.id });
+        if (d !== null) return { providerId: d.providerId, model: d.model, reasoningLevel: d.reasoningLevel, serviceTier: d.serviceTier };
+      } catch {
+        /* try next */
+      }
+    }
+    return null;
+  }
+
   async function spawnWorker(title: string, prompt: string, metadata: Record<string, string>): Promise<string> {
     // Prefer a project whose checkout contains the repo; fall back to any
     // project / the personal workspace. The prompt always names the absolute
@@ -773,6 +833,7 @@ export default async function plugin(bb: BbPluginApi) {
     let lastError: unknown = new Error("No BB projects available to run a worker thread in.");
     for (const candidate of candidates) {
       try {
+        const selection = await readWorkerModel();
         const spawned = await bb.sdk.threads.spawn({
           projectId: candidate.projectId,
           environment: candidate.environment,
@@ -780,6 +841,14 @@ export default async function plugin(bb: BbPluginApi) {
           prompt,
           visibility: "hidden",
           pluginMetadata: metadata,
+          ...(selection === null
+            ? {}
+            : {
+                providerId: selection.providerId,
+                model: selection.model,
+                reasoningLevel: selection.reasoningLevel as never,
+                ...(selection.serviceTier === undefined ? {} : { serviceTier: selection.serviceTier }),
+              }),
         });
         return spawned.id;
       } catch (cause) {
@@ -961,8 +1030,10 @@ export default async function plugin(bb: BbPluginApi) {
       .join("\n\n");
     try {
       const threadId = await spawnWorker(`Review: ${key}`, prompt, { ghprKind: "review", ghprPr: key });
+      const model = await resolveRunModel(threadId);
       await mutateReview(ref, (r) => {
         r.threadId = threadId;
+        r.model = model;
       });
     } catch (cause) {
       await mutateReview(ref, (r) => {
@@ -999,8 +1070,10 @@ export default async function plugin(bb: BbPluginApi) {
     ].join("\n\n");
     try {
       const threadId = await spawnWorker(`Walkthrough: ${key}`, prompt, { ghprKind: "walkthrough", ghprPr: key });
+      const model = await resolveRunModel(threadId);
       await mutateWalkthrough(ref, (w) => {
         w.threadId = threadId;
+        w.model = model;
       });
     } catch (cause) {
       await mutateWalkthrough(ref, (w) => {
@@ -1441,6 +1514,13 @@ export default async function plugin(bb: BbPluginApi) {
       }),
     finding_post: async ({ ref, findingId, body }) => ({ url: await postFinding(ref, findingId, body) }),
     walkthrough_start: (ref) => startWalkthrough(ref),
+    model_get: async () => ({ selection: await readWorkerModel(), fallback: await fallbackWorkerModel() }),
+    model_set: async ({ selection }) => {
+      if (selection === null) await bb.storage.kv.delete(WORKER_MODEL_KEY);
+      else await bb.storage.kv.set(WORKER_MODEL_KEY, selection);
+      bb.realtime.publish(CHANGED, { kind: "model" });
+      return { ok: true as const };
+    },
     fix_apply: ({ ref, item }) => applyFix(ref, item),
     fix_discard: ({ ref, item }) => mutateItem(ref, item, (it) => void (it.fix = null)),
     checkout_get: (ref) => checkoutFor(ref, null),
@@ -1507,6 +1587,7 @@ export default async function plugin(bb: BbPluginApi) {
           options: { json: { type: "boolean", description: "Emit machine-readable JSON" } },
           async run(input) {
             const ref = parseKey(input.positionals.pr);
+            await backfillRunModels(ref);
             const review = (await readState(ref)).review ?? emptyReview();
             if (input.options.json) return { exitCode: 0, stdout: `${JSON.stringify(review)}\n` };
             const lines = review.findings.map(
@@ -1514,7 +1595,7 @@ export default async function plugin(bb: BbPluginApi) {
             );
             return {
               exitCode: 0,
-              stdout: `round ${review.round} ${review.status}${review.error === null ? "" : ` (${review.error})`}\n${lines.join("\n")}\n`,
+              stdout: `round ${review.round} ${review.status}${review.model === null ? "" : ` on ${review.model.model} (${review.model.reasoningLevel})`}${review.error === null ? "" : ` (${review.error})`}\n${lines.join("\n")}\n`,
             };
           },
         }),

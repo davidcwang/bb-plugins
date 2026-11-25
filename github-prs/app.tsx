@@ -5,11 +5,12 @@
 // an AI-draftable reply you edit and post, reactions, resolve, and a proposed
 // fix you can preview as a diff and apply to the local checkout.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import type { ComponentProps, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import {
   definePluginApp,
   experimental_Diff as Diff,
   experimental_SourceCode as SourceCode,
+  experimental_ProviderModelPicker as ProviderModelPicker,
   Markdown,
   ThreadChat,
   UrlLink,
@@ -35,7 +36,9 @@ import {
   type Reaction,
   type ReviewThread,
   type Triage,
+  type RunModel,
   type Walkthrough,
+  type WorkerModel,
 } from "./shared";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -1443,7 +1446,12 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
                   : detail.review.status === "failed"
                     ? `Round ${detail.review.round} failed`
                     : `Round ${detail.review.round}: ${detail.review.findings.filter((f) => f.status === "open").length} open, ${detail.review.findings.filter((f) => f.status === "posted").length} posted`}
+              {runModelLabel(detail.review.model) !== null && (
+                <span className="ml-2 font-mono text-[10px]">· {runModelLabel(detail.review.model)}</span>
+              )}
             </p>
+            <div className="flex-1" />
+            <WorkerModelControl />
             <Button
               variant="outline"
               size="sm"
@@ -1613,6 +1621,59 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
   );
 }
 
+// ---------------------------------------------------------- worker model
+
+function runModelLabel(m: RunModel | null): string | null {
+  return m === null ? null : `${m.model} · ${m.reasoningLevel}`;
+}
+
+/** Picker for the model review/walkthrough/draft workers spawn with (shared across PRs). */
+function WorkerModelControl() {
+  const rpc = useRpc<typeof rpcContract>();
+  const [selection, setSelection] = useState<WorkerModel | null>(null);
+  const [fallback, setFallback] = useState<WorkerModel | null>(null);
+  const load = useCallback(() => {
+    rpc.call("model_get", null).then(
+      (r) => {
+        setSelection(r.selection);
+        setFallback(r.fallback);
+      },
+      () => undefined,
+    );
+  }, [rpc]);
+  useEffect(() => load(), [load]);
+  useRealtime(CHANGED, (payload: unknown) => {
+    if ((payload as { kind?: string })?.kind === "model") load();
+  });
+  const value = selection ?? fallback;
+  if (value === null) return null;
+  return (
+    <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+      <span>Runs on</span>
+      <ProviderModelPicker
+        value={value as ComponentProps<typeof ProviderModelPicker>["value"]}
+        align="end"
+        onChange={(next) => {
+          setSelection(next as WorkerModel);
+          rpc.call("model_set", { selection: next as WorkerModel }).catch(() => undefined);
+        }}
+      />
+      {selection !== null && (
+        <button
+          type="button"
+          className="underline-offset-2 hover:text-foreground hover:underline"
+          onClick={() => {
+            setSelection(null);
+            rpc.call("model_set", { selection: null }).catch(() => undefined);
+          }}
+        >
+          use default
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------- walkthrough
 
 function WalkthroughView({ walkthrough, onRun }: { walkthrough: Walkthrough; onRun: () => void }) {
@@ -1648,6 +1709,9 @@ function WalkthroughView({ walkthrough, onRun }: { walkthrough: Walkthrough; onR
           <Icon name="Layers" className="size-4" />
           {walkthrough.status === "failed" ? "Retry walkthrough" : "Build walkthrough"}
         </Button>
+        <div className="flex justify-center">
+          <WorkerModelControl />
+        </div>
       </div>
     );
   }
@@ -1676,10 +1740,14 @@ function WalkthroughView({ walkthrough, onRun }: { walkthrough: Walkthrough; onR
       <div className="w-full shrink-0 self-start rounded-lg border border-border bg-card py-1.5 md:sticky md:top-2 md:max-h-[calc(100vh-10rem)] md:w-64 md:overflow-y-auto">
         <div className="space-y-2 border-b border-border px-3 pb-2 pt-1">
           <div className="text-xs font-medium">{walkthrough.title ?? "Walkthrough"}</div>
+          {runModelLabel(walkthrough.model) !== null && (
+            <div className="font-mono text-[10px] text-muted-foreground">Built with {runModelLabel(walkthrough.model)}</div>
+          )}
           <Button variant="outline" size="sm" className="w-full" onClick={onRun}>
             <Icon name="RefreshCw" className="size-3.5" />
             Rebuild walkthrough
           </Button>
+          <WorkerModelControl />
         </div>
         {steps.map((s, i) => (
           <button
