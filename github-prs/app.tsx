@@ -1515,9 +1515,10 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
   const [showResolved, setShowResolved] = useState(false);
   const [discuss, setDiscuss] = useState<{ item: string; threadId: string; label: string } | null>(null);
   const [discussBusy, setDiscussBusy] = useState<string | null>(null);
+  const splitRef = useRef<HTMLDivElement | null>(null);
   const [paneWidth, setPaneWidth] = useState<number>(() => {
     const saved = Number(window.localStorage.getItem("ghpr:paneWidth"));
-    return Number.isFinite(saved) && saved >= 320 && saved <= 1000 ? saved : 480;
+    return Number.isFinite(saved) && saved >= 320 ? saved : 480;
   });
   const key = prKey(refObj);
 
@@ -1526,8 +1527,10 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
       e.preventDefault();
       const startX = e.clientX;
       const startW = paneWidth;
+      // Leave the PR view at least 280px; otherwise the pane can take the whole page.
+      const maxW = Math.max(320, (splitRef.current?.clientWidth ?? window.innerWidth) - 280);
       const move = (ev: PointerEvent) => {
-        setPaneWidth(Math.min(1000, Math.max(320, startW + (startX - ev.clientX))));
+        setPaneWidth(Math.min(maxW, Math.max(320, startW + (startX - ev.clientX))));
       };
       const up = () => {
         window.removeEventListener("pointermove", move);
@@ -1677,7 +1680,7 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
   const unresolvedCount = detail.threads.filter((t) => !t.isResolved).length;
 
   return (
-    <div className="flex h-full min-h-0 flex-1">
+    <div ref={splitRef} className="flex h-full min-h-0 flex-1">
       <div className="min-w-0 flex-1 overflow-y-auto">
         <div className="box-border w-full px-4 pb-6 pt-3 md:px-5 md:pt-4">
     <div className="mx-auto w-full max-w-[1800px] space-y-3">
@@ -1996,7 +1999,7 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
         />
       )}
       {discuss !== null && (
-        <div style={{ width: paneWidth }} className="flex shrink-0 flex-col bg-background">
+        <div style={{ width: paneWidth, maxWidth: "calc(100% - 280px)" }} className="flex shrink-0 flex-col bg-background">
           <div className="space-y-1 border-b border-border px-3 py-2">
             <div className="flex items-center gap-2">
               <Icon name="MessagesSquare" className="size-4 shrink-0 text-muted-foreground" />
