@@ -1114,7 +1114,7 @@ function FileContext({
             selectedLines={{ start, end, side: "additions" }}
             lineAnnotations={[{ side: "additions", lineNumber: end, metadata: active.note }]}
             renderAnnotation={(a) => (
-              <div className="mx-2 my-1.5 rounded-md border border-yellow-500/60 bg-card px-3 py-2 font-sans text-xs text-foreground">
+              <div className="mx-2 my-1.5 whitespace-normal break-words rounded-md border border-yellow-500/60 bg-card px-3 py-2 font-sans text-xs leading-relaxed text-foreground">
                 <div className="mb-0.5 flex items-center gap-1 text-[10px] text-muted-foreground">
                   <Icon name="MessageSquare" className="size-3" />
                   {start === end ? `line ${start}` : `lines ${start}–${end}`}
@@ -1127,7 +1127,7 @@ function FileContext({
               themeType: codeTheme.mode,
               diffStyle: "unified",
               disableFileHeader: true,
-              overflow: "scroll",
+              overflow: "wrap",
               hunkSeparators: "simple",
               unsafeCSS: HIDE_SEPARATORS,
             }}
