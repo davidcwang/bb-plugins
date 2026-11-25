@@ -130,6 +130,11 @@ function PrListPage({ onOpen }: { onOpen: (ref: PrRef) => void }) {
   const [fetchedAt, setFetchedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [listTab, setListTab] = useState<"mine" | "review">(() =>
+    window.localStorage.getItem("ghpr:listTab") === "review" ? "review" : "mine",
+  );
+  const mine = (prs ?? []).filter((p) => p.role !== "reviewer");
+  const toReview = (prs ?? []).filter((p) => p.role === "reviewer");
   const load = useCallback(
     (refresh: boolean) => {
       if (refresh) setSyncing(true);
@@ -176,21 +181,36 @@ function PrListPage({ onOpen }: { onOpen: (ref: PrRef) => void }) {
           {error}
         </p>
       )}
-      {prs !== null && prs.length === 0 && (
+      <div className="flex items-center gap-1 border-b border-border">
+        {(
+          [
+            ["mine", "My PRs", mine.length],
+            ["review", "Needs review", toReview.length],
+          ] as Array<["mine" | "review", string, number]>
+        ).map(([id, label, count]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => {
+              setListTab(id);
+              window.localStorage.setItem("ghpr:listTab", id);
+            }}
+            className={cn(
+              "-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-sm transition-colors",
+              listTab === id ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {label}
+            {count > 0 && <span className="rounded-full bg-muted px-1.5 text-[11px] text-muted-foreground">{count}</span>}
+          </button>
+        ))}
+      </div>
+      {prs !== null && (listTab === "mine" ? mine : toReview).length === 0 && (
         <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
-          No open PRs match the search query (plugin settings).
+          {listTab === "mine" ? "No open PRs match the search query (plugin settings)." : "Nothing waiting on your review."}
         </div>
       )}
-      {(prs ?? []).some((p) => p.role === "reviewer") && (
-        <p className="pt-1 text-xs font-medium text-muted-foreground">Your PRs</p>
-      )}
-      <PrRows prs={(prs ?? []).filter((p) => p.role !== "reviewer")} onOpen={onOpen} />
-      {(prs ?? []).some((p) => p.role === "reviewer") && (
-        <>
-          <p className="pt-2 text-xs font-medium text-muted-foreground">Needs your review</p>
-          <PrRows prs={(prs ?? []).filter((p) => p.role === "reviewer")} onOpen={onOpen} />
-        </>
-      )}
+      <PrRows prs={listTab === "mine" ? mine : toReview} onOpen={onOpen} />
     </div>
   );
 }

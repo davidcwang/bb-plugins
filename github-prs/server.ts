@@ -361,8 +361,9 @@ export default async function plugin(bb: BbPluginApi) {
     reviewQuery: {
       type: "string",
       label: "Review-requested search query",
-      description: "GitHub search query for PRs that need your review (empty disables the section).",
-      default: "is:open is:pr review-requested:@me archived:false",
+      description:
+        "GitHub search query for PRs that need your review (empty disables the section). user-review-requested matches only you personally, not teams you are in.",
+      default: "is:open is:pr user-review-requested:@me archived:false",
     },
     reviewInstructions: {
       type: "string",
