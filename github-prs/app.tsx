@@ -83,6 +83,40 @@ function splitPatch(patch: string): Array<{ path: string; patch: string }> {
   });
 }
 
+/** useState that survives navigation and reloads, per key (localStorage, JSON). */
+function useRemembered<T>(key: string, initial: T): [T, (next: T | ((prev: T) => T)) => void] {
+  const read = useCallback((): T => {
+    try {
+      const raw = window.localStorage.getItem(key);
+      return raw === null ? initial : (JSON.parse(raw) as T);
+    } catch {
+      return initial;
+    }
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [value, setValue] = useState<T>(read);
+  const lastKey = useRef(key);
+  if (lastKey.current !== key) {
+    lastKey.current = key;
+    setValue(read());
+  }
+  const set = useCallback(
+    (next: T | ((prev: T) => T)) => {
+      setValue((prev) => {
+        const v = typeof next === "function" ? (next as (p: T) => T)(prev) : next;
+        try {
+          if (v === null || v === undefined) window.localStorage.removeItem(key);
+          else window.localStorage.setItem(key, JSON.stringify(v));
+        } catch {
+          /* storage full or unavailable */
+        }
+        return v;
+      });
+    },
+    [key],
+  );
+  return [value, set];
+}
+
 function Chip({ children, tone = "muted" }: { children: ReactNode; tone?: "muted" | "good" | "bad" | "warn" | "accent" }) {
   return (
     <span
@@ -1142,8 +1176,7 @@ function FindingContext({
   onLocate: () => void;
 }) {
   const refs = refsOf(finding);
-  const [index, setIndex] = useState(0);
-  useEffect(() => setIndex(0), [finding.id]);
+  const [index, setIndex] = useRemembered<number>(`ghpr:${prKey(refObj)}:loc:${finding.id}`, 0);
   const active = refs[Math.min(index, refs.length - 1)];
   const patch = files.find((f) => f.path === active.path)?.patch ?? null;
   return (
@@ -1277,7 +1310,7 @@ function FindingPager({
       () => undefined,
     );
   }, [pathsKey, prKey(refObj)]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useRemembered<string | null>(`ghpr:${prKey(refObj)}:finding`, null);
   const selected = sorted.find((f) => f.id === selectedId) ?? sorted[0];
   const index = sorted.findIndex((f) => f.id === selected?.id);
   if (selected === undefined) return null;
@@ -1510,10 +1543,22 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
   const navigate = useBbNavigate();
   const [detail, setDetail] = useState<PrDetail | null>(() => detailMemo.get(prKey(refObj)) ?? null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("comments");
+  const [tab, setTab] = useRemembered<Tab>(`ghpr:${prKey(refObj)}:tab`, "comments");
+  const tabWasSaved = useRef(window.localStorage.getItem(`ghpr:${prKey(refObj)}:tab`) !== null);
   const [syncing, setSyncing] = useState(false);
   const [showResolved, setShowResolved] = useState(false);
-  const [discuss, setDiscuss] = useState<{ item: string; threadId: string; label: string } | null>(null);
+  const [discuss, setDiscussState] = useState<{ item: string; threadId: string; label: string } | null>(null);
+  const [savedDiscuss, setSavedDiscuss] = useRemembered<{ item: string; label: string } | null>(
+    `ghpr:${prKey(refObj)}:discuss`,
+    null,
+  );
+  const setDiscuss = useCallback(
+    (d: { item: string; threadId: string; label: string } | null) => {
+      setDiscussState(d);
+      setSavedDiscuss(d === null ? null : { item: d.item, label: d.label });
+    },
+    [setSavedDiscuss],
+  );
   const [discussBusy, setDiscussBusy] = useState<string | null>(null);
   const splitRef = useRef<HTMLDivElement | null>(null);
   const [paneWidth, setPaneWidth] = useState<number>(() => {
@@ -1557,6 +1602,18 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
     },
     [rpc, refObj.owner, refObj.repo, refObj.number], // eslint-disable-line react-hooks/exhaustive-deps
   );
+
+  // Reopen the discussion that was open when you last left this PR.
+  useEffect(() => {
+    setDiscussState(null);
+    try {
+      const raw = window.localStorage.getItem(`ghpr:${key}:discuss`);
+      const saved = raw === null ? null : (JSON.parse(raw) as { item: string; label: string });
+      if (saved !== null && typeof saved.item === "string") openDiscuss(saved.item, saved.label ?? saved.item);
+    } catch {
+      /* ignore a malformed entry */
+    }
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = useCallback(() => {
     rpc
@@ -1611,6 +1668,7 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
   useEffect(() => {
     if (detail !== null && !tabSeeded.current) {
       tabSeeded.current = true;
+      if (tabWasSaved.current) return;
       if (detail.summary.role === "reviewer") setTab("review");
     }
   }, [detail]);
@@ -1866,7 +1924,7 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
         </div>
       )}
 
-      {tab === "files" && <FilesView files={detail.files} threads={detail.threads} />}
+      {tab === "files" && <FilesView files={detail.files} threads={detail.threads} storageKey={`ghpr:${key}`} />}
 
       {tab === "review" && (
         <div className="space-y-2">
@@ -1946,6 +2004,7 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
 
       {tab === "walkthrough" && (
         <WalkthroughView
+          storageKey={`ghpr:${key}:walkthrough`}
           walkthrough={detail.walkthrough}
           onRun={() => {
             rpc.call("walkthrough_start", refObj).then(load, (c) => onError(describe(c)));
@@ -2123,8 +2182,16 @@ function WorkerModelControl() {
 
 // ---------------------------------------------------------- walkthrough
 
-function WalkthroughView({ walkthrough, onRun }: { walkthrough: Walkthrough; onRun: () => void }) {
-  const [step, setStep] = useState(0);
+function WalkthroughView({
+  walkthrough,
+  onRun,
+  storageKey,
+}: {
+  walkthrough: Walkthrough;
+  onRun: () => void;
+  storageKey: string;
+}) {
+  const [step, setStep] = useRemembered<number>(`${storageKey}:step`, 0);
   const steps = walkthrough.steps;
   // A fresh walkthrough restarts the tour.
   const stamp = walkthrough.finishedAt;
@@ -2377,7 +2444,7 @@ function TreeNode({
   );
 }
 
-function FilesView({ files, threads }: { files: PrFile[]; threads: ReviewThread[] }) {
+function FilesView({ files, threads, storageKey }: { files: PrFile[]; threads: ReviewThread[]; storageKey: string }) {
   const tree = useMemo(() => buildTree(files), [files]);
   const commentCounts = useMemo(() => {
     const map = new Map<string, number>();
@@ -2386,7 +2453,7 @@ function FilesView({ files, threads }: { files: PrFile[]; threads: ReviewThread[
     }
     return map;
   }, [threads]);
-  const [selected, setSelected] = useState<string | null>(files[0]?.path ?? null);
+  const [selected, setSelected] = useRemembered<string | null>(`${storageKey}:file`, files[0]?.path ?? null);
   const current = files.find((f) => f.path === selected) ?? files[0];
   const index = current === undefined ? -1 : files.findIndex((f) => f.path === current.path);
   if (files.length === 0) {
