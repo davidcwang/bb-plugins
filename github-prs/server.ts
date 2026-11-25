@@ -16,12 +16,15 @@ import { z } from "zod";
 import {
   CHANGED,
   REACTIONS,
+  SEVERITIES,
   emptyItem,
+  emptyReview,
   prRefSchema,
   prKey,
   prSummarySchema,
   prDetailSchema,
   itemStateSchema,
+  reviewStateSchema,
   checkoutSchema,
   type Checkout,
   type ItemState,
@@ -30,6 +33,7 @@ import {
   type PrRef,
   type PrSummary,
   type ReactionGroup,
+  type ReviewState,
   type ReviewThread,
 } from "./shared";
 
@@ -90,6 +94,18 @@ export const rpcContract = defineRpcContract({
     input: z.object({ ref: prRefSchema, item: z.string() }),
     output: z.object({ threadId: z.string() }),
   },
+  review_start: {
+    input: z.object({ ref: prRefSchema, guidance: z.string().max(4000).default("") }),
+    output: reviewStateSchema,
+  },
+  finding_set: {
+    input: z.object({ ref: prRefSchema, findingId: z.string(), status: z.enum(["open", "dismissed"]) }),
+    output: reviewStateSchema,
+  },
+  finding_post: {
+    input: z.object({ ref: prRefSchema, findingId: z.string(), body: z.string().min(1).max(60_000) }),
+    output: z.object({ url: z.string() }),
+  },
   fix_apply: {
     input: z.object({ ref: prRefSchema, item: z.string() }),
     output: z.object({ applied: z.boolean(), detail: z.string() }),
@@ -107,6 +123,7 @@ const stateKey = (ref: PrRef) => `state:${prKey(ref)}`;
 
 interface PrState {
   items: Record<string, ItemState>;
+  review?: ReviewState;
 }
 
 function describe(cause: unknown): string {
@@ -341,6 +358,18 @@ export default async function plugin(bb: BbPluginApi) {
       default:
         "Direct and specific, one to four sentences, no preamble, no flattery. Technical terms spelled out. Past tense: describe what was done to address the comment (or why it was kept as-is), never promised future work.",
     },
+    reviewQuery: {
+      type: "string",
+      label: "Review-requested search query",
+      description: "GitHub search query for PRs that need your review (empty disables the section).",
+      default: "is:open is:pr review-requested:@me archived:false",
+    },
+    reviewInstructions: {
+      type: "string",
+      label: "Review instructions",
+      description: "Standing guidance for plugin-run review rounds (what to look for, team conventions).",
+      default: "",
+    },
   });
 
   // ---- local state ----
@@ -355,6 +384,15 @@ export default async function plugin(bb: BbPluginApi) {
     await bb.storage.kv.set(stateKey(ref), state);
     bb.realtime.publish(CHANGED, { key: prKey(ref), kind: "state" });
     return it;
+  }
+  async function mutateReview<T>(ref: PrRef, fn: (review: ReviewState) => T): Promise<T> {
+    const state = await readState(ref);
+    const review = state.review ?? emptyReview();
+    const result = fn(review);
+    state.review = review;
+    await bb.storage.kv.set(stateKey(ref), state);
+    bb.realtime.publish(CHANGED, { key: prKey(ref), kind: "state" });
+    return result;
   }
 
   // ---- checkout resolution ----
@@ -407,9 +445,8 @@ export default async function plugin(bb: BbPluginApi) {
     return JSON.parse(await gh(args));
   }
 
-  async function fetchList(): Promise<PrSummary[]> {
-    const { searchQuery } = await settings.get();
-    const data = await graphql(SEARCH_QUERY, { q: searchQuery });
+  async function searchPrs(query: string, role: "author" | "reviewer"): Promise<PrSummary[]> {
+    const data = await graphql(SEARCH_QUERY, { q: query });
     const nodes = z
       .object({ data: z.object({ search: z.object({ nodes: z.array(z.unknown()) }) }) })
       .parse(data).data.search.nodes;
@@ -423,6 +460,7 @@ export default async function plugin(bb: BbPluginApi) {
         owner,
         repo,
         number: n.number,
+        role,
         title: n.title,
         url: n.url,
         isDraft: n.isDraft,
@@ -441,6 +479,16 @@ export default async function plugin(bb: BbPluginApi) {
     }
     prs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     return prs;
+  }
+
+  async function fetchList(): Promise<PrSummary[]> {
+    const { searchQuery, reviewQuery } = await settings.get();
+    const [mine, toReview] = await Promise.all([
+      searchPrs(searchQuery, "author"),
+      reviewQuery.trim() === "" ? Promise.resolve([]) : searchPrs(reviewQuery, "reviewer"),
+    ]);
+    const seen = new Set(mine.map((p) => prKey(p)));
+    return [...mine, ...toReview.filter((p) => !seen.has(prKey(p)))];
   }
 
   // ---- stale-while-revalidate: cached data is returned instantly; GitHub
@@ -527,11 +575,15 @@ export default async function plugin(bb: BbPluginApi) {
     }));
     const state = await readState(ref);
     const checkout = await checkoutFor(ref, pr.headRefName);
+    const listed = (await bb.storage.kv.get<{ prs: PrSummary[] }>(LIST_KEY))?.prs.find(
+      (p) => prKey(p) === prKey(ref),
+    );
     return {
       summary: {
         owner: ref.owner,
         repo: ref.repo,
         number: pr.number,
+        role: listed?.role ?? "author",
         title: pr.title,
         url: pr.url,
         isDraft: pr.isDraft,
@@ -565,6 +617,7 @@ export default async function plugin(bb: BbPluginApi) {
         .filter((r) => !(r.state === "COMMENTED" && r.body === ""))
         .map((r) => ({ author: login(r.author), state: r.state, body: r.body, submittedAt: r.submittedAt, url: r.url })),
       items: state.items,
+      review: state.review ?? emptyReview(),
       checkout,
       fetchedAt: new Date().toISOString(),
     };
@@ -632,7 +685,7 @@ export default async function plugin(bb: BbPluginApi) {
     const cached = readCachedDetail(key);
     if (cached !== undefined) {
       const state = await readState(ref);
-      return { ...cached, items: state.items };
+      return { ...cached, items: state.items, review: state.review ?? emptyReview() };
     }
     const detail = await fetchDetail(ref);
     writeCachedDetail(key, detail);
@@ -716,6 +769,15 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   function threadContextText(detail: PrDetail, item: string): string {
+    if (item.startsWith("f:")) {
+      const id = item.slice(2);
+      const f = detail.review.findings.find((x) => x.id === id);
+      if (f === undefined) throw new Error("Review finding not found on this PR.");
+      return [
+        `Your own review finding (severity: ${f.severity}) at ${f.path}${f.line === null ? "" : `:${f.line}`}: ${f.title}`,
+        f.body,
+      ].join("\n\n");
+    }
     if (item.startsWith("ic:")) {
       const id = Number(item.slice(3));
       const c = detail.issueComments.find((x) => x.id === id);
@@ -815,14 +877,21 @@ export default async function plugin(bb: BbPluginApi) {
     }
     const detail = await getDetail(ref);
     const key = prKey(ref);
+    const isFinding = item.startsWith("f:");
     const prompt = [
-      `You are the PR author's standing discussion partner for ONE review comment on GitHub PR ${key}. This conversation is shown in a pane next to the comment and persists; the author will come back to it.`,
+      isFinding
+        ? `You are the reviewer's standing discussion partner for ONE finding of their review of GitHub PR ${key} (they are reviewing someone else's PR). This conversation is shown in a pane next to the finding and persists; the reviewer will come back to it.`
+        : `You are the PR author's standing discussion partner for ONE review comment on GitHub PR ${key}. This conversation is shown in a pane next to the comment and persists; the author will come back to it.`,
       prContextText(detail),
       threadContextText(detail, item),
-      `Open by explaining the comment: what the reviewer is asking for, the relevant code (read it in the checkout), whether the comment is right, and the realistic options with their trade-offs. Keep the opening under ~300 words, specific, with file:line references.`,
-      `Then discuss: answer follow-up questions and take the author's own ideas seriously. When the author asks for a reply draft, publish it with ghpr_publish_draft (item ${JSON.stringify(item)}) — written in PAST TENSE as posted after the comment was addressed (what was right or wrong about it and what was done), never promising future work. It lands in the comment's reply box in the PR panel, where the author edits and posts it; never post to GitHub yourself. When the author asks for a proposed code change — or asks you to revise the fix already shown on the card — publish a unified diff with ghpr_publish_fix (item ${JSON.stringify(item)}), verified with \`git apply --check\` first; publishing replaces the card's current proposed fix. Only edit files in the checkout directly when the author explicitly asks you to in this conversation.`,
+      isFinding
+        ? `Open by walking through the finding: the relevant code (read it in the checkout — note the checkout may be on a different branch than the PR; prefer \`gh pr diff ${detail.summary.number} --repo ${ref.owner}/${ref.repo}\` for the changed lines), how confident you are the finding is real, what the counter-arguments are, and how severe it actually is. Keep the opening under ~300 words, specific, with file:line references.`
+        : `Open by explaining the comment: what the reviewer is asking for, the relevant code (read it in the checkout), whether the comment is right, and the realistic options with their trade-offs. Keep the opening under ~300 words, specific, with file:line references.`,
+      isFinding
+        ? `Then discuss: answer follow-up questions and take the reviewer's own ideas seriously. When the reviewer asks for the comment to be drafted, publish it with ghpr_publish_draft (item ${JSON.stringify(item)}) — a concise review comment in the reviewer's voice (direct, specific, question when unsure, "[nit]" prefix for nits). It lands in the finding's comment box in the PR panel, where the reviewer edits and posts it; never post to GitHub yourself, and never edit files.`
+        : `Then discuss: answer follow-up questions and take the author's own ideas seriously. When the author asks for a reply draft, publish it with ghpr_publish_draft (item ${JSON.stringify(item)}) — written in PAST TENSE as posted after the comment was addressed (what was right or wrong about it and what was done), never promising future work. It lands in the comment's reply box in the PR panel, where the author edits and posts it; never post to GitHub yourself. When the author asks for a proposed code change — or asks you to revise the fix already shown on the card — publish a unified diff with ghpr_publish_fix (item ${JSON.stringify(item)}), verified with \`git apply --check\` first; publishing replaces the card's current proposed fix. Only edit files in the checkout directly when the author explicitly asks you to in this conversation.`,
     ].join("\n\n");
-    const threadId = await spawnWorker(`Discuss: ${key} ${item.startsWith("ic:") ? "comment" : "thread"}`, prompt, {
+    const threadId = await spawnWorker(`Discuss: ${key} ${isFinding ? "finding" : item.startsWith("ic:") ? "comment" : "thread"}`, prompt, {
       ghprKind: "discuss",
       ghprPr: key,
       ghprItem: item,
@@ -837,6 +906,100 @@ export default async function plugin(bb: BbPluginApi) {
     const m = key.match(/^([^/]+)\/([^#]+)#(\d+)$/);
     if (m === null) throw new Error(`Bad PR key ${key}`);
     return { owner: m[1], repo: m[2], number: Number(m[3]) };
+  }
+
+  // ---- reviewer side: run a review round, post findings as PR comments ----
+
+  async function startReview(ref: PrRef, guidance: string): Promise<ReviewState> {
+    const detail = await getDetail(ref);
+    const { reviewInstructions } = await settings.get();
+    const key = prKey(ref);
+    const claimed = await mutateReview(ref, (r) => {
+      if (r.status === "running") return false;
+      r.round += 1;
+      r.status = "running";
+      r.threadId = null;
+      r.startedAt = new Date().toISOString();
+      r.finishedAt = null;
+      r.error = null;
+      // Keep what you already posted or dismissed; a new round replaces open findings.
+      r.findings = r.findings.filter((f) => f.status !== "open");
+      return true;
+    });
+    if (!claimed) return (await readState(ref)).review ?? emptyReview();
+    const prompt = [
+      `You are reviewing GitHub PR ${key} on behalf of the reviewer (they were asked to review it; they make the final call on every finding).`,
+      prContextText(detail),
+      `Get the authoritative diff with \`gh pr diff ${ref.number} --repo ${ref.owner}/${ref.repo}\` (the local checkout may be on a different branch — use it to read surrounding code and callers, not as the diff).`,
+      `Review the way a senior engineer on this team would: hunt for real bugs the change introduces (logic errors, nil/error handling, races, API misuse, broken invariants, missing migrations/compat), check the change does what the PR says, and note genuinely important gaps in tests. Verify every suspicion against the actual code before reporting it; drop anything a compiler or linter would catch, pure style opinions, and speculative "might be nice" ideas. Severities: "bug" = would misbehave in production; "question" = you need the author to clarify or justify; "nit" = small, worth fixing, prefix its comment with "[nit]".`,
+      guidance.trim() === "" ? null : `Guidance from the reviewer for this round: ${guidance.trim()}`,
+      reviewInstructions.trim() === "" ? null : `Standing review instructions: ${reviewInstructions.trim()}`,
+      `Report at most 12 findings with ONE ghpr_report_findings call (an empty list is a valid, good result). For each: path and the head-side line from the diff; a short title; an explanation for the reviewer (why it's a problem, with evidence); and "comment" — the review comment ready to post, in the reviewer's voice: direct, specific, concise, a question where you are not certain. After the tool call reply here with one line and stop; the reviewer triages everything in the PR panel.`,
+    ]
+      .filter((x): x is string => x !== null)
+      .join("\n\n");
+    try {
+      const threadId = await spawnWorker(`Review: ${key}`, prompt, { ghprKind: "review", ghprPr: key });
+      await mutateReview(ref, (r) => {
+        r.threadId = threadId;
+      });
+    } catch (cause) {
+      await mutateReview(ref, (r) => {
+        r.status = "failed";
+        r.error = describe(cause);
+        r.finishedAt = new Date().toISOString();
+      });
+      throw cause;
+    }
+    return (await readState(ref)).review ?? emptyReview();
+  }
+
+  async function postFinding(ref: PrRef, findingId: string, body: string): Promise<string> {
+    const state = await readState(ref);
+    const finding = state.review?.findings.find((f) => f.id === findingId);
+    if (finding === undefined) throw new Error("Finding not found.");
+    const repo = `repos/${ref.owner}/${ref.repo}`;
+    let url: string | null = null;
+    if (finding.line !== null) {
+      try {
+        const head = z
+          .object({ head: z.object({ sha: z.string() }) })
+          .parse(JSON.parse(await gh(["api", `${repo}/pulls/${ref.number}`])));
+        const out = JSON.parse(
+          await gh([
+            "api",
+            `${repo}/pulls/${ref.number}/comments`,
+            "--method",
+            "POST",
+            "-f",
+            `body=${body}`,
+            "-f",
+            `commit_id=${head.head.sha}`,
+            "-f",
+            `path=${finding.path}`,
+            "-F",
+            `line=${finding.line}`,
+            "-f",
+            "side=RIGHT",
+          ]),
+        );
+        url = z.object({ html_url: z.string() }).parse(out).html_url;
+      } catch (cause) {
+        bb.log.warn(`inline comment on ${finding.path}:${finding.line} failed (${describe(cause)}); posting as PR comment`);
+      }
+    }
+    if (url === null) {
+      url = await postReply(ref, `**\`${finding.path}${finding.line === null ? "" : `:${finding.line}`}\`** — ${body}`, null);
+    }
+    await mutateReview(ref, (r) => {
+      const f = r.findings.find((x) => x.id === findingId);
+      if (f !== undefined) {
+        f.status = "posted";
+        f.postedAt = new Date().toISOString();
+      }
+    });
+    startDetailSync(ref);
+    return url;
   }
 
   // ---- worker tools ----
@@ -901,6 +1064,60 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  bb.agents.registerTool({
+    name: "ghpr_report_findings",
+    description:
+      "Report the findings of the PR review this thread is running, in one call. The reviewer triages, edits, and posts them from the PR panel.",
+    presentation: { label: { pending: "Reporting review findings", completed: "Reported review findings" } },
+    parameters: z.object({
+      findings: z
+        .array(
+          z.object({
+            path: z.string().min(1),
+            line: z.number().int().positive().nullable().default(null),
+            severity: z.enum(SEVERITIES),
+            title: z.string().min(1).max(200),
+            explanation: z.string().min(1).max(8000),
+            comment: z.string().min(1).max(8000),
+          }),
+        )
+        .max(20),
+    }),
+    async execute({ findings }, { threadId }) {
+      try {
+        const meta = await bb.sdk.threads.getPluginMetadata({ threadId });
+        if (typeof meta.ghprPr !== "string") return toolError("This thread is not attached to a PR review.");
+        const ref = parseKey(meta.ghprPr);
+        const added = findings.map((f) => ({
+          id: randomUUID().slice(0, 8),
+          path: f.path,
+          line: f.line,
+          severity: f.severity,
+          title: f.title,
+          body: f.explanation,
+          status: "open" as const,
+          postedAt: null,
+        }));
+        await mutateReview(ref, (r) => {
+          r.findings = [...r.findings, ...added];
+          r.status = "done";
+          r.finishedAt = new Date().toISOString();
+          r.error = null;
+        });
+        // The ready-to-post comment lands as the finding's editable draft.
+        for (const [i, f] of added.entries()) {
+          await mutateItem(ref, `f:${f.id}`, (it) => {
+            it.draft = findings[i].comment;
+            it.draftStatus = "ready";
+          });
+        }
+        return `Reported ${added.length} finding(s) to the PR panel.`;
+      } catch (cause) {
+        return toolError(describe(cause));
+      }
+    },
+  });
+
   bb.agents.configure((context) => {
     const kind = context.pluginMetadata?.ghprKind;
     if (kind === "draft") {
@@ -919,6 +1136,14 @@ export default async function plugin(bb: BbPluginApi) {
           "You are a read-only worker proposing one patch. Publish it with ghpr_publish_fix; never edit files, never run git write commands, never post to GitHub. `git apply --check` is allowed (it modifies nothing).",
       };
     }
+    if (kind === "review") {
+      return {
+        tools: ["ghpr_report_findings"],
+        skills: [],
+        instructions:
+          "You are a read-only PR review worker. Report findings only with one ghpr_report_findings call; never edit files, never run git write commands, never post to GitHub. The reviewer triages everything in the PR panel.",
+      };
+    }
     if (kind === "discuss") {
       return {
         tools: ["ghpr_publish_draft", "ghpr_publish_fix"],
@@ -933,9 +1158,21 @@ export default async function plugin(bb: BbPluginApi) {
   /** A worker finished without publishing: salvage its final output or mark failed. */
   async function settleWorker(threadId: string) {
     const meta = await bb.sdk.threads.getPluginMetadata({ threadId }).catch(() => null);
-    if (meta === null || typeof meta.ghprPr !== "string" || typeof meta.ghprItem !== "string") return;
+    if (meta === null || typeof meta.ghprPr !== "string") return;
     const kind = meta.ghprKind;
     const ref = parseKey(meta.ghprPr);
+    if (kind === "review") {
+      const review = (await readState(ref)).review;
+      if (review?.status === "running" && review.threadId === threadId) {
+        await mutateReview(ref, (r) => {
+          r.status = "failed";
+          r.error = "The review worker finished without reporting findings. Run it again.";
+          r.finishedAt = new Date().toISOString();
+        });
+      }
+      return;
+    }
+    if (typeof meta.ghprItem !== "string") return;
     const item = meta.ghprItem;
     const state = await readState(ref);
     const it = state.items[item];
@@ -1069,6 +1306,15 @@ export default async function plugin(bb: BbPluginApi) {
     },
     fix_start: ({ ref, item, guidance }) => startFix(ref, item, guidance),
     discuss_open: async ({ ref, item }) => ({ threadId: await openDiscussion(ref, item) }),
+    review_start: ({ ref, guidance }) => startReview(ref, guidance),
+    finding_set: async ({ ref, findingId, status }) =>
+      mutateReview(ref, (r) => {
+        const f = r.findings.find((x) => x.id === findingId);
+        if (f === undefined) throw new Error("Finding not found.");
+        if (f.status !== "posted") f.status = status;
+        return r;
+      }),
+    finding_post: async ({ ref, findingId, body }) => ({ url: await postFinding(ref, findingId, body) }),
     fix_apply: ({ ref, item }) => applyFix(ref, item),
     fix_discard: ({ ref, item }) => mutateItem(ref, item, (it) => void (it.fix = null)),
     checkout_get: (ref) => checkoutFor(ref, null),
@@ -1105,6 +1351,36 @@ export default async function plugin(bb: BbPluginApi) {
             );
             const suffix = error === null ? "" : `\n(warning: refresh failed: ${error})`;
             return { exitCode: 0, stdout: `${lines.join("\n") || "No open PRs."}${suffix}\n` };
+          },
+        }),
+        review: cliCommand({
+          summary: "Start a review round on a PR (findings land in the panel's Review tab)",
+          positionals: [{ name: "pr", description: "owner/repo#number", required: true }],
+          options: { guidance: { type: "string", description: "Extra guidance for this round" } },
+          async run(input) {
+            const ref = parseKey(input.positionals.pr);
+            const review = await startReview(ref, input.options.guidance ?? "");
+            return {
+              exitCode: 0,
+              stdout: `Review round ${review.round} ${review.status} (worker thread ${review.threadId ?? "?"}). Findings appear in the PR panel's Review tab.\n`,
+            };
+          },
+        }),
+        findings: cliCommand({
+          summary: "List a PR's review findings and their status",
+          positionals: [{ name: "pr", description: "owner/repo#number", required: true }],
+          options: { json: { type: "boolean", description: "Emit machine-readable JSON" } },
+          async run(input) {
+            const ref = parseKey(input.positionals.pr);
+            const review = (await readState(ref)).review ?? emptyReview();
+            if (input.options.json) return { exitCode: 0, stdout: `${JSON.stringify(review)}\n` };
+            const lines = review.findings.map(
+              (f) => `[${f.status.padEnd(9)}] ${f.severity.padEnd(8)} ${f.path}${f.line === null ? "" : `:${f.line}`}  ${f.title}`,
+            );
+            return {
+              exitCode: 0,
+              stdout: `round ${review.round} ${review.status}${review.error === null ? "" : ` (${review.error})`}\n${lines.join("\n")}\n`,
+            };
           },
         }),
         comments: cliCommand({

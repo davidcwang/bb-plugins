@@ -23,6 +23,7 @@ import {
   REACTION_EMOJI,
   emptyItem,
   prKey,
+  type Finding,
   type IssueComment,
   type ItemState,
   type PrDetail,
@@ -180,8 +181,24 @@ function PrListPage({ onOpen }: { onOpen: (ref: PrRef) => void }) {
           No open PRs match the search query (plugin settings).
         </div>
       )}
+      {(prs ?? []).some((p) => p.role === "reviewer") && (
+        <p className="pt-1 text-xs font-medium text-muted-foreground">Your PRs</p>
+      )}
+      <PrRows prs={(prs ?? []).filter((p) => p.role !== "reviewer")} onOpen={onOpen} />
+      {(prs ?? []).some((p) => p.role === "reviewer") && (
+        <>
+          <p className="pt-2 text-xs font-medium text-muted-foreground">Needs your review</p>
+          <PrRows prs={(prs ?? []).filter((p) => p.role === "reviewer")} onOpen={onOpen} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function PrRows({ prs, onOpen }: { prs: PrSummary[]; onOpen: (ref: PrRef) => void }) {
+  return (
       <ul className="space-y-2">
-        {(prs ?? []).map((pr) => (
+        {prs.map((pr) => (
           <li key={prKey(pr)}>
             <button
               type="button"
@@ -223,7 +240,6 @@ function PrListPage({ onOpen }: { onOpen: (ref: PrRef) => void }) {
           </li>
         ))}
       </ul>
-    </div>
   );
 }
 
@@ -810,7 +826,125 @@ function IssueCommentCard({
 
 // ---------------------------------------------------------------- detail
 
-type Tab = "overview" | "files" | "comments";
+type Tab = "overview" | "files" | "comments" | "review";
+
+const SEVERITY_TONE: Record<string, "bad" | "warn" | "muted"> = { bug: "bad", question: "warn", nit: "muted" };
+
+/** One finding of a plugin-run review round: triage, discuss, edit, post. */
+function FindingCard({
+  rpc,
+  refObj,
+  finding,
+  state,
+  onChanged,
+  onError,
+  onDiscuss,
+  discussBusy,
+  discussActive,
+}: {
+  rpc: Rpc;
+  refObj: PrRef;
+  finding: Finding;
+  state: ItemState;
+  onChanged: () => void;
+  onError: (message: string) => void;
+  onDiscuss: (item: string, label: string) => void;
+  discussBusy: boolean;
+  discussActive: boolean;
+}) {
+  const [open, setOpen] = useState(finding.status === "open");
+  const [text, setText] = useState(state.draft ?? "");
+  const [busy, setBusy] = useState(false);
+  const lastDraft = useRef(state.draft);
+  useEffect(() => {
+    if (state.draft !== lastDraft.current) {
+      if (text === "" || text === lastDraft.current) setText(state.draft ?? "");
+      lastDraft.current = state.draft;
+    }
+  }, [state.draft, text]);
+  const item = `f:${finding.id}`;
+  const where = `${finding.path}${finding.line === null ? "" : `:${finding.line}`}`;
+  const act = (work: () => Promise<unknown>) => {
+    setBusy(true);
+    work()
+      .then(onChanged)
+      .catch((cause) => onError(describe(cause)))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <div className={cn("rounded-lg border border-border bg-card", finding.status === "dismissed" && "opacity-60")}>
+      <button type="button" onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-3 py-2 text-left">
+        <Icon name={open ? "ChevronDown" : "ChevronRight"} className="size-3.5 shrink-0 text-muted-foreground" />
+        <Chip tone={SEVERITY_TONE[finding.severity] ?? "muted"}>{finding.severity}</Chip>
+        <span className="min-w-0 flex-1 truncate text-xs">
+          <span className="font-medium">{finding.title}</span>
+          <span className="ml-2 font-mono text-muted-foreground">{where}</span>
+        </span>
+        {finding.status === "posted" && <Chip tone="good">posted{finding.postedAt === null ? "" : ` ${ago(finding.postedAt)}`}</Chip>}
+        {finding.status === "dismissed" && <Chip>dismissed</Chip>}
+      </button>
+      {open && (
+        <div className="space-y-2 border-t border-border px-3 py-3">
+          <Markdown content={finding.body} className="text-sm" />
+          {finding.status !== "posted" && (
+            <>
+              <Textarea
+                value={text}
+                onChange={setText}
+                onBlur={() => {
+                  if (text !== (state.draft ?? "")) rpc.call("draft_save", { ref: refObj, item, text }).catch(() => undefined);
+                }}
+                placeholder="The review comment to post…"
+                rows={3}
+              />
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant={discussActive ? "secondary" : "outline"}
+                  size="sm"
+                  disabled={discussBusy}
+                  onClick={() => onDiscuss(item, where)}
+                >
+                  <Icon name={discussBusy ? "Loader" : "MessagesSquare"} className={cn("size-3.5", discussBusy && "animate-spin")} />
+                  {state.discussThreadId !== null ? "Resume discussion" : "Discuss"}
+                </Button>
+                <div className="flex-1" />
+                {finding.status === "open" ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground"
+                    disabled={busy}
+                    onClick={() => act(() => rpc.call("finding_set", { ref: refObj, findingId: finding.id, status: "dismissed" }))}
+                  >
+                    Dismiss
+                  </Button>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground"
+                    disabled={busy}
+                    onClick={() => act(() => rpc.call("finding_set", { ref: refObj, findingId: finding.id, status: "open" }))}
+                  >
+                    Restore
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  disabled={busy || text.trim() === ""}
+                  onClick={() => act(() => rpc.call("finding_post", { ref: refObj, findingId: finding.id, body: text }))}
+                >
+                  {busy ? <Icon name="Loader" className="size-3.5 animate-spin" /> : <Icon name="Send" className="size-3.5" />}
+                  Post comment
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** Last detail per PR for this window, so re-opening renders instantly. */
 const detailMemo = new Map<string, PrDetail>();
@@ -900,6 +1034,15 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
   const onError = useCallback((message: string) => setError(message), []);
   const item = (id: string): ItemState => detail?.items[id] ?? emptyItem();
 
+  // PRs you were asked to review open on the Review tab.
+  const tabSeeded = useRef(false);
+  useEffect(() => {
+    if (detail !== null && !tabSeeded.current) {
+      tabSeeded.current = true;
+      if (detail.summary.role === "reviewer") setTab("review");
+    }
+  }, [detail]);
+
   const threads = useMemo(() => {
     const all = detail?.threads ?? [];
     return showResolved ? all : all.filter((t) => !t.isResolved);
@@ -928,7 +1071,15 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
       group: "comment" as const,
       option: `${mark(`ic:${c.id}`)}${c.author}: ${short(c.body)}`,
     }));
-    return [...fromThreads, ...fromComments];
+    const fromFindings = (detail?.review.findings ?? [])
+      .filter((f) => f.status !== "dismissed")
+      .map((f) => ({
+        item: `f:${f.id}`,
+        label: `${f.path}${f.line === null ? "" : `:${f.line}`}`,
+        group: "finding" as const,
+        option: `${mark(`f:${f.id}`)}[${f.severity}] ${f.path}${f.line === null ? "" : `:${f.line}`} — ${short(f.title)}`,
+      }));
+    return [...fromThreads, ...fromComments, ...fromFindings];
   }, [detail]);
 
   if (detail === null) {
@@ -1010,6 +1161,7 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
             ["overview", "Overview", null],
             ["files", "Files", detail.files.length],
             ["comments", "Comments", unresolvedCount],
+            ["review", "Review", detail.review.findings.filter((f) => f.status === "open").length || null],
           ] as Array<[Tab, string, number | null]>
         ).map(([id, label, count]) => (
           <button
@@ -1116,6 +1268,62 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
 
       {tab === "files" && <FilesView files={detail.files} threads={detail.threads} />}
 
+      {tab === "review" && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs text-muted-foreground">
+              {detail.review.round === 0
+                ? "No review run yet. The worker reads the full diff and your checkout, then reports findings here for you to triage."
+                : detail.review.status === "running"
+                  ? `Round ${detail.review.round} running…`
+                  : detail.review.status === "failed"
+                    ? `Round ${detail.review.round} failed`
+                    : `Round ${detail.review.round}: ${detail.review.findings.filter((f) => f.status === "open").length} open, ${detail.review.findings.filter((f) => f.status === "posted").length} posted`}
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={detail.review.status === "running"}
+              onClick={() => {
+                rpc.call("review_start", { ref: refObj, guidance: "" }).then(load, (c) => onError(describe(c)));
+              }}
+            >
+              {detail.review.status === "running" ? (
+                <Icon name="Loader" className="size-3.5 animate-spin" />
+              ) : (
+                <Icon name="Bot" className="size-3.5" />
+              )}
+              {detail.review.round === 0 ? "Run review" : "Run another round"}
+            </Button>
+          </div>
+          {detail.review.error !== null && (
+            <p className="rounded-md border border-destructive/40 px-3 py-2 text-xs text-destructive">{detail.review.error}</p>
+          )}
+          {detail.review.status === "done" && detail.review.findings.length === 0 && (
+            <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
+              No findings — the review came back clean.
+            </div>
+          )}
+          {detail.review.findings
+            .slice()
+            .sort((a, b) => (a.status === "open" ? 0 : 1) - (b.status === "open" ? 0 : 1))
+            .map((f) => (
+              <FindingCard
+                key={f.id}
+                rpc={rpc}
+                refObj={refObj}
+                finding={f}
+                state={item(`f:${f.id}`)}
+                onChanged={load}
+                onError={onError}
+                onDiscuss={openDiscuss}
+                discussBusy={discussBusy === `f:${f.id}`}
+                discussActive={discuss?.item === `f:${f.id}`}
+              />
+            ))}
+        </div>
+      )}
+
       {tab === "comments" && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
@@ -1196,6 +1404,17 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
                       </option>
                     ))}
                 </optgroup>
+                {discussTargets.some((t) => t.group === "finding") && (
+                  <optgroup label="Review findings">
+                    {discussTargets
+                      .filter((t) => t.group === "finding")
+                      .map((t) => (
+                        <option key={t.item} value={t.item}>
+                          {t.option}
+                        </option>
+                      ))}
+                  </optgroup>
+                )}
               </select>
               <Button variant="ghost" size="sm" className="h-6 px-1.5" onClick={() => setDiscuss(null)} aria-label="Close discussion">
                 <Icon name="X" className="size-3.5" />

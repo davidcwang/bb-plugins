@@ -30,6 +30,8 @@ export const prSummarySchema = z.object({
   owner: z.string(),
   repo: z.string(),
   number: z.number(),
+  /** author = your PR; reviewer = your review was requested. */
+  role: z.enum(["author", "reviewer"]).default("author"),
   title: z.string(),
   url: z.string(),
   isDraft: z.boolean(),
@@ -150,6 +152,46 @@ export const emptyItem = (): ItemState => ({
   postedAt: null,
 });
 
+// ---- reviewer side: findings from a plugin-run review round ----
+
+export const SEVERITIES = ["bug", "question", "nit"] as const;
+export type Severity = (typeof SEVERITIES)[number];
+
+export const findingSchema = z.object({
+  id: z.string(),
+  path: z.string(),
+  /** Line on the PR head side; null = whole-PR / not line-anchored. */
+  line: z.number().nullable(),
+  severity: z.enum(SEVERITIES),
+  title: z.string(),
+  /** Explanation of the finding, for you (markdown). */
+  body: z.string(),
+  status: z.enum(["open", "posted", "dismissed"]),
+  postedAt: z.string().nullable(),
+});
+export type Finding = z.infer<typeof findingSchema>;
+
+export const reviewStateSchema = z.object({
+  status: z.enum(["idle", "running", "done", "failed"]),
+  round: z.number(),
+  threadId: z.string().nullable(),
+  startedAt: z.string().nullable(),
+  finishedAt: z.string().nullable(),
+  error: z.string().nullable(),
+  findings: z.array(findingSchema),
+});
+export type ReviewState = z.infer<typeof reviewStateSchema>;
+
+export const emptyReview = (): ReviewState => ({
+  status: "idle",
+  round: 0,
+  threadId: null,
+  startedAt: null,
+  finishedAt: null,
+  error: null,
+  findings: [],
+});
+
 export const checkoutSchema = z.object({
   path: z.string(),
   branch: z.string().nullable(),
@@ -169,6 +211,7 @@ export const prDetailSchema = z.object({
   issueComments: z.array(issueCommentSchema),
   reviews: z.array(reviewSchema),
   items: z.record(z.string(), itemStateSchema),
+  review: reviewStateSchema,
   checkout: checkoutSchema.nullable(),
   fetchedAt: z.string(),
 });
