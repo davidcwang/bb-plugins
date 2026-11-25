@@ -184,6 +184,16 @@ export const PRIORITY_RANK: Record<Priority, number> = { critical: 0, high: 1, m
 export const CONFIDENCES = ["confirmed", "plausible"] as const;
 export type Confidence = (typeof CONFIDENCES)[number];
 
+/** A code location relevant to a finding, on the PR head side. */
+export const findingRefSchema = z.object({
+  path: z.string(),
+  startLine: z.number(),
+  endLine: z.number(),
+  /** Why this location matters for the finding (shown inline, like a review comment). */
+  note: z.string(),
+});
+export type FindingRef = z.infer<typeof findingRefSchema>;
+
 export const findingSchema = z.object({
   id: z.string(),
   path: z.string(),
@@ -194,6 +204,8 @@ export const findingSchema = z.object({
   confidence: z.enum(CONFIDENCES).default("confirmed"),
   /** Concrete inputs/state that make it go wrong. */
   scenario: z.string().nullable().default(null),
+  /** The issue location first, then related context; empty on older findings. */
+  refs: z.array(findingRefSchema).default([]),
   title: z.string(),
   /** Explanation of the finding, for you (markdown). */
   body: z.string(),

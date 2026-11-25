@@ -26,6 +26,7 @@ import {
   emptyItem,
   prKey,
   type Finding,
+  type FindingRef,
   type IssueComment,
   type ItemState,
   type PrDetail,
@@ -76,27 +77,6 @@ function splitPatch(patch: string): Array<{ path: string; patch: string }> {
     const m = p.match(/^diff --git a\/(.+?) b\//);
     return { path: m?.[1] ?? "patch", patch: p };
   });
-}
-
-/** The diff hunk of `path` that contains head-side `line`, from the PR's file patches. */
-function hunkFor(files: PrFile[], path: string, line: number | null): string | null {
-  if (line === null) return null;
-  const patch = files.find((f) => f.path === path)?.patch ?? null;
-  if (patch === null) return null;
-  const lines = patch.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
-    if (m === null) continue;
-    const start = Number(m[1]);
-    const len = Math.max(Number(m[2] ?? "1"), 1);
-    if (line < start || line >= start + len) continue;
-    const out = [lines[i]];
-    for (let j = i + 1; j < lines.length && !lines[j].startsWith("@@") && !lines[j].startsWith("diff --git"); j++) {
-      out.push(lines[j]);
-    }
-    return out.join("\n");
-  }
-  return null;
 }
 
 function Chip({ children, tone = "muted" }: { children: ReactNode; tone?: "muted" | "good" | "bad" | "warn" | "accent" }) {
@@ -950,6 +930,249 @@ type Tab = "overview" | "files" | "comments" | "review" | "walkthrough";
 
 const SEVERITY_TONE: Record<string, "bad" | "warn" | "muted"> = { bug: "bad", question: "warn", nit: "muted" };
 
+// ------------------------------------------------- finding code context
+
+/** Head-side line numbers this PR adds in `path`, from its file patch. */
+function addedLinesFor(files: PrFile[], path: string): Set<number> {
+  const out = new Set<number>();
+  const patch = files.find((f) => f.path === path)?.patch ?? null;
+  if (patch === null) return out;
+  let line = 0;
+  for (const l of patch.split("\n")) {
+    const m = l.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (m !== null) {
+      line = Number(m[1]);
+      continue;
+    }
+    if (line === 0) continue;
+    if (l.startsWith("+")) out.add(line++);
+    else if (l.startsWith("-")) continue;
+    else line++;
+  }
+  return out;
+}
+
+/** The finding's refs, or one synthesized from its path/line for older findings. */
+function refsOf(f: Finding): FindingRef[] {
+  if (f.refs.length > 0) return f.refs;
+  return [{ path: f.path, startLine: f.line ?? 1, endLine: f.line ?? 1, note: f.title }];
+}
+
+const fileMemo = new Map<string, string>();
+
+function FileContext({
+  rpc,
+  refObj,
+  path,
+  refs,
+  active,
+  added,
+}: {
+  rpc: Rpc;
+  refObj: PrRef;
+  path: string;
+  /** Every ref in this file; `active` is the one to scroll to. */
+  refs: FindingRef[];
+  active: FindingRef;
+  added: Set<number>;
+}) {
+  const memoKey = `${prKey(refObj)}:${path}`;
+  const [content, setContent] = useState<string | null>(() => fileMemo.get(memoKey) ?? null);
+  const [error, setError] = useState<string | null>(null);
+  const [pad, setPad] = useState(25);
+  const [whole, setWhole] = useState(false);
+  const scroller = useRef<HTMLDivElement | null>(null);
+  const target = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setPad(25);
+    setWhole(false);
+    const hit = fileMemo.get(memoKey);
+    if (hit !== undefined) {
+      setContent(hit);
+      return;
+    }
+    setContent(null);
+    setError(null);
+    rpc.call("file_at_head", { ref: refObj, path }).then(
+      (r) => {
+        if (r.content !== null) {
+          fileMemo.set(memoKey, r.content);
+          setContent(r.content);
+        } else setError(r.error ?? "Could not load the file.");
+      },
+      (c) => setError(describe(c)),
+    );
+  }, [memoKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const box = scroller.current;
+    const el = target.current;
+    if (box !== null && el !== null) box.scrollTop = Math.max(0, el.offsetTop - box.clientHeight / 3);
+  }, [content, active]);
+
+  if (error !== null) return <p className="px-3 py-4 text-xs text-destructive">{error}</p>;
+  if (content === null) return <div className="px-3 py-4"><Spinner label={`Loading ${path}…`} /></div>;
+
+  const lines = content.split("\n");
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  const lo = whole ? 1 : Math.max(1, Math.min(...refs.map((r) => r.startLine)) - pad);
+  const hi = whole ? lines.length : Math.min(lines.length, Math.max(...refs.map((r) => r.endLine)) + pad);
+  const inRef = (n: number) => refs.find((r) => n >= r.startLine && n <= r.endLine);
+  const width = String(hi).length;
+
+  const rows: ReactNode[] = [];
+  for (let n = lo; n <= hi; n++) {
+    const r = inRef(n);
+    const isActive = r !== undefined && r === active;
+    const isAdded = added.has(n);
+    rows.push(
+      <div
+        key={n}
+        ref={isActive && n === active.startLine ? target : undefined}
+        className={cn(
+          "flex whitespace-pre",
+          r !== undefined && (isActive ? "bg-yellow-500/20" : "bg-yellow-500/10"),
+        )}
+      >
+        <span
+          className={cn(
+            "w-1 shrink-0",
+            r !== undefined ? (isActive ? "bg-yellow-500" : "bg-yellow-500/50") : isAdded ? "bg-green-600/60" : "",
+          )}
+        />
+        <span className="select-none px-2 text-right text-muted-foreground/70" style={{ minWidth: `${width + 2}ch` }}>
+          {n}
+        </span>
+        <span className={cn("select-none pr-1", isAdded ? "text-green-600 dark:text-green-400" : "text-transparent")}>+</span>
+        <span className="pr-4">{lines[n - 1]}</span>
+      </div>,
+    );
+    const ending = refs.filter((x) => x.endLine === n);
+    for (const x of ending) {
+      rows.push(
+        <div key={`note-${n}-${x.startLine}`} className="whitespace-normal px-3 py-1.5" style={{ paddingLeft: `${width + 5}ch` }}>
+          <div
+            className={cn(
+              "rounded-md border px-3 py-2 font-sans text-xs",
+              x === active ? "border-yellow-500/60 bg-card" : "border-border bg-card/70 text-muted-foreground",
+            )}
+          >
+            <div className="mb-0.5 flex items-center gap-1 text-[10px] text-muted-foreground">
+              <Icon name="MessageSquare" className="size-3" />
+              {x.startLine === x.endLine ? `line ${x.startLine}` : `lines ${x.startLine}–${x.endLine}`}
+            </div>
+            {x.note}
+          </div>
+        </div>,
+      );
+    }
+  }
+
+  return (
+    <div className="flex min-h-0 flex-col">
+      <div ref={scroller} className="relative max-h-[60vh] overflow-auto bg-background py-1 font-mono text-xs leading-5">
+        {!whole && lo > 1 && (
+          <button type="button" onClick={() => setPad((p) => p + 40)} className="w-full py-1 text-[11px] text-muted-foreground hover:bg-accent">
+            ↑ Show more above (lines 1–{lo - 1} hidden)
+          </button>
+        )}
+        {rows}
+        {!whole && hi < lines.length && (
+          <button type="button" onClick={() => setPad((p) => p + 40)} className="w-full py-1 text-[11px] text-muted-foreground hover:bg-accent">
+            ↓ Show more below ({lines.length - hi} lines hidden)
+          </button>
+        )}
+      </div>
+      <div className="flex items-center gap-3 border-t border-border px-3 py-1 text-[10px] text-muted-foreground">
+        <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-1 bg-yellow-500" /> finding</span>
+        <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-1 bg-green-600/60" /> added in this PR</span>
+        <span>unmarked = existing code</span>
+        <div className="flex-1" />
+        {!whole && (
+          <button type="button" className="hover:text-foreground" onClick={() => setWhole(true)}>
+            Show whole file
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Left: the finding's locations. Right: the selected file at the PR head, lines highlighted, notes inline. */
+function FindingContext({ rpc, refObj, finding, files }: { rpc: Rpc; refObj: PrRef; finding: Finding; files: PrFile[] }) {
+  const refs = refsOf(finding);
+  const [index, setIndex] = useState(0);
+  useEffect(() => setIndex(0), [finding.id]);
+  const active = refs[Math.min(index, refs.length - 1)];
+  const sameFile = refs.filter((r) => r.path === active.path);
+  const added = useMemo(() => addedLinesFor(files, active.path), [files, active.path]);
+  return (
+    <div className="flex overflow-hidden rounded-md border border-border">
+      <div className="w-60 shrink-0 space-y-0.5 overflow-y-auto border-r border-border bg-card py-1.5">
+        <div className="px-3 pb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Where to look</div>
+        {refs.map((r, i) => {
+          const name = r.path.split("/").pop() ?? r.path;
+          const dir = r.path.slice(0, r.path.length - name.length);
+          const changed = files.some((f) => f.path === r.path);
+          return (
+            <button
+              key={i}
+              type="button"
+              onClick={() => setIndex(i)}
+              title={r.path}
+              className={cn(
+                "flex w-full flex-col gap-0.5 px-3 py-1.5 text-left transition-colors",
+                r === active ? "bg-primary/10" : "hover:bg-accent",
+              )}
+            >
+              <span className="flex items-center gap-1.5 text-xs">
+                <span
+                  className={cn(
+                    "inline-flex size-4 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold",
+                    i === 0 ? "bg-yellow-500/30 text-yellow-700 dark:text-yellow-300" : "bg-muted text-muted-foreground",
+                  )}
+                >
+                  {i + 1}
+                </span>
+                <span className={cn("min-w-0 flex-1 truncate font-mono", r === active && "font-semibold")}>{name}</span>
+                <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                  :{r.startLine}
+                  {r.endLine !== r.startLine ? `–${r.endLine}` : ""}
+                </span>
+              </span>
+              <span className="truncate pl-5 font-mono text-[10px] text-muted-foreground">{dir}</span>
+              <span className="pl-5 text-[10px] text-muted-foreground">{changed ? "changed in this PR" : "existing file"}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 border-b border-border bg-muted/40 px-3 py-1.5">
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{active.path}</span>
+          <Button variant="ghost" size="sm" className="h-5 px-1" disabled={index === 0} onClick={() => setIndex((i) => i - 1)} aria-label="Previous location">
+            <Icon name="ChevronUp" className="size-3.5" />
+          </Button>
+          <span className="text-[10px] text-muted-foreground">
+            {index + 1}/{refs.length}
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-5 px-1"
+            disabled={index >= refs.length - 1}
+            onClick={() => setIndex((i) => i + 1)}
+            aria-label="Next location"
+          >
+            <Icon name="ChevronDown" className="size-3.5" />
+          </Button>
+        </div>
+        <FileContext rpc={rpc} refObj={refObj} path={active.path} refs={sameFile} active={active} added={added} />
+      </div>
+    </div>
+  );
+}
+
 function PriorityChip({ priority }: { priority: Priority }) {
   const cls: Record<Priority, string> = {
     critical: "border-destructive bg-destructive text-white",
@@ -977,13 +1200,70 @@ function sortFindings(findings: Finding[]): Finding[] {
     );
 }
 
+/** One finding at a time: a grouped dropdown plus previous/next. */
+function FindingPager({ findings, render }: { findings: Finding[]; render: (f: Finding) => ReactNode }) {
+  const sorted = useMemo(() => sortFindings(findings), [findings]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selected = sorted.find((f) => f.id === selectedId) ?? sorted[0];
+  const index = sorted.findIndex((f) => f.id === selected?.id);
+  if (selected === undefined) return null;
+  const groups: Array<[string, Finding[]]> = [
+    ["Open — confirmed", sorted.filter((f) => f.status === "open" && f.confidence === "confirmed")],
+    ["Open — lower confidence", sorted.filter((f) => f.status === "open" && f.confidence === "plausible")],
+    ["Posted", sorted.filter((f) => f.status === "posted")],
+    ["Dismissed", sorted.filter((f) => f.status === "dismissed")],
+  ];
+  const label = (f: Finding) =>
+    `${f.priority.toUpperCase()} · ${f.title} — ${f.path.split("/").pop()}${f.line === null ? "" : `:${f.line}`}${f.confidence === "plausible" ? " (unverified)" : ""}`;
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <select
+          value={selected.id}
+          onChange={(e) => setSelectedId(e.target.value)}
+          aria-label="Select a finding"
+          className="h-8 min-w-0 flex-1 truncate rounded-md border border-border bg-background px-2 text-sm outline-none focus:border-primary/50"
+        >
+          {groups
+            .filter(([, list]) => list.length > 0)
+            .map(([name, list]) => (
+              <optgroup key={name} label={`${name} (${list.length})`}>
+                {list.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {label(f)}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+        </select>
+        <Button variant="outline" size="sm" disabled={index <= 0} onClick={() => setSelectedId(sorted[index - 1].id)} aria-label="Previous finding">
+          <Icon name="ChevronLeft" className="size-3.5" />
+        </Button>
+        <span className="text-xs text-muted-foreground">
+          {index + 1}/{sorted.length}
+        </span>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={index >= sorted.length - 1}
+          onClick={() => setSelectedId(sorted[index + 1].id)}
+          aria-label="Next finding"
+        >
+          <Icon name="ChevronRight" className="size-3.5" />
+        </Button>
+      </div>
+      {render(selected)}
+    </div>
+  );
+}
+
 /** One finding of a plugin-run review round: triage, discuss, edit, post. */
 function FindingCard({
   rpc,
   refObj,
   finding,
   state,
-  contextPatch,
+  files,
   onChanged,
   onError,
   onDiscuss,
@@ -994,15 +1274,13 @@ function FindingCard({
   refObj: PrRef;
   finding: Finding;
   state: ItemState;
-  /** Diff hunk containing the finding's line, for context. */
-  contextPatch: string | null;
+  files: PrFile[];
   onChanged: () => void;
   onError: (message: string) => void;
   onDiscuss: (item: string, label: string) => void;
   discussBusy: boolean;
   discussActive: boolean;
 }) {
-  const [open, setOpen] = useState(finding.status === "open");
   const [text, setText] = useState(state.draft ?? "");
   const [busy, setBusy] = useState(false);
   const lastDraft = useRef(state.draft);
@@ -1023,8 +1301,7 @@ function FindingCard({
   };
   return (
     <div className={cn("rounded-lg border border-border bg-card", finding.status === "dismissed" && "opacity-60")}>
-      <button type="button" onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 px-3 py-2 text-left">
-        <Icon name={open ? "ChevronDown" : "ChevronRight"} className="size-3.5 shrink-0 text-muted-foreground" />
+      <div className="flex w-full items-center gap-2 px-3 py-2">
         <PriorityChip priority={finding.priority} />
         <Chip tone={SEVERITY_TONE[finding.severity] ?? "muted"}>{finding.severity}</Chip>
         {finding.confidence === "plausible" && <Chip tone="muted">unverified</Chip>}
@@ -1034,14 +1311,9 @@ function FindingCard({
         </span>
         {finding.status === "posted" && <Chip tone="good">posted{finding.postedAt === null ? "" : ` ${ago(finding.postedAt)}`}</Chip>}
         {finding.status === "dismissed" && <Chip>dismissed</Chip>}
-      </button>
-      {open && (
+      </div>
+
         <div className="space-y-2 border-t border-border px-3 py-3">
-          {contextPatch !== null && (
-            <div className="overflow-hidden rounded-md border border-border">
-              <Diff patch={contextPatch} path={finding.path} />
-            </div>
-          )}
           {finding.scenario !== null && finding.scenario !== "" && (
             <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">
               <span className="font-medium">Failure scenario: </span>
@@ -1049,6 +1321,7 @@ function FindingCard({
             </div>
           )}
           <Markdown content={finding.body} className="text-sm" />
+          <FindingContext rpc={rpc} refObj={refObj} finding={finding} files={files} />
           {finding.status !== "posted" && (
             <>
               <Textarea
@@ -1104,7 +1377,7 @@ function FindingCard({
             </>
           )}
         </div>
-      )}
+
     </div>
   );
 }
@@ -1519,40 +1792,26 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
               No findings — the review came back clean.
             </div>
           )}
-          {(() => {
-            const sorted = sortFindings(detail.review.findings);
-            const confirmed = sorted.filter((f) => f.confidence === "confirmed");
-            const plausible = sorted.filter((f) => f.confidence === "plausible");
-            const render = (f: Finding) => (
-              <FindingCard
+          {detail.review.findings.length > 0 && (
+            <FindingPager
+              findings={detail.review.findings}
+              render={(f) => (
+                <FindingCard
                   key={f.id}
                   rpc={rpc}
                   refObj={refObj}
                   finding={f}
                   state={item(`f:${f.id}`)}
-                  contextPatch={hunkFor(detail.files, f.path, f.line)}
+                  files={detail.files}
                   onChanged={load}
                   onError={onError}
                   onDiscuss={openDiscuss}
                   discussBusy={discussBusy === `f:${f.id}`}
                   discussActive={discuss?.item === `f:${f.id}`}
                 />
-            );
-            return (
-              <>
-                {confirmed.map(render)}
-                {plausible.length > 0 && (
-                  <details className="group rounded-lg border border-dashed border-border" open={confirmed.length === 0}>
-                    <summary className="cursor-pointer list-none px-3 py-2 text-xs text-muted-foreground">
-                      <Icon name="ChevronRight" className="mr-1 inline size-3 transition-transform group-open:rotate-90" />
-                      Lower confidence — the review couldn't fully verify these ({plausible.length})
-                    </summary>
-                    <div className="space-y-2 px-2 pb-2">{plausible.map(render)}</div>
-                  </details>
-                )}
-              </>
-            );
-          })()}
+              )}
+            />
+          )}
         </div>
       )}
 

@@ -115,6 +115,10 @@ export const rpcContract = defineRpcContract({
     output: z.object({ url: z.string() }),
   },
   walkthrough_start: { input: prRefSchema, output: walkthroughSchema },
+  file_at_head: {
+    input: z.object({ ref: prRefSchema, path: z.string().min(1) }),
+    output: z.object({ content: z.string().nullable(), error: z.string().nullable() }),
+  },
   model_get: {
     input: z.null(),
     output: z.object({ selection: workerModelSchema.nullable(), fallback: workerModelSchema.nullable() }),
@@ -1027,7 +1031,8 @@ export default async function plugin(bb: BbPluginApi) {
 - severity (the kind): the skill's "important" → "bug"; "pre_existing" → "question" (say it is pre-existing in the comment); "nit" → "nit" (prefix its comment with "[nit]").
 - confidence: the skill's verify verdict CONFIRMED → "confirmed"; PLAUSIBLE (or no verify pass) → "plausible".
 - priority — impact IF the finding is real: "critical" = data loss or corruption, security hole, crash or outage on a common path, a broken deploy or migration; "high" = wrong results or behavior on a realistic path, resource leaks, broken API contract; "medium" = edge-case misbehavior, missing handling on an unlikely path, a pre-existing issue this change makes worse; "low" = nits and minor issues with little user-visible effect.
-- failureScenario: the skill's concrete inputs/state → wrong output or crash, verbatim or tightened.`,
+- failureScenario: the skill's concrete inputs/state → wrong output or crash, verbatim or tightened.
+- refs: 1–5 code locations the reviewer must look at to understand the finding, each { path, startLine, endLine, note }, with line numbers in the file AS OF THE PR HEAD (check with \`gh api repos/${ref.owner}/${ref.repo}/contents/<path>?ref=${detail.summary.headRefName} -H "Accept: application/vnd.github.raw"\` when unsure). First the exact lines where the issue is; then the related context — e.g. for a column-width bug, the migration defining the column AND the code that writes it; for a race, both sides. Keep each range tight (1–15 lines). "note" is a one-or-two-sentence inline annotation saying what to see at that spot, written like a code-review comment on those lines.`,
       guidance.trim() === "" ? null : `Guidance from the reviewer for this round: ${guidance.trim()}`,
       reviewInstructions.trim() === "" ? null : `Standing review instructions: ${reviewInstructions.trim()}`,
       `Publish with ONE ghpr_report_findings call — the PR panel, NOT ReportFindings or prose (an empty list is a valid, good result). For each finding also give: path and the head-side line from the diff; a short title; an explanation for the reviewer (why it's a problem, with evidence); and "comment" — the review comment ready to post, in the reviewer's voice: direct, specific, concise, phrased as a question when confidence is "plausible". After the tool call reply here with one line and stop; the reviewer triages everything in the PR panel.`,
@@ -1090,6 +1095,39 @@ export default async function plugin(bb: BbPluginApi) {
       throw cause;
     }
     return (await readState(ref)).walkthrough ?? emptyWalkthrough();
+  }
+
+  // ---- file contents at the PR head (finding context viewer) ----
+  const headShaCache = new Map<string, { sha: string; at: number }>();
+  const fileCache = new Map<string, string>(); // `${sha}:${path}` -> content
+  async function headSha(ref: PrRef): Promise<string> {
+    const key = prKey(ref);
+    const hit = headShaCache.get(key);
+    if (hit !== undefined && Date.now() - hit.at < 60_000) return hit.sha;
+    const sha = (await gh(["api", `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`, "--jq", ".head.sha"])).trim();
+    headShaCache.set(key, { sha, at: Date.now() });
+    return sha;
+  }
+  async function fileAtHead(ref: PrRef, path: string): Promise<{ content: string | null; error: string | null }> {
+    if (path.split("/").some((seg) => seg === ".." || seg === "")) return { content: null, error: "Invalid path." };
+    try {
+      const sha = await headSha(ref);
+      const cacheKey = `${sha}:${path}`;
+      const hit = fileCache.get(cacheKey);
+      if (hit !== undefined) return { content: hit, error: null };
+      const encoded = path.split("/").map(encodeURIComponent).join("/");
+      const content = await gh([
+        "api",
+        `repos/${ref.owner}/${ref.repo}/contents/${encoded}?ref=${sha}`,
+        "-H",
+        "Accept: application/vnd.github.raw",
+      ]);
+      if (fileCache.size > 200) fileCache.delete(fileCache.keys().next().value!);
+      fileCache.set(cacheKey, content);
+      return { content, error: null };
+    } catch (cause) {
+      return { content: null, error: describe(cause) };
+    }
   }
 
   async function postFinding(ref: PrRef, findingId: string, body: string): Promise<string> {
@@ -1217,6 +1255,17 @@ export default async function plugin(bb: BbPluginApi) {
             priority: z.enum(PRIORITIES),
             confidence: z.enum(CONFIDENCES),
             failureScenario: z.string().max(4000).nullable().default(null),
+            refs: z
+              .array(
+                z.object({
+                  path: z.string().min(1),
+                  startLine: z.number().int().positive(),
+                  endLine: z.number().int().positive(),
+                  note: z.string().min(1).max(2000),
+                }),
+              )
+              .max(6)
+              .default([]),
             title: z.string().min(1).max(200),
             explanation: z.string().min(1).max(8000),
             comment: z.string().min(1).max(8000),
@@ -1237,6 +1286,7 @@ export default async function plugin(bb: BbPluginApi) {
           priority: f.priority,
           confidence: f.confidence,
           scenario: f.failureScenario,
+          refs: f.refs.map((r) => ({ ...r, endLine: Math.max(r.endLine, r.startLine) })),
           title: f.title,
           body: f.explanation,
           status: "open" as const,
@@ -1526,6 +1576,7 @@ export default async function plugin(bb: BbPluginApi) {
       }),
     finding_post: async ({ ref, findingId, body }) => ({ url: await postFinding(ref, findingId, body) }),
     walkthrough_start: (ref) => startWalkthrough(ref),
+    file_at_head: ({ ref, path }) => fileAtHead(ref, path),
     model_get: async () => ({ selection: await readWorkerModel(), fallback: await fallbackWorkerModel() }),
     model_set: async ({ selection }) => {
       if (selection === null) await bb.storage.kv.delete(WORKER_MODEL_KEY);
