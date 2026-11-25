@@ -1674,10 +1674,11 @@ function WalkthroughView({ walkthrough, onRun }: { walkthrough: Walkthrough; onR
   return (
     <div className="flex flex-col gap-3 md:flex-row md:items-start">
       <div className="w-full shrink-0 self-start rounded-lg border border-border bg-card py-1.5 md:sticky md:top-2 md:max-h-[calc(100vh-10rem)] md:w-64 md:overflow-y-auto">
-        <div className="flex items-center justify-between gap-1 px-3 pb-1.5 pt-1">
-          <span className="truncate text-xs font-medium">{walkthrough.title ?? "Walkthrough"}</span>
-          <Button variant="ghost" size="sm" className="h-5 px-1 text-[10px] text-muted-foreground" onClick={onRun}>
-            Rebuild
+        <div className="space-y-2 border-b border-border px-3 pb-2 pt-1">
+          <div className="text-xs font-medium">{walkthrough.title ?? "Walkthrough"}</div>
+          <Button variant="outline" size="sm" className="w-full" onClick={onRun}>
+            <Icon name="RefreshCw" className="size-3.5" />
+            Rebuild walkthrough
           </Button>
         </div>
         {steps.map((s, i) => (
