@@ -312,3 +312,56 @@ export const prDetailSchema = z.object({
   fetchedAt: z.string(),
 });
 export type PrDetail = z.infer<typeof prDetailSchema>;
+
+// ---- where a posted review comment lands ----
+
+export interface CodeLocation {
+  path: string;
+  startLine: number;
+  endLine: number;
+}
+
+/**
+ * inline = a (multi-line) review comment on those lines; file = a file-level
+ * review comment (file is in the diff, lines are not); link = a PR comment with
+ * a permalink, because the file is not part of this PR's diff.
+ */
+export interface CommentTarget extends CodeLocation {
+  mode: "inline" | "file" | "link";
+}
+
+/** Head-side [first, last] line of each hunk in a unified patch — the lines GitHub accepts comments on. */
+export function hunkRanges(patch: string): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  for (const m of patch.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm)) {
+    const start = Number(m[1]);
+    const count = m[2] === undefined ? 1 : Number(m[2]);
+    if (count > 0) out.push([start, start + count - 1]);
+  }
+  return out;
+}
+
+export function commentTarget(files: Array<{ path: string; patch: string | null }>, loc: CodeLocation): CommentTarget {
+  const file = files.find((f) => f.path === loc.path);
+  if (file === undefined) return { ...loc, mode: "link" };
+  if (file.patch === null) return { ...loc, mode: "file" };
+  const ranges = hunkRanges(file.patch);
+  // Prefer the hunk holding the last line (GitHub anchors a comment on its last line).
+  const overlap =
+    ranges.find(([a, b]) => loc.endLine >= a && loc.endLine <= b) ??
+    ranges.find(([a, b]) => loc.startLine <= b && loc.endLine >= a);
+  if (overlap === undefined) return { ...loc, mode: "file" };
+  return {
+    path: loc.path,
+    startLine: Math.max(loc.startLine, overlap[0]),
+    endLine: Math.min(loc.endLine, overlap[1]),
+    mode: "inline",
+  };
+}
+
+export function describeTarget(t: CommentTarget): string {
+  const lines = t.startLine === t.endLine ? `line ${t.startLine}` : `lines ${t.startLine}–${t.endLine}`;
+  if (t.mode === "inline") return `inline on ${t.path} ${lines}`;
+  if (t.mode === "file") return `on ${t.path} (file comment — ${lines} aren't in the diff; links to them)`;
+  return `as a PR comment linking ${t.path} ${lines} (file isn't in this PR's diff)`;
+}

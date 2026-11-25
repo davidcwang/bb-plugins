@@ -22,6 +22,10 @@ import {
   emptyItem,
   emptyReview,
   emptyWalkthrough,
+  commentTarget,
+  describeTarget,
+  type CodeLocation,
+  type CommentTarget,
   workerModelSchema,
   type RunModel,
   type WorkerModel,
@@ -111,8 +115,14 @@ export const rpcContract = defineRpcContract({
     output: reviewStateSchema,
   },
   finding_post: {
-    input: z.object({ ref: prRefSchema, findingId: z.string(), body: z.string().min(1).max(60_000) }),
-    output: z.object({ url: z.string() }),
+    input: z.object({
+      ref: prRefSchema,
+      findingId: z.string(),
+      body: z.string().min(1).max(60_000),
+      /** Which of the finding's locations to attach to; default = the best commentable one. */
+      target: z.object({ path: z.string(), startLine: z.number(), endLine: z.number() }).nullable().default(null),
+    }),
+    output: z.object({ url: z.string(), where: z.string() }),
   },
   walkthrough_start: { input: prRefSchema, output: walkthroughSchema },
   finding_locate: { input: prRefSchema, output: reviewStateSchema },
@@ -1211,42 +1221,59 @@ export default async function plugin(bb: BbPluginApi) {
     return out;
   }
 
-  async function postFinding(ref: PrRef, findingId: string, body: string): Promise<string> {
+  async function postFinding(
+    ref: PrRef,
+    findingId: string,
+    body: string,
+    target: CodeLocation | null,
+  ): Promise<{ url: string; where: string }> {
     const state = await readState(ref);
     const finding = state.review?.findings.find((f) => f.id === findingId);
     if (finding === undefined) throw new Error("Finding not found.");
+    const detail = await getDetail(ref);
+    const locations: CodeLocation[] =
+      (finding.refs ?? []).length > 0
+        ? (finding.refs ?? [])
+        : [{ path: finding.path, startLine: finding.line ?? 1, endLine: finding.line ?? 1 }];
+    const loc = target ?? locations.find((l) => commentTarget(detail.files, l).mode === "inline") ?? locations[0];
+    const planned = commentTarget(detail.files, loc);
     const repo = `repos/${ref.owner}/${ref.repo}`;
-    let url: string | null = null;
-    if (finding.line !== null) {
+    const sha = await headSha(ref);
+    const permalink = (t: CodeLocation) =>
+      `https://github.com/${ref.owner}/${ref.repo}/blob/${sha}/${t.path}#L${t.startLine}${t.endLine > t.startLine ? `-L${t.endLine}` : ""}`;
+    const reviewComment = async (fields: string[], text: string) =>
+      z
+        .object({ html_url: z.string() })
+        .parse(
+          JSON.parse(
+            await gh(["api", `${repo}/pulls/${ref.number}/comments`, "--method", "POST", "-f", `body=${text}`, "-f", `commit_id=${sha}`, "-f", `path=${planned.path}`, ...fields]),
+          ),
+        ).html_url;
+
+    let posted: { url: string; target: CommentTarget } | null = null;
+    if (planned.mode === "inline") {
       try {
-        const head = z
-          .object({ head: z.object({ sha: z.string() }) })
-          .parse(JSON.parse(await gh(["api", `${repo}/pulls/${ref.number}`])));
-        const out = JSON.parse(
-          await gh([
-            "api",
-            `${repo}/pulls/${ref.number}/comments`,
-            "--method",
-            "POST",
-            "-f",
-            `body=${body}`,
-            "-f",
-            `commit_id=${head.head.sha}`,
-            "-f",
-            `path=${finding.path}`,
-            "-F",
-            `line=${finding.line}`,
-            "-f",
-            "side=RIGHT",
-          ]),
-        );
-        url = z.object({ html_url: z.string() }).parse(out).html_url;
+        const range =
+          planned.endLine > planned.startLine
+            ? ["-F", `start_line=${planned.startLine}`, "-f", "start_side=RIGHT"]
+            : [];
+        posted = { url: await reviewComment(["-F", `line=${planned.endLine}`, "-f", "side=RIGHT", ...range], body), target: planned };
       } catch (cause) {
-        bb.log.warn(`inline comment on ${finding.path}:${finding.line} failed (${describe(cause)}); posting as PR comment`);
+        bb.log.warn(`inline comment on ${planned.path}:${planned.startLine}-${planned.endLine} failed: ${describe(cause)}`);
       }
     }
-    if (url === null) {
-      url = await postReply(ref, `**\`${finding.path}${finding.line === null ? "" : `:${finding.line}`}\`** — ${body}`, null);
+    if (posted === null && planned.mode !== "link") {
+      try {
+        posted = {
+          url: await reviewComment(["-f", "subject_type=file"], `${permalink(loc)}\n\n${body}`),
+          target: { ...loc, mode: "file" },
+        };
+      } catch (cause) {
+        bb.log.warn(`file comment on ${planned.path} failed: ${describe(cause)}`);
+      }
+    }
+    if (posted === null) {
+      posted = { url: await postReply(ref, `${permalink(loc)}\n\n${body}`, null), target: { ...loc, mode: "link" } };
     }
     await mutateReview(ref, (r) => {
       const f = r.findings.find((x) => x.id === findingId);
@@ -1256,7 +1283,7 @@ export default async function plugin(bb: BbPluginApi) {
       }
     });
     startDetailSync(ref);
-    return url;
+    return { url: posted.url, where: describeTarget(posted.target) };
   }
 
   // ---- worker tools ----
@@ -1706,7 +1733,7 @@ export default async function plugin(bb: BbPluginApi) {
         if (f.status !== "posted") f.status = status;
         return r;
       }),
-    finding_post: async ({ ref, findingId, body }) => ({ url: await postFinding(ref, findingId, body) }),
+    finding_post: ({ ref, findingId, body, target }) => postFinding(ref, findingId, body, target),
     walkthrough_start: (ref) => startWalkthrough(ref),
     finding_locate: (ref) => startLocate(ref),
     file_at_head: ({ ref, path }) => fileAtHead(ref, path),

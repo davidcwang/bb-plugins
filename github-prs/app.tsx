@@ -29,6 +29,8 @@ import {
   prKey,
   type Finding,
   type FindingRef,
+  commentTarget,
+  describeTarget,
   type IssueComment,
   type ItemState,
   type PrDetail,
@@ -1368,6 +1370,14 @@ function FindingCard({
   }, [state.draft, text]);
   const item = `f:${finding.id}`;
   const where = `${finding.path}${finding.line === null ? "" : `:${finding.line}`}`;
+  // Where Post attaches the comment: the best inline-commentable location unless you pick another.
+  const locations = refsOf(finding);
+  const targets = locations.map((r) => commentTarget(files, r));
+  const bestIndex = Math.max(0, targets.findIndex((t) => t.mode === "inline"));
+  const [targetIndex, setTargetIndex] = useState<number | null>(null);
+  useEffect(() => setTargetIndex(null), [finding.id]);
+  const chosen = Math.min(targetIndex ?? bestIndex, locations.length - 1);
+  const [postedWhere, setPostedWhere] = useState<string | null>(null);
   const act = (work: () => Promise<unknown>) => {
     setBusy(true);
     work()
@@ -1396,6 +1406,7 @@ function FindingCard({
               {finding.scenario}
             </div>
           )}
+          {postedWhere !== null && <p className="text-[11px] text-green-600 dark:text-green-400">Posted {postedWhere}.</p>}
           <Markdown content={finding.body} className="text-sm" />
           <FindingContext rpc={rpc} refObj={refObj} finding={finding} files={files} locating={locating} onLocate={onLocate} />
           {finding.status !== "posted" && (
@@ -1409,6 +1420,24 @@ function FindingCard({
                 placeholder="The review comment to post…"
                 rows={3}
               />
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                <span>Attach to</span>
+                <select
+                  value={chosen}
+                  onChange={(e) => setTargetIndex(Number(e.target.value))}
+                  aria-label="Where to attach the comment"
+                  className="h-7 min-w-0 max-w-full flex-1 truncate rounded-md border border-border bg-background px-2 font-mono text-[11px] outline-none focus:border-primary/50"
+                >
+                  {locations.map((r, i) => (
+                    <option key={i} value={i}>
+                      {r.path.split("/").pop()}:{r.startLine}
+                      {r.endLine !== r.startLine ? `–${r.endLine}` : ""}
+                      {targets[i].mode === "inline" ? "" : targets[i].mode === "file" ? " (file comment)" : " (not in diff)"}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <p className="text-[11px] text-muted-foreground">Posts {describeTarget(targets[chosen])}.</p>
               <div className="flex flex-wrap items-center gap-2">
                 <Button
                   variant={discussActive ? "secondary" : "outline"}
@@ -1444,7 +1473,22 @@ function FindingCard({
                 <Button
                   size="sm"
                   disabled={busy || text.trim() === ""}
-                  onClick={() => act(() => rpc.call("finding_post", { ref: refObj, findingId: finding.id, body: text }))}
+                  onClick={() =>
+                    act(() =>
+                      rpc
+                        .call("finding_post", {
+                          ref: refObj,
+                          findingId: finding.id,
+                          body: text,
+                          target: {
+                            path: locations[chosen].path,
+                            startLine: locations[chosen].startLine,
+                            endLine: locations[chosen].endLine,
+                          },
+                        })
+                        .then((r) => setPostedWhere(r.where)),
+                    )
+                  }
                 >
                   {busy ? <Icon name="Loader" className="size-3.5 animate-spin" /> : <Icon name="Send" className="size-3.5" />}
                   Post comment
