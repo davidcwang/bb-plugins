@@ -224,6 +224,9 @@ export const reviewStateSchema = z.object({
   findings: z.array(findingSchema),
   /** Model the latest round ran on (null for rounds started before this was recorded). */
   model: runModelSchema.nullable().default(null),
+  /** A worker is filling in "where to look" locations for findings that lack them. */
+  locating: z.boolean().default(false),
+  locateThreadId: z.string().nullable().default(null),
 });
 export type ReviewState = z.infer<typeof reviewStateSchema>;
 
@@ -236,6 +239,8 @@ export const emptyReview = (): ReviewState => ({
   error: null,
   findings: [],
   model: null,
+  locating: false,
+  locateThreadId: null,
 });
 
 // ---- walkthrough: ground-up guided tour of the PR ----

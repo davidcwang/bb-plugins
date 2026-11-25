@@ -115,6 +115,7 @@ export const rpcContract = defineRpcContract({
     output: z.object({ url: z.string() }),
   },
   walkthrough_start: { input: prRefSchema, output: walkthroughSchema },
+  finding_locate: { input: prRefSchema, output: reviewStateSchema },
   file_at_head: {
     input: z.object({ ref: prRefSchema, path: z.string().min(1) }),
     output: z.object({ content: z.string().nullable(), error: z.string().nullable() }),
@@ -1057,6 +1058,39 @@ export default async function plugin(bb: BbPluginApi) {
     return (await readState(ref)).review ?? emptyReview();
   }
 
+  /** Fill in "where to look" locations for findings that have none (rounds from before refs existed). */
+  async function startLocate(ref: PrRef): Promise<ReviewState> {
+    const detail = await getDetail(ref);
+    const key = prKey(ref);
+    const missing = detail.review.findings.filter((f) => (f.refs ?? []).length === 0 && f.status !== "dismissed");
+    if (missing.length === 0 || detail.review.locating === true) return detail.review;
+    const list = missing
+      .map((f) => `- findingId ${JSON.stringify(f.id)}: [${f.priority}] ${f.title} — flagged at ${f.path}${f.line === null ? "" : `:${f.line}`}\n  ${f.body.replace(/\s+/g, " ").slice(0, 1200)}`)
+      .join("\n");
+    const prompt = [
+      `For each review finding below on GitHub PR ${key}, find the code locations a reviewer must look at to understand it.`,
+      prContextText(detail),
+      `Findings:\n${list}`,
+      `For each finding give 1–5 locations { path, startLine, endLine, note } with line numbers in the file AS OF THE PR HEAD — read files with \`gh api repos/${ref.owner}/${ref.repo}/contents/<path>?ref=${detail.summary.headRefName} -H "Accept: application/vnd.github.raw"\` and get the diff with \`gh pr diff ${ref.number} --repo ${ref.owner}/${ref.repo}\`. First the exact lines of the issue; then the related context the finding depends on — e.g. a column-width mismatch needs BOTH migrations defining the columns and the code that copies between them. Keep ranges tight (1–15 lines). "note" is a one-or-two-sentence inline annotation of what to see there, like a code-review comment on those lines.`,
+      `Publish all of them with ONE ghpr_set_finding_refs call, reply here with one line, and stop. Never edit files or post to GitHub.`,
+    ].join("\n\n");
+    await mutateReview(ref, (r) => {
+      r.locating = true;
+    });
+    try {
+      const threadId = await spawnWorker(`Locate findings: ${key}`, prompt, { ghprKind: "locate", ghprPr: key });
+      await mutateReview(ref, (r) => {
+        r.locateThreadId = threadId;
+      });
+    } catch (cause) {
+      await mutateReview(ref, (r) => {
+        r.locating = false;
+      });
+      throw cause;
+    }
+    return (await readState(ref)).review ?? emptyReview();
+  }
+
   // ---- walkthrough: a ground-up guided tour of the PR ----
 
   async function startWalkthrough(ref: PrRef): Promise<Walkthrough> {
@@ -1312,6 +1346,42 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  const refInput = z.object({
+    path: z.string().min(1),
+    startLine: z.number().int().positive(),
+    endLine: z.number().int().positive(),
+    note: z.string().min(1).max(2000),
+  });
+  bb.agents.registerTool({
+    name: "ghpr_set_finding_refs",
+    description: "Set the 'where to look' code locations for review findings on the PR this thread is working on.",
+    presentation: { label: { pending: "Locating related code", completed: "Located related code" } },
+    parameters: z.object({
+      items: z.array(z.object({ findingId: z.string(), refs: z.array(refInput).min(1).max(6) })).min(1).max(30),
+    }),
+    async execute({ items }, { threadId }) {
+      try {
+        const meta = await bb.sdk.threads.getPluginMetadata({ threadId });
+        if (typeof meta.ghprPr !== "string") return toolError("This thread is not attached to a PR.");
+        const ref = parseKey(meta.ghprPr);
+        const updated = await mutateReview(ref, (r) => {
+          let n = 0;
+          for (const it of items) {
+            const f = r.findings.find((x) => x.id === it.findingId);
+            if (f === undefined) continue;
+            f.refs = it.refs.map((x) => ({ ...x, endLine: Math.max(x.endLine, x.startLine) }));
+            n++;
+          }
+          r.locating = false;
+          return n;
+        });
+        return `Set locations for ${updated} finding(s).`;
+      } catch (cause) {
+        return toolError(describe(cause));
+      }
+    },
+  });
+
   bb.agents.registerTool({
     name: "ghpr_publish_walkthrough",
     description:
@@ -1385,6 +1455,14 @@ export default async function plugin(bb: BbPluginApi) {
           "You are a read-only PR review worker. Report findings only with one ghpr_report_findings call; never edit files, never run git write commands, never post to GitHub. The reviewer triages everything in the PR panel.",
       };
     }
+    if (kind === "locate") {
+      return {
+        tools: ["ghpr_set_finding_refs"],
+        skills: [],
+        instructions:
+          "You are a read-only worker locating code for review findings. Publish with one ghpr_set_finding_refs call; never edit files or post to GitHub.",
+      };
+    }
     if (kind === "walkthrough") {
       return {
         tools: ["ghpr_publish_walkthrough"],
@@ -1418,6 +1496,13 @@ export default async function plugin(bb: BbPluginApi) {
           r.error = "The review worker finished without reporting findings. Run it again.";
           r.finishedAt = new Date().toISOString();
         });
+      }
+      return;
+    }
+    if (kind === "locate") {
+      const review = (await readState(ref)).review;
+      if (review?.locating === true && review.locateThreadId === threadId) {
+        await mutateReview(ref, (r) => void (r.locating = false));
       }
       return;
     }
@@ -1576,6 +1661,7 @@ export default async function plugin(bb: BbPluginApi) {
       }),
     finding_post: async ({ ref, findingId, body }) => ({ url: await postFinding(ref, findingId, body) }),
     walkthrough_start: (ref) => startWalkthrough(ref),
+    finding_locate: (ref) => startLocate(ref),
     file_at_head: ({ ref, path }) => fileAtHead(ref, path),
     model_get: async () => ({ selection: await readWorkerModel(), fallback: await fallbackWorkerModel() }),
     model_set: async ({ selection }) => {
@@ -1642,6 +1728,14 @@ export default async function plugin(bb: BbPluginApi) {
             const ref = parseKey(input.positionals.pr);
             const w = await startWalkthrough(ref);
             return { exitCode: 0, stdout: `Walkthrough ${w.status} (worker thread ${w.threadId ?? "?"}).\n` };
+          },
+        }),
+        locate: cliCommand({
+          summary: "Find 'where to look' code locations for a PR's findings that lack them",
+          positionals: [{ name: "pr", description: "owner/repo#number", required: true }],
+          async run(input) {
+            const r = await startLocate(parseKey(input.positionals.pr));
+            return { exitCode: 0, stdout: r.locating ? `Locating (worker thread ${r.locateThreadId ?? "?"}).\n` : "Nothing to locate.\n" };
           },
         }),
         findings: cliCommand({

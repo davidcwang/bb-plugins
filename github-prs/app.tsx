@@ -11,6 +11,7 @@ import {
   experimental_Diff as Diff,
   experimental_SourceCode as SourceCode,
   experimental_ProviderModelPicker as ProviderModelPicker,
+  experimental_useCodeTheme as useCodeTheme,
   Markdown,
   ThreadChat,
   UrlLink,
@@ -18,6 +19,7 @@ import {
   useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
+import { PatchDiff } from "@pierre/diffs/react";
 import type { rpcContract } from "./server";
 import {
   CHANGED,
@@ -976,23 +978,23 @@ function mergeWithPatch(head: string[], patch: string | null): MergedLine[] {
   return out;
 }
 
-/** A unified hunk for a slice of merged lines, so the host diff viewer highlights it. */
-function hunkOf(slice: MergedLine[], all: MergedLine[], startIndex: number): string | null {
+/** One unified-patch file for a slice of merged lines (a single hunk; no gaps inside). */
+function patchOf(path: string, slice: MergedLine[], all: MergedLine[], startIndex: number): string | null {
   if (slice.length === 0) return null;
-  const firstOld = slice.find((x) => x.oldNo !== null)?.oldNo ?? null;
-  const firstNew = slice.find((x) => x.newNo !== null)?.newNo ?? null;
-  // An all-added or all-removed slice still needs a start on the other side.
   const prev = (side: "oldNo" | "newNo") => {
     for (let i = startIndex - 1; i >= 0; i--) if (all[i][side] !== null) return (all[i][side] as number) + 1;
     return 1;
   };
-  const a = firstOld ?? prev("oldNo");
-  const c = firstNew ?? prev("newNo");
+  const a = slice.find((x) => x.oldNo !== null)?.oldNo ?? prev("oldNo");
+  const c = slice.find((x) => x.newNo !== null)?.newNo ?? prev("newNo");
   const b = slice.filter((x) => x.kind !== "added").length;
   const d = slice.filter((x) => x.kind !== "removed").length;
   const body = slice.map((x) => `${x.kind === "added" ? "+" : x.kind === "removed" ? "-" : " "}${x.text}`).join("\n");
-  return `@@ -${a},${b} +${c},${d} @@\n${body}\n`;
+  return `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -${a},${b} +${c},${d} @@\n${body}\n`;
 }
+
+// Our own "show more" buttons replace Pierre's collapsed-lines bars.
+const HIDE_SEPARATORS = "[data-separator]{display:none!important}";
 
 function FileContext({
   rpc,
@@ -1008,13 +1010,12 @@ function FileContext({
   /** This PR's unified patch for the file, if it changed. */
   patch: string | null;
 }) {
+  const codeTheme = useCodeTheme();
   const memoKey = `${prKey(refObj)}:${path}`;
   const [content, setContent] = useState<string | null>(() => fileMemo.get(memoKey) ?? null);
   const [error, setError] = useState<string | null>(null);
   const [padAbove, setPadAbove] = useState(20);
   const [padBelow, setPadBelow] = useState(20);
-  const scroller = useRef<HTMLDivElement | null>(null);
-  const target = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const hit = fileMemo.get(memoKey);
@@ -1040,12 +1041,6 @@ function FileContext({
     setPadBelow(20);
   }, [active]);
 
-  useEffect(() => {
-    const box = scroller.current;
-    const el = target.current;
-    if (box !== null && el !== null) box.scrollTop = Math.max(0, el.offsetTop - box.clientHeight / 4);
-  }, [content, active]);
-
   const merged = useMemo(() => {
     if (content === null) return null;
     const head = content.split("\n");
@@ -1057,68 +1052,59 @@ function FileContext({
   if (merged === null) return <div className="px-3 py-4"><Spinner label={`Loading ${path}…`} /></div>;
 
   const all = merged.lines;
-  const total = merged.head.length;
-  const start = Math.min(Math.max(1, active.startLine), Math.max(total, 1));
-  const end = Math.min(Math.max(active.endLine, start), Math.max(total, 1));
+  const total = Math.max(merged.head.length, 1);
+  const start = Math.min(Math.max(1, active.startLine), total);
+  const end = Math.min(Math.max(active.endLine, start), total);
   const lo = Math.max(1, start - padAbove);
   const hi = Math.min(total, end + padBelow);
-  // Index of the merged line holding head line `n`; removed lines just before it belong to its gap.
-  const idxOf = (n: number) => all.findIndex((x) => x.newNo === n);
-  const firstIdx = (n: number) => {
-    let i = idxOf(n);
-    while (i > 0 && all[i - 1].kind === "removed") i--;
-    return i;
-  };
-  const lastIdx = (n: number) => {
-    let i = idxOf(n);
-    while (i + 1 < all.length && all[i + 1].kind === "removed") i++;
-    return i;
-  };
-  const aS = firstIdx(lo);
-  const rS = firstIdx(start);
-  const rE = lastIdx(end);
-  const aE = lastIdx(hi);
-  const before = rS > aS ? hunkOf(all.slice(aS, rS), all, aS) : null;
-  const range = hunkOf(all.slice(rS, rE + 1), all, rS);
-  const after = aE > rE ? hunkOf(all.slice(rE + 1, aE + 1), all, rE + 1) : null;
+  const idxOf = (n: number) => Math.max(0, all.findIndex((x) => x.newNo === n));
+  let from = idxOf(lo);
+  while (lo > 1 && from > 0 && all[from - 1].kind === "removed") from--;
+  let to = idxOf(hi);
+  while (to + 1 < all.length && all[to + 1].kind === "removed") to++;
+  const windowPatch = patchOf(path, all.slice(from, to + 1), all, from);
 
   return (
     <div className="flex min-h-0 flex-col">
-      <div ref={scroller} className="max-h-[60vh] overflow-auto bg-background">
+      <div className="max-h-[60vh] overflow-auto bg-background">
         {lo > 1 && (
-          <button
-            type="button"
-            onClick={() => setPadAbove((p) => p + 40)}
-            className="w-full py-1 text-[11px] text-muted-foreground hover:bg-accent"
-          >
+          <button type="button" onClick={() => setPadAbove((p) => p + 40)} className="w-full py-1 text-[11px] text-muted-foreground hover:bg-accent">
             ↑ Show more above ({lo - 1} lines hidden)
           </button>
         )}
-        {before !== null && <Diff patch={before} path={path} />}
-        <div ref={target} className="border-y-2 border-l-4 border-yellow-500/80">
-          {range !== null && <Diff patch={range} path={path} />}
-          <div className="border-t border-yellow-500/40 bg-card px-3 py-2 text-xs">
-            <div className="mb-0.5 flex items-center gap-1 text-[10px] text-muted-foreground">
-              <Icon name="MessageSquare" className="size-3" />
-              {start === end ? `line ${start}` : `lines ${start}–${end}`}
-            </div>
-            {active.note}
-          </div>
-        </div>
-        {after !== null && <Diff patch={after} path={path} />}
+        {windowPatch !== null && (
+          <PatchDiff<string, undefined>
+            patch={windowPatch}
+            selectedLines={{ start, end, side: "additions" }}
+            lineAnnotations={[{ side: "additions", lineNumber: end, metadata: active.note }]}
+            renderAnnotation={(a) => (
+              <div className="mx-2 my-1.5 rounded-md border border-yellow-500/60 bg-card px-3 py-2 font-sans text-xs text-foreground">
+                <div className="mb-0.5 flex items-center gap-1 text-[10px] text-muted-foreground">
+                  <Icon name="MessageSquare" className="size-3" />
+                  {start === end ? `line ${start}` : `lines ${start}–${end}`}
+                </div>
+                {a.metadata}
+              </div>
+            )}
+            options={{
+              theme: codeTheme.name as never,
+              themeType: codeTheme.mode,
+              diffStyle: "unified",
+              disableFileHeader: true,
+              overflow: "scroll",
+              hunkSeparators: "simple",
+              unsafeCSS: HIDE_SEPARATORS,
+            }}
+          />
+        )}
         {hi < total && (
-          <button
-            type="button"
-            onClick={() => setPadBelow((p) => p + 40)}
-            className="w-full py-1 text-[11px] text-muted-foreground hover:bg-accent"
-          >
+          <button type="button" onClick={() => setPadBelow((p) => p + 40)} className="w-full py-1 text-[11px] text-muted-foreground hover:bg-accent">
             ↓ Show more below ({total - hi} lines hidden)
           </button>
         )}
       </div>
       <div className="flex items-center gap-3 border-t border-border px-3 py-1 text-[10px] text-muted-foreground">
-        <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-1 bg-yellow-500" /> finding</span>
-        <span>green = added in this PR · red = removed · uncolored = existing code</span>
+        <span>highlighted = finding · green = added in this PR · red = removed · uncolored = existing code</span>
         <div className="flex-1" />
         {(lo > 1 || hi < total) && (
           <button
@@ -1138,7 +1124,21 @@ function FileContext({
 }
 
 /** Left: the finding's locations. Right: the selected file at the PR head, lines highlighted, notes inline. */
-function FindingContext({ rpc, refObj, finding, files }: { rpc: Rpc; refObj: PrRef; finding: Finding; files: PrFile[] }) {
+function FindingContext({
+  rpc,
+  refObj,
+  finding,
+  files,
+  locating,
+  onLocate,
+}: {
+  rpc: Rpc;
+  refObj: PrRef;
+  finding: Finding;
+  files: PrFile[];
+  locating: boolean;
+  onLocate: () => void;
+}) {
   const refs = refsOf(finding);
   const [index, setIndex] = useState(0);
   useEffect(() => setIndex(0), [finding.id]);
@@ -1148,6 +1148,15 @@ function FindingContext({ rpc, refObj, finding, files }: { rpc: Rpc; refObj: PrR
     <div className="flex overflow-hidden rounded-md border border-border">
       <div className="w-60 shrink-0 space-y-0.5 overflow-y-auto border-r border-border bg-card py-1.5">
         <div className="px-3 pb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Where to look</div>
+        {finding.refs.length === 0 && (
+          <div className="mx-2 mb-1.5 space-y-1.5 rounded-md border border-dashed border-border p-2 text-[11px] text-muted-foreground">
+            <p>Only the flagged line is known for this finding — it predates related-code locations.</p>
+            <Button variant="outline" size="sm" className="h-7 w-full text-xs" disabled={locating} onClick={onLocate}>
+              <Icon name={locating ? "Loader" : "Search"} className={cn("size-3.5", locating && "animate-spin")} />
+              {locating ? "Finding related code…" : "Find related code"}
+            </Button>
+          </div>
+        )}
         {refs.map((r, i) => {
           const name = r.path.split("/").pop() ?? r.path;
           const dir = r.path.slice(0, r.path.length - name.length);
@@ -1301,6 +1310,8 @@ function FindingCard({
   finding,
   state,
   files,
+  locating,
+  onLocate,
   onChanged,
   onError,
   onDiscuss,
@@ -1312,6 +1323,8 @@ function FindingCard({
   finding: Finding;
   state: ItemState;
   files: PrFile[];
+  locating: boolean;
+  onLocate: () => void;
   onChanged: () => void;
   onError: (message: string) => void;
   onDiscuss: (item: string, label: string) => void;
@@ -1358,7 +1371,7 @@ function FindingCard({
             </div>
           )}
           <Markdown content={finding.body} className="text-sm" />
-          <FindingContext rpc={rpc} refObj={refObj} finding={finding} files={files} />
+          <FindingContext rpc={rpc} refObj={refObj} finding={finding} files={files} locating={locating} onLocate={onLocate} />
           {finding.status !== "posted" && (
             <>
               <Textarea
@@ -1840,6 +1853,10 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
                   finding={f}
                   state={item(`f:${f.id}`)}
                   files={detail.files}
+                  locating={detail.review.locating}
+                  onLocate={() => {
+                    rpc.call("finding_locate", refObj).then(load, (c) => onError(describe(c)));
+                  }}
                   onChanged={load}
                   onError={onError}
                   onDiscuss={openDiscuss}
