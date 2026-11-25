@@ -1247,8 +1247,34 @@ function sortFindings(findings: Finding[]): Finding[] {
 }
 
 /** One finding at a time: a grouped dropdown plus previous/next. */
-function FindingPager({ findings, render }: { findings: Finding[]; render: (f: Finding) => ReactNode }) {
+function FindingPager({
+  rpc,
+  refObj,
+  findings,
+  render,
+}: {
+  rpc: Rpc;
+  refObj: PrRef;
+  findings: Finding[];
+  render: (f: Finding) => ReactNode;
+}) {
   const sorted = useMemo(() => sortFindings(findings), [findings]);
+  // Warm every "where to look" file up front so switching locations is instant.
+  const pathsKey = useMemo(
+    () => [...new Set(findings.flatMap((f) => refsOf(f).map((r) => r.path)))].sort().join("\n"),
+    [findings],
+  );
+  useEffect(() => {
+    const prefix = `${prKey(refObj)}:`;
+    const paths = pathsKey === "" ? [] : pathsKey.split("\n").filter((p) => !fileMemo.has(prefix + p));
+    if (paths.length === 0) return;
+    rpc.call("files_at_head", { ref: refObj, paths }).then(
+      (r) => {
+        for (const [p, content] of Object.entries(r.files)) if (content !== null) fileMemo.set(prefix + p, content);
+      },
+      () => undefined,
+    );
+  }, [pathsKey, prKey(refObj)]); // eslint-disable-line react-hooks/exhaustive-deps
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = sorted.find((f) => f.id === selectedId) ?? sorted[0];
   const index = sorted.findIndex((f) => f.id === selected?.id);
@@ -1844,6 +1870,8 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
           )}
           {detail.review.findings.length > 0 && (
             <FindingPager
+              rpc={rpc}
+              refObj={refObj}
               findings={detail.review.findings}
               render={(f) => (
                 <FindingCard

@@ -120,6 +120,10 @@ export const rpcContract = defineRpcContract({
     input: z.object({ ref: prRefSchema, path: z.string().min(1) }),
     output: z.object({ content: z.string().nullable(), error: z.string().nullable() }),
   },
+  files_at_head: {
+    input: z.object({ ref: prRefSchema, paths: z.array(z.string().min(1)).max(80) }),
+    output: z.object({ files: z.record(z.string(), z.string().nullable()) }),
+  },
   model_get: {
     input: z.null(),
     output: z.object({ selection: workerModelSchema.nullable(), fallback: workerModelSchema.nullable() }),
@@ -660,6 +664,7 @@ export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, [
     `CREATE TABLE IF NOT EXISTS pr_details (key TEXT PRIMARY KEY, json TEXT NOT NULL, fetched_at TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS file_cache (key TEXT PRIMARY KEY, content TEXT NOT NULL, cached_at TEXT NOT NULL)`,
   ]);
   const detailCache = new Map<string, PrDetail>();
   const DETAIL_TTL_MS = 60_000;
@@ -1142,26 +1147,68 @@ export default async function plugin(bb: BbPluginApi) {
     headShaCache.set(key, { sha, at: Date.now() });
     return sha;
   }
+  // Content at a commit never changes, so `${sha}:${path}` entries are cached for good (memory + sqlite).
+  const inflight = new Map<string, Promise<string>>();
+  function readFileCache(key: string): string | undefined {
+    const hit = fileCache.get(key);
+    if (hit !== undefined) return hit;
+    try {
+      const row = db.prepare("SELECT content FROM file_cache WHERE key = ?").get(key) as { content: string } | undefined;
+      if (row !== undefined) {
+        fileCache.set(key, row.content);
+        return row.content;
+      }
+    } catch (cause) {
+      bb.log.warn(`file cache read: ${describe(cause)}`);
+    }
+    return undefined;
+  }
+  function writeFileCache(key: string, content: string): void {
+    if (fileCache.size > 500) fileCache.delete(fileCache.keys().next().value!);
+    fileCache.set(key, content);
+    try {
+      db.prepare("INSERT OR REPLACE INTO file_cache (key, content, cached_at) VALUES (?, ?, ?)").run(key, content, new Date().toISOString());
+    } catch (cause) {
+      bb.log.warn(`file cache write: ${describe(cause)}`);
+    }
+  }
+
   async function fileAtHead(ref: PrRef, path: string): Promise<{ content: string | null; error: string | null }> {
     if (path.split("/").some((seg) => seg === ".." || seg === "")) return { content: null, error: "Invalid path." };
     try {
       const sha = await headSha(ref);
-      const cacheKey = `${sha}:${path}`;
-      const hit = fileCache.get(cacheKey);
+      const cacheKey = `${ref.owner}/${ref.repo}@${sha}:${path}`;
+      const hit = readFileCache(cacheKey);
       if (hit !== undefined) return { content: hit, error: null };
-      const encoded = path.split("/").map(encodeURIComponent).join("/");
-      const content = await gh([
-        "api",
-        `repos/${ref.owner}/${ref.repo}/contents/${encoded}?ref=${sha}`,
-        "-H",
-        "Accept: application/vnd.github.raw",
-      ]);
-      if (fileCache.size > 200) fileCache.delete(fileCache.keys().next().value!);
-      fileCache.set(cacheKey, content);
-      return { content, error: null };
+      let pending = inflight.get(cacheKey);
+      if (pending === undefined) {
+        const encoded = path.split("/").map(encodeURIComponent).join("/");
+        pending = gh(["api", `repos/${ref.owner}/${ref.repo}/contents/${encoded}?ref=${sha}`, "-H", "Accept: application/vnd.github.raw"]);
+        inflight.set(cacheKey, pending);
+      }
+      try {
+        const content = await pending;
+        writeFileCache(cacheKey, content);
+        return { content, error: null };
+      } finally {
+        inflight.delete(cacheKey);
+      }
     } catch (cause) {
       return { content: null, error: describe(cause) };
     }
+  }
+
+  /** Several files at once, six GitHub fetches at a time (prefetch for the Review tab). */
+  async function filesAtHead(ref: PrRef, paths: string[]): Promise<Record<string, string | null>> {
+    const out: Record<string, string | null> = {};
+    const queue = [...new Set(paths)];
+    await headSha(ref).catch(() => undefined);
+    await Promise.all(
+      Array.from({ length: Math.min(6, queue.length) }, async () => {
+        for (let p = queue.shift(); p !== undefined; p = queue.shift()) out[p] = (await fileAtHead(ref, p)).content;
+      }),
+    );
+    return out;
   }
 
   async function postFinding(ref: PrRef, findingId: string, body: string): Promise<string> {
@@ -1663,6 +1710,7 @@ export default async function plugin(bb: BbPluginApi) {
     walkthrough_start: (ref) => startWalkthrough(ref),
     finding_locate: (ref) => startLocate(ref),
     file_at_head: ({ ref, path }) => fileAtHead(ref, path),
+    files_at_head: async ({ ref, paths }) => ({ files: await filesAtHead(ref, paths) }),
     model_get: async () => ({ selection: await readWorkerModel(), fallback: await fallbackWorkerModel() }),
     model_set: async ({ selection }) => {
       if (selection === null) await bb.storage.kv.delete(WORKER_MODEL_KEY);
