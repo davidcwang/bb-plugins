@@ -1221,7 +1221,7 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
   if (detail === null) {
     return (
       <div className="h-full min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto box-border w-full max-w-3xl space-y-3 px-4 pb-6 pt-3 md:px-5 md:pt-4">
+        <div className="mx-auto box-border w-full max-w-[1800px] space-y-3 px-4 pb-6 pt-3 md:px-5 md:pt-4">
           <Button variant="ghost" size="sm" onClick={onBack}>
             <Icon name="ArrowLeft" className="size-3.5" /> All PRs
           </Button>
@@ -1247,7 +1247,7 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
     <div className="flex h-full min-h-0 flex-1">
       <div className="min-w-0 flex-1 overflow-y-auto">
         <div className="box-border w-full px-4 pb-6 pt-3 md:px-5 md:pt-4">
-    <div className={cn("mx-auto w-full space-y-3", tab === "files" ? "max-w-7xl" : "max-w-4xl")}>
+    <div className="mx-auto w-full max-w-[1800px] space-y-3">
       <div className="flex items-center gap-2">
         <Button variant="ghost" size="sm" onClick={onBack}>
           <Icon name="ArrowLeft" className="size-3.5" /> All PRs
