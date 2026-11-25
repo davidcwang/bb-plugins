@@ -122,6 +122,59 @@ function SyncBadge({ syncing, fetchedAt }: { syncing: boolean; fetchedAt: string
   );
 }
 
+// ---------------------------------------------------------------- stacks
+
+/**
+ * Group PRs into stacks: a PR whose base branch is another listed PR's head
+ * branch sits on top of it. Each block is one stack ordered bottom-first
+ * (the review order); standalone PRs are single-element blocks. Blocks keep
+ * the recency order of their most recently updated member.
+ */
+function stackBlocks(prs: PrSummary[]): PrSummary[][] {
+  const key = (p: PrSummary) => prKey(p);
+  const byHead = new Map(prs.map((p) => [`${p.owner}/${p.repo}:${p.headRefName}`, p]));
+  const parentOf = (p: PrSummary): PrSummary | undefined => {
+    const par = byHead.get(`${p.owner}/${p.repo}:${p.baseRefName}`);
+    return par !== undefined && key(par) !== key(p) ? par : undefined;
+  };
+  const rootOf = (p: PrSummary): PrSummary => {
+    const seen = new Set([key(p)]);
+    let cur = p;
+    for (;;) {
+      const par = parentOf(cur);
+      if (par === undefined || seen.has(key(par))) return cur;
+      seen.add(key(par));
+      cur = par;
+    }
+  };
+  const depthOf = (p: PrSummary): number => {
+    const seen = new Set([key(p)]);
+    let cur = p;
+    let d = 0;
+    for (;;) {
+      const par = parentOf(cur);
+      if (par === undefined || seen.has(key(par))) return d;
+      d += 1;
+      seen.add(key(par));
+      cur = par;
+    }
+  };
+  const groups = new Map<string, PrSummary[]>();
+  for (const p of prs) {
+    const r = key(rootOf(p));
+    groups.set(r, [...(groups.get(r) ?? []), p]);
+  }
+  const blocks: PrSummary[][] = [];
+  const emitted = new Set<string>();
+  for (const p of prs) {
+    const r = key(rootOf(p));
+    if (emitted.has(r)) continue;
+    emitted.add(r);
+    blocks.push([...(groups.get(r) ?? [p])].sort((a, b) => depthOf(a) - depthOf(b)));
+  }
+  return blocks;
+}
+
 // ---------------------------------------------------------------- PR list
 
 function PrListPage({ onOpen }: { onOpen: (ref: PrRef) => void }) {
@@ -210,20 +263,39 @@ function PrListPage({ onOpen }: { onOpen: (ref: PrRef) => void }) {
           {listTab === "mine" ? "No open PRs match the search query (plugin settings)." : "Nothing waiting on your review."}
         </div>
       )}
-      <PrRows prs={listTab === "mine" ? mine : toReview} onOpen={onOpen} />
+      <div className="space-y-2">
+        {stackBlocks(listTab === "mine" ? mine : toReview).map((block) =>
+          block.length === 1 ? (
+            <PrRows key={prKey(block[0])} prs={block} onOpen={onOpen} />
+          ) : (
+            <div key={prKey(block[0])} className="space-y-2 rounded-lg border border-primary/30 bg-primary/5 p-2">
+              <p className="flex items-center gap-1.5 px-1 text-[11px] font-medium text-muted-foreground">
+                <Icon name="Layers" className="size-3.5" />
+                Stack of {block.length} — review in this order
+              </p>
+              <PrRows prs={block} onOpen={onOpen} numbered />
+            </div>
+          ),
+        )}
+      </div>
     </div>
   );
 }
 
-function PrRows({ prs, onOpen }: { prs: PrSummary[]; onOpen: (ref: PrRef) => void }) {
+function PrRows({ prs, onOpen, numbered = false }: { prs: PrSummary[]; onOpen: (ref: PrRef) => void; numbered?: boolean }) {
   return (
       <ul className="space-y-2">
-        {prs.map((pr) => (
-          <li key={prKey(pr)}>
+        {prs.map((pr, i) => (
+          <li key={prKey(pr)} className={cn(numbered && "flex items-start gap-2")}>
+            {numbered && (
+              <span className="mt-3 inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[11px] font-semibold text-primary">
+                {i + 1}
+              </span>
+            )}
             <button
               type="button"
               onClick={() => onOpen(pr)}
-              className="w-full rounded-lg border border-border bg-card px-4 py-3 text-left transition-colors hover:border-primary/40"
+              className="w-full min-w-0 flex-1 rounded-lg border border-border bg-card px-4 py-3 text-left transition-colors hover:border-primary/40"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -971,6 +1043,7 @@ const detailMemo = new Map<string, PrDetail>();
 
 function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void }) {
   const rpc = useRpc<typeof rpcContract>();
+  const navigate = useBbNavigate();
   const [detail, setDetail] = useState<PrDetail | null>(() => detailMemo.get(prKey(refObj)) ?? null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("comments");
@@ -1053,6 +1126,18 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
 
   const onError = useCallback((message: string) => setError(message), []);
   const item = (id: string): ItemState => detail?.items[id] ?? emptyItem();
+
+  // The PR's stack (if any), from the cached list: siblings sharing a branch chain.
+  const [stack, setStack] = useState<PrSummary[] | null>(null);
+  useEffect(() => {
+    rpc
+      .call("prs_list", { refresh: false })
+      .then((r) => {
+        const block = stackBlocks(r.prs).find((b) => b.some((p) => prKey(p) === key));
+        setStack(block !== undefined && block.length > 1 ? block : null);
+      })
+      .catch(() => setStack(null));
+  }, [rpc, key]);
 
   // PRs you were asked to review open on the Review tab.
   const tabSeeded = useRef(false);
@@ -1159,6 +1244,33 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
           <span className="text-green-600 dark:text-green-400">+{s.additions}</span>
           <span className="text-destructive">−{s.deletions}</span>
         </div>
+        {stack !== null && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+            <Icon name="Layers" className="size-3" />
+            <span>Stack (review order):</span>
+            {stack.map((p, i) => {
+              const current = prKey(p) === key;
+              return (
+                <button
+                  key={prKey(p)}
+                  type="button"
+                  title={p.title}
+                  disabled={current}
+                  onClick={() => navigate.toPluginPanel("prs", { subPath: `${p.owner}/${p.repo}/${p.number}` })}
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono",
+                    current
+                      ? "border-primary/50 bg-primary/10 font-semibold text-primary"
+                      : "border-border hover:border-primary/40 hover:text-foreground",
+                  )}
+                >
+                  {i + 1}. #{p.number}
+                  {current && " (this)"}
+                </button>
+              );
+            })}
+          </div>
+        )}
         {detail.checkout !== null && (
           <p className="mt-1 text-[11px] text-muted-foreground">
             Local checkout: <span className="font-mono">{detail.checkout.path}</span> on{" "}
