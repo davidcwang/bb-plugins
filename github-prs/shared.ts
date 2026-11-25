@@ -192,6 +192,48 @@ export const emptyReview = (): ReviewState => ({
   findings: [],
 });
 
+// ---- walkthrough: ground-up guided tour of the PR ----
+
+export const walkSectionSchema = z.object({
+  path: z.string(),
+  /** added = part of this PR's change (rendered as a colored diff); context = pre-existing code (rendered plain). */
+  kind: z.enum(["added", "context"]),
+  /** added: a unified diff hunk; context: plain source text. */
+  code: z.string(),
+  /** First line number of a context section in its file. */
+  startLine: z.number().nullable(),
+});
+export type WalkSection = z.infer<typeof walkSectionSchema>;
+
+export const walkStepSchema = z.object({
+  title: z.string(),
+  /** Markdown explanation of this step. */
+  body: z.string(),
+  sections: z.array(walkSectionSchema),
+});
+export type WalkStep = z.infer<typeof walkStepSchema>;
+
+export const walkthroughSchema = z.object({
+  status: z.enum(["idle", "running", "done", "failed"]),
+  threadId: z.string().nullable(),
+  startedAt: z.string().nullable(),
+  finishedAt: z.string().nullable(),
+  error: z.string().nullable(),
+  title: z.string().nullable(),
+  steps: z.array(walkStepSchema),
+});
+export type Walkthrough = z.infer<typeof walkthroughSchema>;
+
+export const emptyWalkthrough = (): Walkthrough => ({
+  status: "idle",
+  threadId: null,
+  startedAt: null,
+  finishedAt: null,
+  error: null,
+  title: null,
+  steps: [],
+});
+
 export const checkoutSchema = z.object({
   path: z.string(),
   branch: z.string().nullable(),
@@ -212,6 +254,7 @@ export const prDetailSchema = z.object({
   reviews: z.array(reviewSchema),
   items: z.record(z.string(), itemStateSchema),
   review: reviewStateSchema,
+  walkthrough: walkthroughSchema,
   checkout: checkoutSchema.nullable(),
   fetchedAt: z.string(),
 });

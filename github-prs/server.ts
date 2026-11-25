@@ -19,12 +19,14 @@ import {
   SEVERITIES,
   emptyItem,
   emptyReview,
+  emptyWalkthrough,
   prRefSchema,
   prKey,
   prSummarySchema,
   prDetailSchema,
   itemStateSchema,
   reviewStateSchema,
+  walkthroughSchema,
   checkoutSchema,
   type Checkout,
   type ItemState,
@@ -35,6 +37,7 @@ import {
   type ReactionGroup,
   type ReviewState,
   type ReviewThread,
+  type Walkthrough,
 } from "./shared";
 
 export const rpcContract = defineRpcContract({
@@ -106,6 +109,7 @@ export const rpcContract = defineRpcContract({
     input: z.object({ ref: prRefSchema, findingId: z.string(), body: z.string().min(1).max(60_000) }),
     output: z.object({ url: z.string() }),
   },
+  walkthrough_start: { input: prRefSchema, output: walkthroughSchema },
   fix_apply: {
     input: z.object({ ref: prRefSchema, item: z.string() }),
     output: z.object({ applied: z.boolean(), detail: z.string() }),
@@ -124,6 +128,7 @@ const stateKey = (ref: PrRef) => `state:${prKey(ref)}`;
 interface PrState {
   items: Record<string, ItemState>;
   review?: ReviewState;
+  walkthrough?: Walkthrough;
 }
 
 function describe(cause: unknown): string {
@@ -395,6 +400,15 @@ export default async function plugin(bb: BbPluginApi) {
     bb.realtime.publish(CHANGED, { key: prKey(ref), kind: "state" });
     return result;
   }
+  async function mutateWalkthrough<T>(ref: PrRef, fn: (w: Walkthrough) => T): Promise<T> {
+    const state = await readState(ref);
+    const walkthrough = state.walkthrough ?? emptyWalkthrough();
+    const result = fn(walkthrough);
+    state.walkthrough = walkthrough;
+    await bb.storage.kv.set(stateKey(ref), state);
+    bb.realtime.publish(CHANGED, { key: prKey(ref), kind: "state" });
+    return result;
+  }
 
   // ---- checkout resolution ----
   let checkoutCache: { at: number; map: Map<string, string> } | null = null;
@@ -619,6 +633,7 @@ export default async function plugin(bb: BbPluginApi) {
         .map((r) => ({ author: login(r.author), state: r.state, body: r.body, submittedAt: r.submittedAt, url: r.url })),
       items: state.items,
       review: state.review ?? emptyReview(),
+      walkthrough: state.walkthrough ?? emptyWalkthrough(),
       checkout,
       fetchedAt: new Date().toISOString(),
     };
@@ -686,7 +701,12 @@ export default async function plugin(bb: BbPluginApi) {
     const cached = readCachedDetail(key);
     if (cached !== undefined) {
       const state = await readState(ref);
-      return { ...cached, items: state.items, review: state.review ?? emptyReview() };
+      return {
+        ...cached,
+        items: state.items,
+        review: state.review ?? emptyReview(),
+        walkthrough: state.walkthrough ?? emptyWalkthrough(),
+      };
     }
     const detail = await fetchDetail(ref);
     writeCachedDetail(key, detail);
@@ -931,11 +951,11 @@ export default async function plugin(bb: BbPluginApi) {
     const prompt = [
       `You are reviewing GitHub PR ${key} on behalf of the reviewer (they were asked to review it; they make the final call on every finding).`,
       prContextText(detail),
-      `Get the authoritative diff with \`gh pr diff ${ref.number} --repo ${ref.owner}/${ref.repo}\` (the local checkout may be on a different branch — use it to read surrounding code and callers, not as the diff).`,
-      `Review the way a senior engineer on this team would: hunt for real bugs the change introduces (logic errors, nil/error handling, races, API misuse, broken invariants, missing migrations/compat), check the change does what the PR says, and note genuinely important gaps in tests. Verify every suspicion against the actual code before reporting it; drop anything a compiler or linter would catch, pure style opinions, and speculative "might be nice" ideas. Severities: "bug" = would misbehave in production; "question" = you need the author to clarify or justify; "nit" = small, worth fixing, prefix its comment with "[nit]".`,
+      `Run the review with the code-review skill: invoke the Skill tool with skill "code-review" and args "high https://github.com/${ref.owner}/${ref.repo}/pull/${ref.number}"${detail.checkout === null ? "" : `, working from the checkout directory ${JSON.stringify(detail.checkout.path)}`}, and follow it to completion (it fetches the PR diff itself and verifies findings). Only if that skill is unavailable in this session, review manually: get the diff with \`gh pr diff ${ref.number} --repo ${ref.owner}/${ref.repo}\`, hunt for real bugs the change introduces, and verify every suspicion against the actual code.`,
+      `Severity mapping for the panel: "bug" = a confirmed defect this change introduces or makes worse; "question" = uncertain, or a pre-existing problem the change touches (say it is pre-existing in the comment); "nit" = minor, prefix its comment with "[nit]". Drop anything a compiler or linter would catch and pure style opinions.`,
       guidance.trim() === "" ? null : `Guidance from the reviewer for this round: ${guidance.trim()}`,
       reviewInstructions.trim() === "" ? null : `Standing review instructions: ${reviewInstructions.trim()}`,
-      `Report at most 12 findings with ONE ghpr_report_findings call (an empty list is a valid, good result). For each: path and the head-side line from the diff; a short title; an explanation for the reviewer (why it's a problem, with evidence); and "comment" — the review comment ready to post, in the reviewer's voice: direct, specific, concise, a question where you are not certain. After the tool call reply here with one line and stop; the reviewer triages everything in the PR panel.`,
+      `Report at most 12 findings with ONE ghpr_report_findings call — the PR panel, NOT ReportFindings or prose (an empty list is a valid, good result). For each: path and the head-side line from the diff; a short title; an explanation for the reviewer (why it's a problem, with evidence); and "comment" — the review comment ready to post, in the reviewer's voice: direct, specific, concise, a question where you are not certain. After the tool call reply here with one line and stop; the reviewer triages everything in the PR panel.`,
     ]
       .filter((x): x is string => x !== null)
       .join("\n\n");
@@ -953,6 +973,44 @@ export default async function plugin(bb: BbPluginApi) {
       throw cause;
     }
     return (await readState(ref)).review ?? emptyReview();
+  }
+
+  // ---- walkthrough: a ground-up guided tour of the PR ----
+
+  async function startWalkthrough(ref: PrRef): Promise<Walkthrough> {
+    const detail = await getDetail(ref);
+    const key = prKey(ref);
+    const claimed = await mutateWalkthrough(ref, (w) => {
+      if (w.status === "running") return false;
+      w.status = "running";
+      w.threadId = null;
+      w.startedAt = new Date().toISOString();
+      w.finishedAt = null;
+      w.error = null;
+      return true;
+    });
+    if (!claimed) return (await readState(ref)).walkthrough ?? emptyWalkthrough();
+    const prompt = [
+      `Build a ground-up walkthrough of GitHub PR ${key} for its reviewer: an ordered tour that builds the context needed to understand the change, starting from the existing code it builds on and ending at the new behavior.`,
+      prContextText(detail),
+      `Get the authoritative diff with \`gh pr diff ${ref.number} --repo ${ref.owner}/${ref.repo}\`; read the surrounding pre-existing code in the checkout (note it may be on a different branch — prefer \`git -C <checkout> show origin/${detail.summary.baseRefName}:<path>\` or the files as they are for pre-existing context).`,
+      `Structure: 5–12 steps, each one concept — e.g. "the data model this builds on", "where requests enter", "the new store", "how the pieces connect", "edge cases and tests". Each step has: a title; a markdown body (plain language, 3–8 sentences, say WHY the piece exists); and 1–3 code sections. A section is { path, kind, code, startLine }: kind "context" = PRE-EXISTING code shown for understanding — pass the plain source text exactly as in the file with its real starting line number; kind "added" = code THIS PR changes — pass the relevant unified diff hunk(s) for that file (with the @@ header) so additions and removals are highlighted. Never mislabel: if the code is not part of this PR's diff it is "context".`,
+      `Publish once with ghpr_publish_walkthrough (title + steps), then reply here with one line and stop. The reviewer steps through it in the PR panel.`,
+    ].join("\n\n");
+    try {
+      const threadId = await spawnWorker(`Walkthrough: ${key}`, prompt, { ghprKind: "walkthrough", ghprPr: key });
+      await mutateWalkthrough(ref, (w) => {
+        w.threadId = threadId;
+      });
+    } catch (cause) {
+      await mutateWalkthrough(ref, (w) => {
+        w.status = "failed";
+        w.error = describe(cause);
+        w.finishedAt = new Date().toISOString();
+      });
+      throw cause;
+    }
+    return (await readState(ref)).walkthrough ?? emptyWalkthrough();
   }
 
   async function postFinding(ref: PrRef, findingId: string, body: string): Promise<string> {
@@ -1119,6 +1177,53 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  bb.agents.registerTool({
+    name: "ghpr_publish_walkthrough",
+    description:
+      "Publish the ground-up walkthrough of the PR this thread is working on. The reviewer steps through it in the PR panel.",
+    presentation: { label: { pending: "Publishing walkthrough", completed: "Published walkthrough" } },
+    parameters: z.object({
+      title: z.string().min(1).max(200),
+      steps: z
+        .array(
+          z.object({
+            title: z.string().min(1).max(200),
+            body: z.string().min(1).max(8000),
+            sections: z
+              .array(
+                z.object({
+                  path: z.string().min(1),
+                  kind: z.enum(["added", "context"]),
+                  code: z.string().min(1).max(20_000),
+                  startLine: z.number().int().positive().nullable().default(null),
+                }),
+              )
+              .max(4)
+              .default([]),
+          }),
+        )
+        .min(1)
+        .max(15),
+    }),
+    async execute({ title, steps }, { threadId }) {
+      try {
+        const meta = await bb.sdk.threads.getPluginMetadata({ threadId });
+        if (typeof meta.ghprPr !== "string") return toolError("This thread is not attached to a PR.");
+        const ref = parseKey(meta.ghprPr);
+        await mutateWalkthrough(ref, (w) => {
+          w.title = title;
+          w.steps = steps;
+          w.status = "done";
+          w.finishedAt = new Date().toISOString();
+          w.error = null;
+        });
+        return `Published a ${steps.length}-step walkthrough to the PR panel.`;
+      } catch (cause) {
+        return toolError(describe(cause));
+      }
+    },
+  });
+
   bb.agents.configure((context) => {
     const kind = context.pluginMetadata?.ghprKind;
     if (kind === "draft") {
@@ -1145,6 +1250,14 @@ export default async function plugin(bb: BbPluginApi) {
           "You are a read-only PR review worker. Report findings only with one ghpr_report_findings call; never edit files, never run git write commands, never post to GitHub. The reviewer triages everything in the PR panel.",
       };
     }
+    if (kind === "walkthrough") {
+      return {
+        tools: ["ghpr_publish_walkthrough"],
+        skills: [],
+        instructions:
+          "You are a read-only worker building a ground-up walkthrough of one PR. Publish it with one ghpr_publish_walkthrough call; never edit files, never run git write commands, never post to GitHub.",
+      };
+    }
     if (kind === "discuss") {
       return {
         tools: ["ghpr_publish_draft", "ghpr_publish_fix"],
@@ -1169,6 +1282,17 @@ export default async function plugin(bb: BbPluginApi) {
           r.status = "failed";
           r.error = "The review worker finished without reporting findings. Run it again.";
           r.finishedAt = new Date().toISOString();
+        });
+      }
+      return;
+    }
+    if (kind === "walkthrough") {
+      const walkthrough = (await readState(ref)).walkthrough;
+      if (walkthrough?.status === "running" && walkthrough.threadId === threadId) {
+        await mutateWalkthrough(ref, (w) => {
+          w.status = "failed";
+          w.error = "The walkthrough worker finished without publishing. Run it again.";
+          w.finishedAt = new Date().toISOString();
         });
       }
       return;
@@ -1316,6 +1440,7 @@ export default async function plugin(bb: BbPluginApi) {
         return r;
       }),
     finding_post: async ({ ref, findingId, body }) => ({ url: await postFinding(ref, findingId, body) }),
+    walkthrough_start: (ref) => startWalkthrough(ref),
     fix_apply: ({ ref, item }) => applyFix(ref, item),
     fix_discard: ({ ref, item }) => mutateItem(ref, item, (it) => void (it.fix = null)),
     checkout_get: (ref) => checkoutFor(ref, null),
@@ -1365,6 +1490,15 @@ export default async function plugin(bb: BbPluginApi) {
               exitCode: 0,
               stdout: `Review round ${review.round} ${review.status} (worker thread ${review.threadId ?? "?"}). Findings appear in the PR panel's Review tab.\n`,
             };
+          },
+        }),
+        walkthrough: cliCommand({
+          summary: "Build a ground-up walkthrough of a PR (appears in the panel's Walkthrough tab)",
+          positionals: [{ name: "pr", description: "owner/repo#number", required: true }],
+          async run(input) {
+            const ref = parseKey(input.positionals.pr);
+            const w = await startWalkthrough(ref);
+            return { exitCode: 0, stdout: `Walkthrough ${w.status} (worker thread ${w.threadId ?? "?"}).\n` };
           },
         }),
         findings: cliCommand({

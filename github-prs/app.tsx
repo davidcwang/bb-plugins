@@ -9,6 +9,7 @@ import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import {
   definePluginApp,
   experimental_Diff as Diff,
+  experimental_SourceCode as SourceCode,
   Markdown,
   ThreadChat,
   UrlLink,
@@ -34,6 +35,7 @@ import {
   type Reaction,
   type ReviewThread,
   type Triage,
+  type Walkthrough,
 } from "./shared";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -69,6 +71,27 @@ function splitPatch(patch: string): Array<{ path: string; patch: string }> {
     const m = p.match(/^diff --git a\/(.+?) b\//);
     return { path: m?.[1] ?? "patch", patch: p };
   });
+}
+
+/** The diff hunk of `path` that contains head-side `line`, from the PR's file patches. */
+function hunkFor(files: PrFile[], path: string, line: number | null): string | null {
+  if (line === null) return null;
+  const patch = files.find((f) => f.path === path)?.patch ?? null;
+  if (patch === null) return null;
+  const lines = patch.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+    if (m === null) continue;
+    const start = Number(m[1]);
+    const len = Math.max(Number(m[2] ?? "1"), 1);
+    if (line < start || line >= start + len) continue;
+    const out = [lines[i]];
+    for (let j = i + 1; j < lines.length && !lines[j].startsWith("@@") && !lines[j].startsWith("diff --git"); j++) {
+      out.push(lines[j]);
+    }
+    return out.join("\n");
+  }
+  return null;
 }
 
 function Chip({ children, tone = "muted" }: { children: ReactNode; tone?: "muted" | "good" | "bad" | "warn" | "accent" }) {
@@ -918,7 +941,7 @@ function IssueCommentCard({
 
 // ---------------------------------------------------------------- detail
 
-type Tab = "overview" | "files" | "comments" | "review";
+type Tab = "overview" | "files" | "comments" | "review" | "walkthrough";
 
 const SEVERITY_TONE: Record<string, "bad" | "warn" | "muted"> = { bug: "bad", question: "warn", nit: "muted" };
 
@@ -928,6 +951,7 @@ function FindingCard({
   refObj,
   finding,
   state,
+  contextPatch,
   onChanged,
   onError,
   onDiscuss,
@@ -938,6 +962,8 @@ function FindingCard({
   refObj: PrRef;
   finding: Finding;
   state: ItemState;
+  /** Diff hunk containing the finding's line, for context. */
+  contextPatch: string | null;
   onChanged: () => void;
   onError: (message: string) => void;
   onDiscuss: (item: string, label: string) => void;
@@ -977,6 +1003,11 @@ function FindingCard({
       </button>
       {open && (
         <div className="space-y-2 border-t border-border px-3 py-3">
+          {contextPatch !== null && (
+            <div className="overflow-hidden rounded-md border border-border">
+              <Diff patch={contextPatch} path={finding.path} />
+            </div>
+          )}
           <Markdown content={finding.body} className="text-sm" />
           {finding.status !== "posted" && (
             <>
@@ -1294,6 +1325,7 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
             ["files", "Files", detail.files.length],
             ["comments", "Comments", unresolvedCount],
             ["review", "Review", detail.review.findings.filter((f) => f.status === "open").length || null],
+            ["walkthrough", "Walkthrough", detail.walkthrough.steps.length || null],
           ] as Array<[Tab, string, number | null]>
         ).map(([id, label, count]) => (
           <button
@@ -1446,6 +1478,7 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
                 refObj={refObj}
                 finding={f}
                 state={item(`f:${f.id}`)}
+                contextPatch={hunkFor(detail.files, f.path, f.line)}
                 onChanged={load}
                 onError={onError}
                 onDiscuss={openDiscuss}
@@ -1454,6 +1487,15 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
               />
             ))}
         </div>
+      )}
+
+      {tab === "walkthrough" && (
+        <WalkthroughView
+          walkthrough={detail.walkthrough}
+          onRun={() => {
+            rpc.call("walkthrough_start", refObj).then(load, (c) => onError(describe(c)));
+          }}
+        />
       )}
 
       {tab === "comments" && (
@@ -1565,6 +1607,131 @@ function PrDetailPage({ refObj, onBack }: { refObj: PrRef; onBack: () => void })
             permissionPolicy="editable"
             className="min-h-0 flex-1"
           />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------- walkthrough
+
+function WalkthroughView({ walkthrough, onRun }: { walkthrough: Walkthrough; onRun: () => void }) {
+  const [step, setStep] = useState(0);
+  const steps = walkthrough.steps;
+  // A fresh walkthrough restarts the tour.
+  const stamp = walkthrough.finishedAt;
+  const lastStamp = useRef(stamp);
+  useEffect(() => {
+    if (stamp !== lastStamp.current) {
+      lastStamp.current = stamp;
+      setStep(0);
+    }
+  }, [stamp]);
+  const current = steps[Math.min(step, Math.max(steps.length - 1, 0))];
+
+  if (walkthrough.status === "running") {
+    return (
+      <div className="rounded-lg border border-dashed border-border px-4 py-10 text-center text-sm text-muted-foreground">
+        <Spinner label="Building the walkthrough — reading the diff and the surrounding code. This can take a few minutes." />
+      </div>
+    );
+  }
+  if (steps.length === 0) {
+    return (
+      <div className="space-y-3 rounded-lg border border-dashed border-border px-4 py-10 text-center">
+        <p className="text-sm text-muted-foreground">
+          A walkthrough builds the context for this PR from the ground up: the existing code it builds on first, then the
+          new pieces, one step at a time.
+        </p>
+        {walkthrough.error !== null && <p className="text-sm text-destructive">{walkthrough.error}</p>}
+        <Button onClick={onRun}>
+          <Icon name="Layers" className="size-4" />
+          {walkthrough.status === "failed" ? "Retry walkthrough" : "Build walkthrough"}
+        </Button>
+      </div>
+    );
+  }
+
+  const nav = (
+    <div className="flex items-center justify-between gap-2">
+      <Button variant="outline" size="sm" disabled={step === 0} onClick={() => setStep((s) => Math.max(0, s - 1))}>
+        <Icon name="ChevronLeft" className="size-3.5" /> Previous
+      </Button>
+      <span className="text-xs text-muted-foreground">
+        Step {Math.min(step + 1, steps.length)} of {steps.length}
+      </span>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={step >= steps.length - 1}
+        onClick={() => setStep((s) => Math.min(steps.length - 1, s + 1))}
+      >
+        Next <Icon name="ChevronRight" className="size-3.5" />
+      </Button>
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col gap-3 md:flex-row md:items-start">
+      <div className="w-full shrink-0 self-start rounded-lg border border-border bg-card py-1.5 md:sticky md:top-2 md:max-h-[calc(100vh-10rem)] md:w-64 md:overflow-y-auto">
+        <div className="flex items-center justify-between gap-1 px-3 pb-1.5 pt-1">
+          <span className="truncate text-xs font-medium">{walkthrough.title ?? "Walkthrough"}</span>
+          <Button variant="ghost" size="sm" className="h-5 px-1 text-[10px] text-muted-foreground" onClick={onRun}>
+            Rebuild
+          </Button>
+        </div>
+        {steps.map((s, i) => (
+          <button
+            key={i}
+            type="button"
+            onClick={() => setStep(i)}
+            className={cn(
+              "flex w-full items-start gap-2 px-3 py-1.5 text-left text-xs transition-colors",
+              i === step ? "bg-primary/10 font-medium text-foreground" : "text-muted-foreground hover:bg-accent",
+            )}
+          >
+            <span
+              className={cn(
+                "mt-px inline-flex size-4 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold",
+                i === step ? "bg-primary/20 text-primary" : "bg-muted",
+              )}
+            >
+              {i + 1}
+            </span>
+            <span className="min-w-0 flex-1">{s.title}</span>
+          </button>
+        ))}
+      </div>
+      {current !== undefined && (
+        <div className="min-w-0 flex-1 space-y-3">
+          {nav}
+          <div className="space-y-3 rounded-lg border border-border bg-card px-4 py-3">
+            <h3 className="text-sm font-semibold">
+              {step + 1}. {current.title}
+            </h3>
+            <Markdown content={current.body} className="text-sm" />
+            {current.sections.map((sec, i) => (
+              <div key={i} className="overflow-hidden rounded-md border border-border">
+                <div className="flex items-center gap-2 border-b border-border bg-muted/40 px-2 py-1">
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
+                    {sec.path}
+                    {sec.kind === "context" && sec.startLine !== null ? `:${sec.startLine}` : ""}
+                  </span>
+                  {sec.kind === "added" ? (
+                    <Chip tone="accent">changed in this PR</Chip>
+                  ) : (
+                    <Chip>existing code</Chip>
+                  )}
+                </div>
+                {sec.kind === "added" ? (
+                  <Diff patch={sec.code} path={sec.path} />
+                ) : (
+                  <SourceCode content={sec.code} path={sec.path} />
+                )}
+              </div>
+            ))}
+          </div>
+          {nav}
         </div>
       )}
     </div>
