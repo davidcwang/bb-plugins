@@ -932,26 +932,6 @@ const SEVERITY_TONE: Record<string, "bad" | "warn" | "muted"> = { bug: "bad", qu
 
 // ------------------------------------------------- finding code context
 
-/** Head-side line numbers this PR adds in `path`, from its file patch. */
-function addedLinesFor(files: PrFile[], path: string): Set<number> {
-  const out = new Set<number>();
-  const patch = files.find((f) => f.path === path)?.patch ?? null;
-  if (patch === null) return out;
-  let line = 0;
-  for (const l of patch.split("\n")) {
-    const m = l.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-    if (m !== null) {
-      line = Number(m[1]);
-      continue;
-    }
-    if (line === 0) continue;
-    if (l.startsWith("+")) out.add(line++);
-    else if (l.startsWith("-")) continue;
-    else line++;
-  }
-  return out;
-}
-
 /** The finding's refs, or one synthesized from its path/line for older findings. */
 function refsOf(f: Finding): FindingRef[] {
   if (f.refs.length > 0) return f.refs;
@@ -960,33 +940,83 @@ function refsOf(f: Finding): FindingRef[] {
 
 const fileMemo = new Map<string, string>();
 
+interface MergedLine {
+  kind: "context" | "added" | "removed";
+  text: string;
+  oldNo: number | null;
+  newNo: number | null;
+}
+
+/** The head file interleaved with the lines this PR removed, from its unified patch. */
+function mergeWithPatch(head: string[], patch: string | null): MergedLine[] {
+  const out: MergedLine[] = [];
+  let oldNo = 1;
+  let newNo = 1;
+  const pushContextTo = (limit: number) => {
+    while (newNo < limit && newNo <= head.length) {
+      out.push({ kind: "context", text: head[newNo - 1], oldNo: oldNo++, newNo: newNo++ });
+    }
+  };
+  if (patch !== null) {
+    for (const l of patch.split("\n")) {
+      const m = l.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (m !== null) {
+        pushContextTo(Number(m[2]));
+        oldNo = Number(m[1]);
+        newNo = Number(m[2]);
+        continue;
+      }
+      if (out.length === 0 && newNo === 1 && !l.startsWith(" ") && !l.startsWith("+") && !l.startsWith("-")) continue;
+      if (l.startsWith("+")) out.push({ kind: "added", text: head[newNo - 1] ?? l.slice(1), oldNo: null, newNo: newNo++ });
+      else if (l.startsWith("-")) out.push({ kind: "removed", text: l.slice(1), oldNo: oldNo++, newNo: null });
+      else if (l.startsWith(" ")) out.push({ kind: "context", text: head[newNo - 1] ?? l.slice(1), oldNo: oldNo++, newNo: newNo++ });
+    }
+  }
+  pushContextTo(head.length + 1);
+  return out;
+}
+
+/** A unified hunk for a slice of merged lines, so the host diff viewer highlights it. */
+function hunkOf(slice: MergedLine[], all: MergedLine[], startIndex: number): string | null {
+  if (slice.length === 0) return null;
+  const firstOld = slice.find((x) => x.oldNo !== null)?.oldNo ?? null;
+  const firstNew = slice.find((x) => x.newNo !== null)?.newNo ?? null;
+  // An all-added or all-removed slice still needs a start on the other side.
+  const prev = (side: "oldNo" | "newNo") => {
+    for (let i = startIndex - 1; i >= 0; i--) if (all[i][side] !== null) return (all[i][side] as number) + 1;
+    return 1;
+  };
+  const a = firstOld ?? prev("oldNo");
+  const c = firstNew ?? prev("newNo");
+  const b = slice.filter((x) => x.kind !== "added").length;
+  const d = slice.filter((x) => x.kind !== "removed").length;
+  const body = slice.map((x) => `${x.kind === "added" ? "+" : x.kind === "removed" ? "-" : " "}${x.text}`).join("\n");
+  return `@@ -${a},${b} +${c},${d} @@\n${body}\n`;
+}
+
 function FileContext({
   rpc,
   refObj,
   path,
-  refs,
   active,
-  added,
+  patch,
 }: {
   rpc: Rpc;
   refObj: PrRef;
   path: string;
-  /** Every ref in this file; `active` is the one to scroll to. */
-  refs: FindingRef[];
   active: FindingRef;
-  added: Set<number>;
+  /** This PR's unified patch for the file, if it changed. */
+  patch: string | null;
 }) {
   const memoKey = `${prKey(refObj)}:${path}`;
   const [content, setContent] = useState<string | null>(() => fileMemo.get(memoKey) ?? null);
   const [error, setError] = useState<string | null>(null);
-  const [pad, setPad] = useState(25);
-  const [whole, setWhole] = useState(false);
+  const [padAbove, setPadAbove] = useState(20);
+  const [padBelow, setPadBelow] = useState(20);
   const scroller = useRef<HTMLDivElement | null>(null);
   const target = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    setPad(25);
-    setWhole(false);
     const hit = fileMemo.get(memoKey);
     if (hit !== undefined) {
       setContent(hit);
@@ -1006,91 +1036,99 @@ function FileContext({
   }, [memoKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    setPadAbove(20);
+    setPadBelow(20);
+  }, [active]);
+
+  useEffect(() => {
     const box = scroller.current;
     const el = target.current;
-    if (box !== null && el !== null) box.scrollTop = Math.max(0, el.offsetTop - box.clientHeight / 3);
+    if (box !== null && el !== null) box.scrollTop = Math.max(0, el.offsetTop - box.clientHeight / 4);
   }, [content, active]);
 
+  const merged = useMemo(() => {
+    if (content === null) return null;
+    const head = content.split("\n");
+    if (head.length > 0 && head[head.length - 1] === "") head.pop();
+    return { head, lines: mergeWithPatch(head, patch) };
+  }, [content, patch]);
+
   if (error !== null) return <p className="px-3 py-4 text-xs text-destructive">{error}</p>;
-  if (content === null) return <div className="px-3 py-4"><Spinner label={`Loading ${path}…`} /></div>;
+  if (merged === null) return <div className="px-3 py-4"><Spinner label={`Loading ${path}…`} /></div>;
 
-  const lines = content.split("\n");
-  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-  const lo = whole ? 1 : Math.max(1, Math.min(...refs.map((r) => r.startLine)) - pad);
-  const hi = whole ? lines.length : Math.min(lines.length, Math.max(...refs.map((r) => r.endLine)) + pad);
-  const inRef = (n: number) => refs.find((r) => n >= r.startLine && n <= r.endLine);
-  const width = String(hi).length;
-
-  const rows: ReactNode[] = [];
-  for (let n = lo; n <= hi; n++) {
-    const r = inRef(n);
-    const isActive = r !== undefined && r === active;
-    const isAdded = added.has(n);
-    rows.push(
-      <div
-        key={n}
-        ref={isActive && n === active.startLine ? target : undefined}
-        className={cn(
-          "flex whitespace-pre",
-          r !== undefined && (isActive ? "bg-yellow-500/20" : "bg-yellow-500/10"),
-        )}
-      >
-        <span
-          className={cn(
-            "w-1 shrink-0",
-            r !== undefined ? (isActive ? "bg-yellow-500" : "bg-yellow-500/50") : isAdded ? "bg-green-600/60" : "",
-          )}
-        />
-        <span className="select-none px-2 text-right text-muted-foreground/70" style={{ minWidth: `${width + 2}ch` }}>
-          {n}
-        </span>
-        <span className={cn("select-none pr-1", isAdded ? "text-green-600 dark:text-green-400" : "text-transparent")}>+</span>
-        <span className="pr-4">{lines[n - 1]}</span>
-      </div>,
-    );
-    const ending = refs.filter((x) => x.endLine === n);
-    for (const x of ending) {
-      rows.push(
-        <div key={`note-${n}-${x.startLine}`} className="whitespace-normal px-3 py-1.5" style={{ paddingLeft: `${width + 5}ch` }}>
-          <div
-            className={cn(
-              "rounded-md border px-3 py-2 font-sans text-xs",
-              x === active ? "border-yellow-500/60 bg-card" : "border-border bg-card/70 text-muted-foreground",
-            )}
-          >
-            <div className="mb-0.5 flex items-center gap-1 text-[10px] text-muted-foreground">
-              <Icon name="MessageSquare" className="size-3" />
-              {x.startLine === x.endLine ? `line ${x.startLine}` : `lines ${x.startLine}–${x.endLine}`}
-            </div>
-            {x.note}
-          </div>
-        </div>,
-      );
-    }
-  }
+  const all = merged.lines;
+  const total = merged.head.length;
+  const start = Math.min(Math.max(1, active.startLine), Math.max(total, 1));
+  const end = Math.min(Math.max(active.endLine, start), Math.max(total, 1));
+  const lo = Math.max(1, start - padAbove);
+  const hi = Math.min(total, end + padBelow);
+  // Index of the merged line holding head line `n`; removed lines just before it belong to its gap.
+  const idxOf = (n: number) => all.findIndex((x) => x.newNo === n);
+  const firstIdx = (n: number) => {
+    let i = idxOf(n);
+    while (i > 0 && all[i - 1].kind === "removed") i--;
+    return i;
+  };
+  const lastIdx = (n: number) => {
+    let i = idxOf(n);
+    while (i + 1 < all.length && all[i + 1].kind === "removed") i++;
+    return i;
+  };
+  const aS = firstIdx(lo);
+  const rS = firstIdx(start);
+  const rE = lastIdx(end);
+  const aE = lastIdx(hi);
+  const before = rS > aS ? hunkOf(all.slice(aS, rS), all, aS) : null;
+  const range = hunkOf(all.slice(rS, rE + 1), all, rS);
+  const after = aE > rE ? hunkOf(all.slice(rE + 1, aE + 1), all, rE + 1) : null;
 
   return (
     <div className="flex min-h-0 flex-col">
-      <div ref={scroller} className="relative max-h-[60vh] overflow-auto bg-background py-1 font-mono text-xs leading-5">
-        {!whole && lo > 1 && (
-          <button type="button" onClick={() => setPad((p) => p + 40)} className="w-full py-1 text-[11px] text-muted-foreground hover:bg-accent">
-            ↑ Show more above (lines 1–{lo - 1} hidden)
+      <div ref={scroller} className="max-h-[60vh] overflow-auto bg-background">
+        {lo > 1 && (
+          <button
+            type="button"
+            onClick={() => setPadAbove((p) => p + 40)}
+            className="w-full py-1 text-[11px] text-muted-foreground hover:bg-accent"
+          >
+            ↑ Show more above ({lo - 1} lines hidden)
           </button>
         )}
-        {rows}
-        {!whole && hi < lines.length && (
-          <button type="button" onClick={() => setPad((p) => p + 40)} className="w-full py-1 text-[11px] text-muted-foreground hover:bg-accent">
-            ↓ Show more below ({lines.length - hi} lines hidden)
+        {before !== null && <Diff patch={before} path={path} />}
+        <div ref={target} className="border-y-2 border-l-4 border-yellow-500/80">
+          {range !== null && <Diff patch={range} path={path} />}
+          <div className="border-t border-yellow-500/40 bg-card px-3 py-2 text-xs">
+            <div className="mb-0.5 flex items-center gap-1 text-[10px] text-muted-foreground">
+              <Icon name="MessageSquare" className="size-3" />
+              {start === end ? `line ${start}` : `lines ${start}–${end}`}
+            </div>
+            {active.note}
+          </div>
+        </div>
+        {after !== null && <Diff patch={after} path={path} />}
+        {hi < total && (
+          <button
+            type="button"
+            onClick={() => setPadBelow((p) => p + 40)}
+            className="w-full py-1 text-[11px] text-muted-foreground hover:bg-accent"
+          >
+            ↓ Show more below ({total - hi} lines hidden)
           </button>
         )}
       </div>
       <div className="flex items-center gap-3 border-t border-border px-3 py-1 text-[10px] text-muted-foreground">
         <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-1 bg-yellow-500" /> finding</span>
-        <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-1 bg-green-600/60" /> added in this PR</span>
-        <span>unmarked = existing code</span>
+        <span>green = added in this PR · red = removed · uncolored = existing code</span>
         <div className="flex-1" />
-        {!whole && (
-          <button type="button" className="hover:text-foreground" onClick={() => setWhole(true)}>
+        {(lo > 1 || hi < total) && (
+          <button
+            type="button"
+            className="hover:text-foreground"
+            onClick={() => {
+              setPadAbove(total);
+              setPadBelow(total);
+            }}
+          >
             Show whole file
           </button>
         )}
@@ -1105,8 +1143,7 @@ function FindingContext({ rpc, refObj, finding, files }: { rpc: Rpc; refObj: PrR
   const [index, setIndex] = useState(0);
   useEffect(() => setIndex(0), [finding.id]);
   const active = refs[Math.min(index, refs.length - 1)];
-  const sameFile = refs.filter((r) => r.path === active.path);
-  const added = useMemo(() => addedLinesFor(files, active.path), [files, active.path]);
+  const patch = files.find((f) => f.path === active.path)?.patch ?? null;
   return (
     <div className="flex overflow-hidden rounded-md border border-border">
       <div className="w-60 shrink-0 space-y-0.5 overflow-y-auto border-r border-border bg-card py-1.5">
@@ -1167,7 +1204,7 @@ function FindingContext({ rpc, refObj, finding, files }: { rpc: Rpc; refObj: PrR
             <Icon name="ChevronDown" className="size-3.5" />
           </Button>
         </div>
-        <FileContext rpc={rpc} refObj={refObj} path={active.path} refs={sameFile} active={active} added={added} />
+        <FileContext rpc={rpc} refObj={refObj} path={active.path} active={active} patch={patch} />
       </div>
     </div>
   );
